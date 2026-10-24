@@ -11,6 +11,54 @@ import metadata_helper
 ENV_FILE = "env.txt"
 
 
+def check_token_write_permission(api: HfApi, token: str) -> tuple:
+    """
+    Checks whether a Hugging Face token has write/delete permissions.
+    Returns (can_write: bool, role_desc: str).
+    """
+    if not token or not api:
+        return False, "No token or API"
+    try:
+        info = api.whoami()
+        auth = info.get("auth", {})
+        access_token = auth.get("accessToken", {})
+        role = access_token.get("role", "")
+
+        # Classic Hugging Face tokens
+        if role in ("write", "admin"):
+            return True, f"Classic {role.title()}"
+        if role == "read":
+            return False, "Classic Read-Only (Write operations disabled)"
+
+        # Fine-grained tokens
+        if role == "fineGrained":
+            fg = access_token.get("fineGrained", {})
+            scoped = fg.get("scoped", [])
+            global_perms = fg.get("global", [])
+
+            has_write = any("repo.write" in p or "repo.contribute.write" in p for p in global_perms)
+            if not has_write:
+                for sc in scoped:
+                    perms = sc.get("permissions", [])
+                    if any("repo.write" in p or "repo.contribute.write" in p for p in perms):
+                        has_write = True
+                        break
+
+            if has_write:
+                return True, "Fine-Grained Write"
+            else:
+                return False, "Fine-Grained Read-Only (repo.write missing)"
+
+        return True, "Standard Access"
+    except Exception as e:
+        err_str = str(e).lower()
+        if "401" in err_str or "unauthorized" in err_str:
+            return False, "Invalid / Unauthorized Token"
+        if "403" in err_str or "forbidden" in err_str:
+            return False, "Forbidden / Lacks Access"
+        return True, "Assumed Valid"
+
+
 def load_env_config(env_path=ENV_FILE):
     config = {}
     if os.path.exists(env_path):
@@ -106,6 +154,7 @@ class AccountManager:
             try:
                 api = HfApi(token=upload_token)
                 user = api.whoami()["name"]
+                can_write, role_desc = check_token_write_permission(api, upload_token)
                 self.primary_username = user
                 self.upload_token = upload_token
                 self.accounts[user] = {
@@ -113,10 +162,14 @@ class AccountManager:
                     "token": upload_token,
                     "api": api,
                     "is_upload": True,
-                    "enabled": True  # Primary is always active
+                    "enabled": True,  # Primary is always active
+                    "can_write": can_write,
+                    "role_desc": role_desc
                 }
                 self.token_to_user[upload_token] = user
                 self.disabled_users.discard(user)
+                if not can_write:
+                    print(f"[!] Warning: Primary HF token for user '{user}' lacks write permissions ({role_desc}). Write and delete operations will be disabled for this account to prevent runtime errors.")
             except Exception as e:
                 print(f"[!] Warning: Primary HF upload token auth failed: {e}")
 
@@ -128,19 +181,31 @@ class AccountManager:
                 if user in self.accounts:
                     continue
                 is_enabled = (user not in self.disabled_users)
+                can_write, role_desc = check_token_write_permission(api, tok)
                 self.accounts[user] = {
                     "username": user,
                     "token": tok,
                     "api": api,
                     "is_upload": False,
-                    "enabled": is_enabled
+                    "enabled": is_enabled,
+                    "can_write": can_write,
+                    "role_desc": role_desc
                 }
                 self.token_to_user[tok] = user
+                if not can_write:
+                    print(f"[!] Info: Extra token for user '{user}' is read-only ({role_desc}). Write and delete operations will be safely skipped.")
             except Exception as e:
                 print(f"[!] Warning: Extra HF token auth failed ({tok[:10]}...): {e}")
 
     def get_upload_account(self):
-        """Returns designated account for uploading all new content."""
+        """Returns designated account for uploading all new content (must have write permission)."""
+        if self.primary_username and self.primary_username in self.accounts:
+            acc = self.accounts[self.primary_username]
+            if acc.get("enabled", True) and acc.get("can_write", True):
+                return acc
+        for user, acc in self.accounts.items():
+            if acc.get("enabled", True) and acc.get("can_write", True):
+                return acc
         if self.primary_username and self.primary_username in self.accounts:
             return self.accounts[self.primary_username]
         if self.accounts:
@@ -149,15 +214,41 @@ class AccountManager:
         return None
 
     def get_alternative_upload_account(self, current_username: str):
-        """Returns another enabled account with valid write API when current_username is throttled."""
+        """Returns another enabled account with verified write API when current_username is throttled."""
         for user, acc in self.accounts.items():
-            if user != current_username and acc.get("enabled", True) and acc.get("api"):
+            if user != current_username and acc.get("enabled", True) and acc.get("can_write", True) and acc.get("api"):
                 return acc
         return None
 
     def get_all_accounts(self):
         """Returns list of all configured Hugging Face accounts."""
         return list(self.accounts.values())
+
+    def can_write_to_repo(self, repo_id: str) -> bool:
+        """
+        Returns True if the designated account for repo_id has verified write/delete permissions.
+        Returns False if token is read-only or permission has been revoked.
+        """
+        if not repo_id:
+            acc = self.get_upload_account()
+            return bool(acc and acc.get("can_write", True) and acc.get("enabled", True))
+        parts = repo_id.split("/", 1)
+        if len(parts) == 2:
+            owner = parts[0]
+            if owner in self.accounts:
+                acc = self.accounts[owner]
+                return bool(acc.get("enabled", True) and acc.get("can_write", True))
+        acc = self.get_upload_account()
+        return bool(acc and acc.get("can_write", True) and acc.get("enabled", True))
+
+    def mark_user_write_disabled(self, username: str, reason: str = "403 Forbidden / No Write Access"):
+        """
+        Disables write/delete operations for an account at runtime to prevent repeated rejections.
+        """
+        if username in self.accounts:
+            self.accounts[username]["can_write"] = False
+            self.accounts[username]["role_desc"] = f"Disabled: {reason}"
+            print(f"[!] Account Manager: Disabled write/delete operations for '{username}': {reason}")
 
     def get_account_usernames(self):
         return list(self.accounts.keys())
@@ -670,6 +761,8 @@ class AccountManager:
                 "username": user,
                 "is_primary": acc["is_upload"],
                 "enabled": acc.get("enabled", True),
+                "can_write": acc.get("can_write", True),
+                "role_desc": acc.get("role_desc", "Write Access"),
                 "token_masked": masked,
                 "video_count": v_count,
                 "total_bytes": bytes_tot,

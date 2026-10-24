@@ -599,6 +599,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         repos_files[r] = {}
                     repos_files[r][k] = rec
             for repo_id, r_files in repos_files.items():
+                if hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
+                    logger.info("Skipping HF sync for repo %s: token lacks write permissions.", repo_id)
+                    continue
                 api = self.acc_mgr.get_api_for_repo(repo_id)
                 for k, rec in r_files.items():
                     blob_path = rec.get("blob_path") or rec.get("remote_path")
@@ -955,6 +958,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         def _bg_sync_meta(item_key, r_id, b_path, f_record):
             try:
+                if hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(r_id):
+                    logger.info("Skipping HF metadata sync for %s: Account token lacks write permissions.", r_id)
+                    return
                 api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                 if b_path:
                     rec = dict(f_record)
@@ -2008,21 +2014,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         def _bg_merge_cloud(keep_k, keep_rec, disc_list, do_del_remote):
             try:
                 repo_id = keep_rec.get("repo_id", f"{self.hf_username}/{self.default_repo}")
-                api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
-                blob_path = keep_rec.get("blob_path") or keep_rec.get("remote_path")
-                if blob_path:
-                    metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, keep_rec, self.password)
+                if hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
+                    logger.info("Skipping HF cloud merge sync for %s: Token lacks write permissions.", repo_id)
+                else:
+                    api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                    blob_path = keep_rec.get("blob_path") or keep_rec.get("remote_path")
+                    if blob_path:
+                        metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, keep_rec, self.password)
 
-                # Sync repo index for keep_record
-                m = load_manifest()
-                repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == repo_id}
-                metadata_helper.sync_repo_manifest_to_hf(api, repo_id, repo_files, self.password)
+                    # Sync repo index for keep_record
+                    m = load_manifest()
+                    repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == repo_id}
+                    metadata_helper.sync_repo_manifest_to_hf(api, repo_id, repo_files, self.password)
 
                 # Delete remote discarded blobs if requested
                 if do_del_remote:
                     for disc_item in disc_list:
                         d_repo = disc_item.get("repo_id")
                         if not d_repo:
+                            continue
+                        if hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(d_repo):
+                            logger.info("Skipping HF cloud delete for discarded merge item in %s: Token lacks write permissions.", d_repo)
                             continue
                         d_api = self.acc_mgr.get_api_for_repo(d_repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                         blobs_to_delete = [
@@ -2462,7 +2474,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             media_hash = info.get("media_hash") or info.get("content_hash") or info.get("fingerprint")
             api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
 
-            if blob_path:
+            if blob_path and hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
+                logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
+            elif blob_path:
                 try:
                     api.delete_file(
                         path_in_repo=blob_path,
@@ -2570,7 +2584,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         else:
             # Last reference: delete cloud blob on Hugging Face
             try:
-                if blob_path:
+                if blob_path and hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
+                    logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
+                elif blob_path:
                     api.delete_file(
                         path_in_repo=blob_path,
                         repo_id=repo_id,
@@ -2640,7 +2656,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             media_hash = info.get("media_hash") or info.get("content_hash")
             api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
 
-            if blob_path:
+            if blob_path and hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
+                logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
+            elif blob_path:
                 try:
                     api.delete_file(
                         path_in_repo=blob_path,
@@ -6592,6 +6610,31 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             transition: all 0.15s ease;
             flex-shrink: 0;
         }}
+        .tool-btn-icon {{
+            width: 32px !important;
+            height: 32px !important;
+            min-width: 32px !important;
+            padding: 0 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 0.95rem !important;
+            border-radius: 7px !important;
+            position: relative;
+            flex-shrink: 0;
+            transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+        }}
+        .tool-btn-icon:hover {{
+            transform: scale(1.08);
+            border-color: rgba(56, 189, 248, 0.4);
+        }}
+        .view-toggle-icon {{
+            padding: 5px 8px !important;
+            font-size: 0.92rem !important;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }}
         .folder-action-icon-btn:hover {{
             transform: scale(1.1);
         }}
@@ -6960,15 +7003,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span id="filterSummaryCount" class="filter-summary-count" style="display: none;"></span>
                 </div>
 
-                <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn" title="Toggle tag badges visibility on video cards">&#127991; Tags: <span id="tagsStateLabel">Shown</span></button>
-                <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn" title="Merge marked duplicate videos and lock hashes">&#128256; Merge Videos <span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.65rem; padding: 1px 6px; margin-left: 4px;">0</span></button>
-                <button onclick="openSyncFolderInExplorer('', event)" class="tool-btn" title="Open root sync folder (videos_to_sync) in Windows File Explorer">&#128194; Sync Folder</button>
-                <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
-                <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
-                <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
+                <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn tool-btn-icon" title="Toggle Tag Badges (Shown / Hidden)">&#127991;<span id="tagsStateLabel" style="display: none;">Shown</span></button>
+                <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn tool-btn-icon" title="Merge Marked Duplicate Videos">&#128256;<span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.58rem; padding: 1px 4px; position: absolute; top: -3px; right: -3px;">0</span></button>
+                <button onclick="openSyncFolderInExplorer('', event)" class="tool-btn tool-btn-icon" title="Open root sync folder (videos_to_sync) in Windows Explorer">&#128194;</button>
+                <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn tool-btn-icon" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039;</button>
+                <button onclick="expandVisible()" class="tool-btn tool-btn-icon" title="Expand what is currently visible on screen (Folders & Cards)">&#128065;</button>
+                <button onclick="expandAll()" class="tool-btn tool-btn-icon" title="Expand All Folders in Library">&#9660;</button>
+                <button onclick="collapseAll()" class="tool-btn tool-btn-icon" title="Collapse All Folders in Library">&#9654;</button>
                 <div class="view-toggle-group">
-                    <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn" title="Switch to Cards Grid View">&#127183; Cards</button>
-                    <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn" title="Switch to List Row View">&#9776; List</button>
+                    <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon" title="Switch to Cards Grid View">&#127183;</button>
+                    <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">&#9776;</button>
                 </div>
 
                 <div class="sticky-status-cluster">
@@ -9433,6 +9477,31 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         let userExplicitExpandAll = false;
+
+        function expandVisible() {{
+            const visibleFolders = Array.from(document.querySelectorAll('.folder-group')).filter(fg => {{
+                const rect = fg.getBoundingClientRect();
+                return rect.top < window.innerHeight && rect.bottom > 0;
+            }});
+
+            if (visibleFolders.length === 0) {{
+                showToast('No folders currently visible on screen', 'info');
+                return;
+            }}
+
+            visibleFolders.forEach(fg => {{
+                openFolderElement(fg);
+                fg.querySelectorAll('.video-card, .file-row').forEach(c => {{
+                    c.classList.add('is-expanded');
+                    const aBar = c.querySelector('.video-card-actions, .file-row-actions');
+                    if (aBar) aBar.classList.add('is-open');
+                    const aBtn = c.querySelector('.card-action-arrow-btn');
+                    if (aBtn) aBtn.classList.add('is-active');
+                }});
+            }});
+
+            showToast(`&#128065; Expanded ${{visibleFolders.length}} visible folder(s) & cards on screen!`, 'success');
+        }}
 
         function expandAll() {{
             userExplicitExpandAll = true;
@@ -12999,6 +13068,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 <span>${{escapeHtml(acc.username)}}</span>
                                 ${{isPrimary ? '<span class="account-pill is-primary" style="font-size: 0.68rem;">👑 Primary Uploader</span>' : ''}}
                                 ${{isEnabled ? '<span class="meta-pill genre-pill" style="font-size: 0.68rem;">Active</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: #374151; color: #9ca3af;">Disabled</span>'}}
+                                ${{acc.can_write ? '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3);">&#9997;&#65039; Write</span>' : `<span class="meta-pill" style="font-size: 0.68rem; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3);" title="${{escapeHtml(acc.role_desc || 'Read-Only')}}">&#128274; Read-Only (Write Disabled)</span>`}}
                             </div>
                             <div class="acc-token">
                                 Token: ${{escapeHtml(acc.token_masked)}} &bull; Hosted: ${{acc.video_count || 0}} videos (${{acc.size_str || '0 MB'}})
