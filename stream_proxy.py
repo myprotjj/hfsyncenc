@@ -327,6 +327,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_activity_clear()
         elif path == "/api/scan-tech-tags":
             self.handle_scan_tech_tags()
+        elif path == "/api/tags/rename":
+            self.handle_rename_tag()
+        elif path == "/api/tags/merge":
+            self.handle_merge_tags()
         else:
             self.send_error(404, "Not Found")
 
@@ -935,6 +939,222 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "updated_count": updated_count
         }).encode("utf-8")
 
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_rename_tag(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            old_tag = str(req_data.get("old_tag", "")).strip()
+            new_tag = str(req_data.get("new_tag", "")).strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not old_tag or not new_tag:
+            self.send_error(400, "Both 'old_tag' and 'new_tag' are required")
+            return
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        old_lower = old_tag.lower()
+        updated_keys = []
+
+        for k, finfo in files.items():
+            meta = finfo.get("metadata") or {}
+            raw_tags = meta.get("tags") or []
+            if isinstance(raw_tags, str):
+                raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+            elif not isinstance(raw_tags, list):
+                raw_tags = []
+
+            has_match = any(str(t).strip().lower() == old_lower for t in raw_tags)
+            if not has_match:
+                continue
+
+            new_tags = []
+            seen = set()
+            for t in raw_tags:
+                tag_str = str(t).strip()
+                if not tag_str:
+                    continue
+                if tag_str.lower() == old_lower:
+                    tag_str = new_tag
+                if tag_str.lower() not in seen:
+                    seen.add(tag_str.lower())
+                    new_tags.append(tag_str)
+
+            meta["tags"] = new_tags
+            finfo["metadata"] = meta
+            finfo["verifier"] = crypto_engine.create_verifier(self.password)
+            try:
+                metadata_helper.write_nfo_files("jellyfin_library", k, meta)
+                for alias in finfo.get("aliases", []):
+                    alias_key = str(Path(k).parent / alias) if str(Path(k).parent) != "." else alias
+                    metadata_helper.write_nfo_files("jellyfin_library", alias_key, meta)
+            except Exception as e:
+                logger.warning("Error writing NFO for %s: %s", k, e)
+
+            updated_keys.append(k)
+
+        if updated_keys:
+            save_manifest(manifest)
+            activity_tracker.tracker.add_event(
+                "info",
+                "Tag Renamed",
+                f"Renamed tag '{old_tag}' to '{new_tag}' across {len(updated_keys)} video(s)"
+            )
+
+            def _bg_sync_rename(keys):
+                try:
+                    m = load_manifest()
+                    repos_touched = set()
+                    for item_key in keys:
+                        f = m.get("files", {}).get(item_key)
+                        if not f:
+                            continue
+                        repo_id = f.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                        repos_touched.add(repo_id)
+                        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        blob_path = f.get("blob_path") or f.get("remote_path")
+                        if blob_path:
+                            record = dict(f)
+                            record["full_key"] = item_key
+                            metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
+                    for r_id in repos_touched:
+                        api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                        metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                except Exception as ex:
+                    logger.warning("Background tag rename HF sync warning: %s", ex)
+
+            threading.Thread(target=_bg_sync_rename, args=(updated_keys,), daemon=True).start()
+
+        resp = {
+            "success": True,
+            "old_tag": old_tag,
+            "new_tag": new_tag,
+            "updated_count": len(updated_keys),
+            "message": f"Successfully renamed tag '{old_tag}' to '{new_tag}' across {len(updated_keys)} video(s)."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_merge_tags(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            source_tags = req_data.get("source_tags", [])
+            target_tag = str(req_data.get("target_tag", "")).strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not isinstance(source_tags, list) or not source_tags or not target_tag:
+            self.send_error(400, "'source_tags' (non-empty list) and 'target_tag' are required")
+            return
+
+        src_lowers = {str(t).strip().lower() for t in source_tags if str(t).strip()}
+        if not src_lowers:
+            self.send_error(400, "No valid source tags provided")
+            return
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        updated_keys = []
+
+        for k, finfo in files.items():
+            meta = finfo.get("metadata") or {}
+            raw_tags = meta.get("tags") or []
+            if isinstance(raw_tags, str):
+                raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+            elif not isinstance(raw_tags, list):
+                raw_tags = []
+
+            has_match = any(str(t).strip().lower() in src_lowers for t in raw_tags)
+            if not has_match:
+                continue
+
+            new_tags = []
+            seen = set()
+            for t in raw_tags:
+                tag_str = str(t).strip()
+                if not tag_str or tag_str.lower() in src_lowers:
+                    continue
+                if tag_str.lower() not in seen:
+                    seen.add(tag_str.lower())
+                    new_tags.append(tag_str)
+
+            if target_tag.lower() not in seen:
+                seen.add(target_tag.lower())
+                new_tags.append(target_tag)
+
+            meta["tags"] = new_tags
+            finfo["metadata"] = meta
+            finfo["verifier"] = crypto_engine.create_verifier(self.password)
+            try:
+                metadata_helper.write_nfo_files("jellyfin_library", k, meta)
+                for alias in finfo.get("aliases", []):
+                    alias_key = str(Path(k).parent / alias) if str(Path(k).parent) != "." else alias
+                    metadata_helper.write_nfo_files("jellyfin_library", alias_key, meta)
+            except Exception as e:
+                logger.warning("Error writing NFO for %s: %s", k, e)
+
+            updated_keys.append(k)
+
+        if updated_keys:
+            save_manifest(manifest)
+            activity_tracker.tracker.add_event(
+                "info",
+                "Tags Merged",
+                f"Merged {len(src_lowers)} tag(s) into '{target_tag}' across {len(updated_keys)} video(s)"
+            )
+
+            def _bg_sync_merge(keys):
+                try:
+                    m = load_manifest()
+                    repos_touched = set()
+                    for item_key in keys:
+                        f = m.get("files", {}).get(item_key)
+                        if not f:
+                            continue
+                        repo_id = f.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                        repos_touched.add(repo_id)
+                        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        blob_path = f.get("blob_path") or f.get("remote_path")
+                        if blob_path:
+                            record = dict(f)
+                            record["full_key"] = item_key
+                            metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
+                    for r_id in repos_touched:
+                        api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                        metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                except Exception as ex:
+                    logger.warning("Background tag merge HF sync warning: %s", ex)
+
+            threading.Thread(target=_bg_sync_merge, args=(updated_keys,), daemon=True).start()
+
+        resp = {
+            "success": True,
+            "source_tags": source_tags,
+            "target_tag": target_tag,
+            "updated_count": len(updated_keys),
+            "message": f"Successfully merged {len(source_tags)} tag(s) into '{target_tag}' across {len(updated_keys)} video(s)."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(resp_body)))
@@ -3254,6 +3474,36 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             border-color: #38bdf8;
             color: #38bdf8;
         }}
+        #genrePillBtn {{
+            background: rgba(245, 158, 11, 0.12) !important;
+            border-color: rgba(245, 158, 11, 0.45) !important;
+            color: #fbbf24 !important;
+            font-weight: 600;
+        }}
+        #genrePillBtn:hover, #genrePillBtn.is-active {{
+            background: rgba(245, 158, 11, 0.25) !important;
+            border-color: #f59e0b !important;
+            color: #fde68a !important;
+        }}
+        #genrePillBtn .pill-badge {{
+            background: #f59e0b !important;
+            color: #1c1917 !important;
+        }}
+        #tagPillBtn {{
+            background: rgba(56, 189, 248, 0.12) !important;
+            border-color: rgba(56, 189, 248, 0.4) !important;
+            color: #38bdf8 !important;
+            font-weight: 600;
+        }}
+        #tagPillBtn:hover, #tagPillBtn.is-active {{
+            background: rgba(56, 189, 248, 0.22) !important;
+            border-color: #0284c7 !important;
+            color: #7dd3fc !important;
+        }}
+        #tagPillBtn .pill-badge {{
+            background: #0284c7 !important;
+            color: #ffffff !important;
+        }}
         .pill-badge {{
             background: #38bdf8;
             color: #0b0f19;
@@ -3943,15 +4193,127 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             align-items: center;
             gap: 3px;
         }}
-        .genre-pill {{
-            background: rgba(56, 189, 248, 0.12);
-            color: #38bdf8;
-            border: 1px solid rgba(56, 189, 248, 0.28);
+        /* Visual Distinction: Category (Warm Amber Folder Tab) vs Tag (Cool Cyan Oval Pill) */
+        .meta-pill.genre-pill, .genre-pill, .category-badge {{
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.32)) !important;
+            color: #fde68a !important;
+            border: 1px solid rgba(245, 158, 11, 0.65) !important;
+            border-radius: 3px 9px 9px 3px !important;
+            font-weight: 700 !important;
+            font-size: 0.70rem !important;
+            letter-spacing: 0.3px;
+            padding: 2px 8px !important;
+            box-shadow: 0 1px 3px rgba(245, 158, 11, 0.2);
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
         }}
-        .tag-pill {{
-            background: rgba(16, 185, 129, 0.12);
+        .cat-pill-prefix {{
+            font-size: 0.62rem;
+            font-weight: 800;
+            color: #fbbf24;
+            opacity: 0.95;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .cat-pill-name {{
+            font-weight: 700;
+            color: #fffbeb;
+        }}
+        .meta-pill.tag-pill, .tag-pill {{
+            background: rgba(14, 165, 233, 0.12) !important;
+            color: #7dd3fc !important;
+            border: 1px solid rgba(56, 189, 248, 0.35) !important;
+            border-radius: 9999px !important;
+            font-weight: 500 !important;
+            font-size: 0.70rem !important;
+            padding: 2px 8px !important;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }}
+        .btn-use-alias-title {{
+            background: rgba(147, 51, 234, 0.14);
+            border: 1px solid rgba(147, 51, 234, 0.4);
+            color: #c084fc;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-align: left;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+        }}
+        .btn-use-alias-title:hover {{
+            background: rgba(147, 51, 234, 0.28);
+            border-color: #a855f7;
+            color: #e9d5ff;
+            transform: translateY(-1px);
+        }}
+        .btn-use-alias-title.is-active-title {{
+            background: rgba(16, 185, 129, 0.18);
+            border-color: rgba(16, 185, 129, 0.5);
             color: #34d399;
-            border: 1px solid rgba(16, 185, 129, 0.28);
+        }}
+        .alias-use-title-btn {{
+            background: transparent;
+            border: 1px solid rgba(167, 139, 250, 0.35);
+            color: #c084fc;
+            font-size: 0.68rem;
+            cursor: pointer;
+            margin-left: 5px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            transition: all 0.15s ease;
+        }}
+        .alias-use-title-btn:hover {{
+            background: rgba(167, 139, 250, 0.25);
+            color: #fff;
+            border-color: #a78bfa;
+        }}
+        .btn-tag-edit-mini {{
+            background: transparent;
+            border: none;
+            color: #9ca3af;
+            cursor: pointer;
+            font-size: 0.85rem;
+            padding: 2px 5px;
+            border-radius: 3px;
+            transition: all 0.15s ease;
+            line-height: 1;
+        }}
+        .btn-tag-edit-mini:hover {{
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.15);
+        }}
+        .tree-tag-edit {{
+            cursor: pointer;
+            font-size: 0.72rem;
+            color: #94a3b8;
+            margin-left: 3px;
+            margin-right: 2px;
+            transition: color 0.15s ease;
+        }}
+        .tree-tag-edit:hover {{
+            color: #38bdf8;
+        }}
+        .btn-merge-tags-popover {{
+            background: rgba(168, 85, 247, 0.15) !important;
+            border: 1px solid rgba(168, 85, 247, 0.4) !important;
+            color: #c084fc !important;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }}
+        .btn-merge-tags-popover:hover {{
+            background: rgba(168, 85, 247, 0.3) !important;
+            color: #f3e8ff !important;
         }}
         .year-pill {{
             background: rgba(168, 85, 247, 0.12);
@@ -4949,6 +5311,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 <div class="popover-actions">
                                     <button type="button" onclick="selectAllFilter('tag')">Select All</button>
                                     <button type="button" onclick="clearFilter('tag')">Clear</button>
+                                    <button type="button" class="btn-merge-tags-popover" onclick="openMergeTagsModal(event)" title="Merge multiple tags into one unified tag">&#128256; Merge</button>
                                     <button type="button" onclick="closeAllPopovers()" style="color:#38bdf8;font-weight:700;">Done</button>
                                 </div>
                             </div>
@@ -5058,8 +5421,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             <div class="form-row">
                 <div class="form-group" style="flex: 2;">
-                    <label class="form-label">Movie / Video Title</label>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <label class="form-label" style="margin-bottom: 0;">Movie / Video Title</label>
+                        <button type="button" class="tool-btn btn-xs" onclick="cleanCurrentEditTitle()" title="Remove file extensions and fix underscores from current title" style="padding: 2px 7px; font-size: 0.70rem;">
+                            &#129529; Clean Title
+                        </button>
+                    </div>
                     <input type="text" id="editTitle" class="form-input" placeholder="Title">
+                    <div id="aliasTitlePickerBox" style="margin-top: 6px; display: none;">
+                        <div style="font-size: 0.72rem; color: #c084fc; font-weight: 600; margin-bottom: 4px;">
+                            &#128161; Available Names (click to replace title &bull; fixes extension &bull; editable):
+                        </div>
+                        <div id="aliasTitlePickerList" style="display: flex; flex-wrap: wrap; gap: 4px;"></div>
+                    </div>
                 </div>
                 <div class="form-group" style="flex: 1;">
                     <label class="form-label">Year</label>
@@ -5072,24 +5446,29 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             </div>
 
             <div class="form-group">
-                <label class="form-label">Categories / Genres (comma-separated)</label>
-                <input type="text" id="editGenres" class="form-input" placeholder="Action, Sci-Fi, Adventure">
+                <label class="form-label" style="color: #fbbf24; font-weight: 700;">&#128193; Categories / Folder Genres (comma-separated)</label>
+                <input type="text" id="editGenres" class="form-input" placeholder="Action, Sci-Fi, Adventure" style="border-color: rgba(245, 158, 11, 0.4);">
                 <div class="quick-chips">
-                    <span class="quick-chip" onclick="addGenreChip('Action')">+ Action</span>
-                    <span class="quick-chip" onclick="addGenreChip('Sci-Fi')">+ Sci-Fi</span>
-                    <span class="quick-chip" onclick="addGenreChip('Comedy')">+ Comedy</span>
-                    <span class="quick-chip" onclick="addGenreChip('Drama')">+ Drama</span>
-                    <span class="quick-chip" onclick="addGenreChip('Horror')">+ Horror</span>
-                    <span class="quick-chip" onclick="addGenreChip('Thriller')">+ Thriller</span>
-                    <span class="quick-chip" onclick="addGenreChip('Animation')">+ Animation</span>
-                    <span class="quick-chip" onclick="addGenreChip('Anime')">+ Anime</span>
-                    <span class="quick-chip" onclick="addGenreChip('Documentary')">+ Documentary</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Action')">+ Action</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Sci-Fi')">+ Sci-Fi</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Comedy')">+ Comedy</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Drama')">+ Drama</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Horror')">+ Horror</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Thriller')">+ Thriller</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Animation')">+ Animation</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Anime')">+ Anime</span>
+                    <span class="quick-chip" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;" onclick="addGenreChip('Documentary')">+ Documentary</span>
                 </div>
             </div>
 
             <div class="form-group">
-                <label class="form-label">Tags (comma-separated)</label>
-                <input type="text" id="editTags" class="form-input" placeholder="4K, Favorites, Streamable">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <label class="form-label" style="margin-bottom: 0; color: #38bdf8; font-weight: 700;">&#127991; Tags (comma-separated)</label>
+                    <button type="button" class="tool-btn btn-xs" onclick="openMergeTagsModal(event)" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); padding: 2px 7px; font-size: 0.70rem;" title="Merge multiple tags into one tag name">
+                        &#128256; Merge Tags
+                    </button>
+                </div>
+                <input type="text" id="editTags" class="form-input" placeholder="4K, Favorites, Streamable" style="border-color: rgba(56, 189, 248, 0.4);">
                 <div class="quick-chips">
                     <span class="quick-chip" onclick="addTagChip('Favorites')">+ Favorites</span>
                     <span class="quick-chip" onclick="addTagChip('4K')">+ 4K</span>
@@ -5147,6 +5526,40 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             <div class="modal-actions">
                 <button onclick="closeMetadataModal()" class="tool-btn">Cancel</button>
                 <button id="saveMetadataBtn" onclick="saveMetadata()" class="btn btn-play" style="padding: 8px 18px;">&#128190; Save to Jellyfin</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Merge Tags Modal -->
+    <div id="mergeTagsModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3 style="color: #c084fc; margin: 0 0 4px 0;">&#128256; Merge Multiple Tags</h3>
+                <span style="font-size: 0.8rem; color: #9ca3af;">
+                    Combine multiple tags (e.g. <code>movie</code> and <code>videos</code>) into a single unified tag (e.g. <code>playable</code>). All matching videos are updated immediately.
+                </span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <label class="form-label" style="margin-bottom: 0;">1. Select Tags to Merge</label>
+                        <span id="mergeSelectedCount" style="color: #c084fc; font-weight: 600; font-size: 0.75rem;">0 selected</span>
+                    </div>
+                    <input type="text" id="mergeTagSearch" class="form-input form-input-sm" placeholder="Filter tags to select..." oninput="filterMergeTagList(this.value)" style="margin-bottom: 6px; font-size: 0.8rem; padding: 5px 8px;">
+                    <div id="mergeTagList" style="max-height: 180px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px;"></div>
+                </div>
+
+                <div class="form-group" style="margin-top: 14px;">
+                    <label class="form-label">2. Target Merged Tag Name</label>
+                    <input type="text" id="mergeTargetTagInput" class="form-input" placeholder="e.g. playable" oninput="updateMergeBtnState()">
+                    <div id="mergeTargetSuggestions" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;"></div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" onclick="closeMergeTagsModal()" class="tool-btn">Cancel</button>
+                <button type="button" id="btnSubmitMergeTags" onclick="submitMergeTags()" class="btn btn-play" style="background: #9333ea; border-color: #a855f7; padding: 8px 18px;" disabled>
+                    &#128256; Merge Tags
+                </button>
             </div>
         </div>
     </div>
@@ -5644,7 +6057,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (meta.year) badgesHtml += `<span class="meta-pill year-pill">&#128197; ${{escapeHtml(meta.year)}}</span>`;
             if (meta.rating) badgesHtml += `<span class="meta-pill rating-pill">&#11088; ${{escapeHtml(meta.rating)}}</span>`;
             genres.forEach(g => {{
-                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Click to filter by genre: ${{escapeHtml(g)}}">&#127916; ${{escapeHtml(g)}}</span>`;
+                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Category / Folder: ${{escapeHtml(g)}} (Click to filter)"><span class="cat-pill-prefix">&#128193; CAT:</span><span class="cat-pill-name">${{escapeHtml(g)}}</span></span>`;
             }});
             tags.forEach(t => {{
                 const tl = String(t).trim().toLowerCase();
@@ -5808,7 +6221,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (meta.year) badgesHtml += `<span class="meta-pill year-pill">&#128197; ${{escapeHtml(meta.year)}}</span>`;
             if (meta.rating) badgesHtml += `<span class="meta-pill rating-pill">&#11088; ${{escapeHtml(meta.rating)}}</span>`;
             genres.forEach(g => {{
-                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Click to filter by genre: ${{escapeHtml(g)}}">&#127916; ${{escapeHtml(g)}}</span>`;
+                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Category / Folder: ${{escapeHtml(g)}} (Click to filter)"><span class="cat-pill-prefix">&#128193; CAT:</span><span class="cat-pill-name">${{escapeHtml(g)}}</span></span>`;
             }});
             tags.forEach(t => {{
                 const tl = String(t).trim().toLowerCase();
@@ -5986,9 +6399,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const treeTagsHtml = `
                 <div class="folder-tags-cluster">
                     ${{commonTags.map(t => `
-                        <span class="tree-tag-chip" title="Tag shared by all ${{descendantFiles.length}} videos in this folder (Click &times; to remove from all)">
+                        <span class="tree-tag-chip" title="Tag shared by all ${{descendantFiles.length}} videos in this folder">
                             &#127991; ${{escapeHtml(t)}}
-                            <span class="tree-tag-remove" onclick="removeTagFromFolder('${{escapeHtml(folderPath)}}', '${{escapeHtml(t)}}', event)">&times;</span>
+                            <span class="tree-tag-edit" onclick="promptRenameTag('${{escapeHtml(t)}}', event)" title="Rename tag '${{escapeHtml(t)}}' across all videos">&#9998;</span>
+                            <span class="tree-tag-remove" onclick="removeTagFromFolder('${{escapeHtml(folderPath)}}', '${{escapeHtml(t)}}', event)" title="Remove from this folder">&times;</span>
                         </span>
                     `).join('')}}
                     <button type="button" class="btn-tree-add-tag" onclick="promptAddTagToFolder('${{escapeHtml(folderPath)}}', event)" title="Add a tag to all videos in this folder in bulk">+ Tag</button>
@@ -6259,9 +6673,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             <span style="${{isHidden ? 'color: #9ca3af; text-decoration: line-through;' : ''}}">${{escapeHtml(t)}}</span>
                             <span class="popover-item-count">(${{tagCounts[t]}})</span>
                         </label>
-                        <button type="button" class="btn-tag-hide-toggle ${{isHidden ? 'is-hidden' : ''}}" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Tag is hidden on cards. Click to show on all cards' : 'Hide this tag across all video cards'}}">
-                            ${{isHidden ? '&#128584; Hidden' : '&#128065;&#65039; Hide'}}
-                        </button>
+                        <div class="popover-item-actions" style="display: flex; gap: 4px; align-items: center;">
+                            <button type="button" class="btn-tag-edit-mini" onclick="promptRenameTag('${{escapeHtml(t)}}', event)" title="Rename / edit tag '${{escapeHtml(t)}}' across all videos">&#9998;</button>
+                            <button type="button" class="btn-tag-hide-toggle ${{isHidden ? 'is-hidden' : ''}}" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Tag is hidden on cards. Click to show on all cards' : 'Hide this tag across all video cards'}}">
+                                ${{isHidden ? '&#128584; Hidden' : '&#128065;&#65039; Hide'}}
+                            </button>
+                        </div>
                     </div>`;
                 }}).join('') || '<div style="color: #6b7280; font-size: 0.78rem; padding: 6px;">No tags found</div>';
             }}
@@ -7826,6 +8243,279 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         /* Edit Metadata Functions */
+        function cleanTitleExtension(str) {{
+            if (!str) return '';
+            let clean = String(str).trim();
+            clean = clean.replace(/\.(mp4|mkv|avi|mov|flv|webm|ts|m4a|wmv|strm|nfo)$/i, '');
+            clean = clean.replace(/\.(mp4|mkv|avi|mov|flv|webm|ts|m4a|wmv|strm|nfo)$/i, '');
+            return clean.trim();
+        }}
+
+        function setEditTitle(name) {{
+            const input = document.getElementById('editTitle');
+            if (input) {{
+                input.value = name;
+                input.focus();
+                input.select();
+                input.style.borderColor = '#10b981';
+                input.style.boxShadow = '0 0 10px rgba(16, 185, 129, 0.4)';
+                setTimeout(() => {{
+                    input.style.borderColor = '';
+                    input.style.boxShadow = '';
+                }}, 800);
+                showToast(`Title set to: "${{name}}". Edit freely to fix typos.`, 'info');
+                const key = document.getElementById('editKey').value;
+                const file = allFiles.find(f => f.key === key);
+                if (file) {{
+                    updateCandidateTitlePicker(file, key);
+                }}
+            }}
+        }}
+
+        function cleanCurrentEditTitle() {{
+            const input = document.getElementById('editTitle');
+            if (input && input.value) {{
+                let cleaned = cleanTitleExtension(input.value);
+                cleaned = cleaned.replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
+                input.value = cleaned;
+                input.focus();
+                showToast('Cleaned current title', 'info');
+            }}
+        }}
+
+        function updateCandidateTitlePicker(file, key) {{
+            const box = document.getElementById('aliasTitlePickerBox');
+            const list = document.getElementById('aliasTitlePickerList');
+            if (!box || !list) return;
+
+            const meta = file.metadata || {{}};
+            const candidateNames = [];
+            const seenNames = new Set();
+            function addCandidate(raw) {{
+                if (!raw) return;
+                const cleaned = cleanTitleExtension(raw);
+                if (cleaned && !seenNames.has(cleaned.toLowerCase())) {{
+                    seenNames.add(cleaned.toLowerCase());
+                    candidateNames.push(cleaned);
+                }}
+            }}
+
+            if (meta.title) addCandidate(meta.title);
+            const keyStem = key.split('/').pop().split('\\').pop();
+            addCandidate(keyStem);
+
+            (file.aliases || []).forEach(a => addCandidate(a));
+            (file.file_names || []).forEach(fn => addCandidate(fn));
+
+            const curVal = (document.getElementById('editTitle').value || '').trim();
+            if (candidateNames.length > 0) {{
+                box.style.display = 'block';
+                list.innerHTML = candidateNames.map(n => {{
+                    const isCurrent = (n.toLowerCase() === curVal.toLowerCase());
+                    return `
+                    <button type="button" class="btn-use-alias-title ${{isCurrent ? 'is-active-title' : ''}}" 
+                            onclick="setEditTitle('${{escapeHtml(n)}}')" 
+                            title="Click to set this name as the title (without extension)">
+                        ${{isCurrent ? '&#10003;' : '&#9998;'}} ${{escapeHtml(n)}}
+                    </button>`;
+                }}).join('');
+            }} else {{
+                box.style.display = 'none';
+            }}
+        }}
+
+        async function promptRenameTag(oldTag, event) {{
+            if (event) event.stopPropagation();
+            const newTag = prompt(`Rename tag "${{oldTag}}" across all videos in your library to:`, oldTag);
+            if (!newTag || newTag.trim() === '' || newTag.trim() === oldTag) return;
+            const cleanNew = newTag.trim();
+
+            try {{
+                showToast(`Renaming tag "${{oldTag}}" to "${{cleanNew}}"...`, 'info');
+                const resp = await fetch('/api/tags/rename', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ old_tag: oldTag, new_tag: cleanNew }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(res.message || `Renamed tag to "${{cleanNew}}"`, 'success');
+                    allFiles.forEach(f => {{
+                        if (f.metadata && f.metadata.tags) {{
+                            f.metadata.tags = f.metadata.tags.map(t => (t.toLowerCase() === oldTag.toLowerCase() ? cleanNew : t));
+                            f.metadata.tags = Array.from(new Set(f.metadata.tags));
+                        }}
+                    }});
+                    if (hiddenTagsSet.has(oldTag)) {{
+                        hiddenTagsSet.delete(oldTag);
+                        hiddenTagsSet.add(cleanNew);
+                        saveHiddenTags();
+                    }}
+                    if (selectedTags.has(oldTag)) {{
+                        selectedTags.delete(oldTag);
+                        selectedTags.add(cleanNew);
+                    }}
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                }} else {{
+                    alert(res.message || 'Error renaming tag');
+                }}
+            }} catch (e) {{
+                alert('Rename tag failed: ' + e);
+            }}
+        }}
+
+        let mergeSelectedTags = new Set();
+
+        function openMergeTagsModal(event) {{
+            if (event) event.stopPropagation();
+            closeAllPopovers();
+            mergeSelectedTags = new Set(selectedTags);
+            renderMergeTagList();
+            const input = document.getElementById('mergeTargetTagInput');
+            if (input) input.value = '';
+            updateMergeTargetSuggestions();
+            updateMergeBtnState();
+            document.getElementById('mergeTagsModal').style.display = 'flex';
+        }}
+
+        function closeMergeTagsModal() {{
+            document.getElementById('mergeTagsModal').style.display = 'none';
+        }}
+
+        function renderMergeTagList(filterText = '') {{
+            const container = document.getElementById('mergeTagList');
+            if (!container) return;
+
+            const tagCounts = {{}};
+            allFiles.forEach(f => {{
+                (f.metadata?.tags || []).forEach(t => {{
+                    const st = String(t).trim();
+                    if (st) tagCounts[st] = (tagCounts[st] || 0) + 1;
+                }});
+            }});
+
+            const ft = filterText.toLowerCase().trim();
+            const tags = Object.keys(tagCounts).sort((a, b) => a.localeCompare(b)).filter(t => {{
+                return !ft || t.toLowerCase().includes(ft);
+            }});
+
+            if (tags.length === 0) {{
+                container.innerHTML = '<div style="color: #6b7280; font-size: 0.78rem; padding: 8px;">No tags found</div>';
+                return;
+            }}
+
+            container.innerHTML = tags.map(t => {{
+                const checked = mergeSelectedTags.has(t);
+                return `
+                <label style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; border-radius: 4px; cursor: pointer; user-select: none; ${{checked ? 'background: rgba(147, 51, 234, 0.22);' : ''}}">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" ${{checked ? 'checked' : ''}} onchange="toggleMergeTagItem('${{escapeHtml(t)}}', this.checked)">
+                        <span style="font-size: 0.82rem; color: #f3f4f6;">${{escapeHtml(t)}}</span>
+                    </div>
+                    <span style="font-size: 0.72rem; color: #9ca3af;">${{tagCounts[t]}} video(s)</span>
+                </label>`;
+            }}).join('');
+
+            const countEl = document.getElementById('mergeSelectedCount');
+            if (countEl) countEl.textContent = `${{mergeSelectedTags.size}} selected`;
+        }}
+
+        function filterMergeTagList(val) {{
+            renderMergeTagList(val);
+        }}
+
+        function toggleMergeTagItem(tag, isChecked) {{
+            if (isChecked) {{
+                mergeSelectedTags.add(tag);
+            }} else {{
+                mergeSelectedTags.delete(tag);
+            }}
+            const countEl = document.getElementById('mergeSelectedCount');
+            if (countEl) countEl.textContent = `${{mergeSelectedTags.size}} selected`;
+            updateMergeTargetSuggestions();
+            updateMergeBtnState();
+        }}
+
+        function updateMergeTargetSuggestions() {{
+            const sugContainer = document.getElementById('mergeTargetSuggestions');
+            if (!sugContainer) return;
+            if (mergeSelectedTags.size === 0) {{
+                sugContainer.innerHTML = '';
+                return;
+            }}
+            sugContainer.innerHTML = Array.from(mergeSelectedTags).map(t => `
+                <button type="button" class="tool-btn btn-xs" onclick="setMergeTargetName('${{escapeHtml(t)}}')" title="Use '${{escapeHtml(t)}}' as the target merged tag name" style="padding: 2px 8px; font-size: 0.72rem;">
+                    Use "${{escapeHtml(t)}}"
+                </button>
+            `).join('');
+        }}
+
+        function setMergeTargetName(name) {{
+            const input = document.getElementById('mergeTargetTagInput');
+            if (input) {{
+                input.value = name;
+                updateMergeBtnState();
+            }}
+        }}
+
+        function updateMergeBtnState() {{
+            const btn = document.getElementById('btnSubmitMergeTags');
+            const input = document.getElementById('mergeTargetTagInput');
+            if (!btn || !input) return;
+            const hasTarget = input.value.trim().length > 0;
+            const hasSources = mergeSelectedTags.size >= 1;
+            btn.disabled = !(hasTarget && hasSources);
+        }}
+
+        async function submitMergeTags() {{
+            const input = document.getElementById('mergeTargetTagInput');
+            const targetTag = input ? input.value.trim() : '';
+            const sourceTags = Array.from(mergeSelectedTags);
+            if (!targetTag || sourceTags.length === 0) return;
+
+            if (!confirm(`Merge ${{sourceTags.length}} tag(s):\n\n[ ${{sourceTags.join(', ')}} ]\n\ninto single tag "${{targetTag}}"?\n\nThis will update all videos in upload_manifest.json and rewrite Jellyfin .nfo files.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast(`Merging ${{sourceTags.length}} tags into "${{targetTag}}"...`, 'info');
+                const resp = await fetch('/api/tags/merge', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ source_tags: sourceTags, target_tag: targetTag }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(res.message || `Successfully merged tags into "${{targetTag}}"`, 'success');
+                    closeMergeTagsModal();
+                    const srcLowers = new Set(sourceTags.map(st => st.toLowerCase()));
+                    allFiles.forEach(f => {{
+                        if (f.metadata && f.metadata.tags) {{
+                            const hadAny = f.metadata.tags.some(t => srcLowers.has(t.toLowerCase()));
+                            if (hadAny) {{
+                                f.metadata.tags = f.metadata.tags.filter(t => !srcLowers.has(t.toLowerCase()));
+                                if (!f.metadata.tags.includes(targetTag)) {{
+                                    f.metadata.tags.push(targetTag);
+                                }}
+                            }}
+                        }}
+                    }});
+                    sourceTags.forEach(st => {{
+                        hiddenTagsSet.delete(st);
+                        selectedTags.delete(st);
+                    }});
+                    saveHiddenTags();
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                }} else {{
+                    alert(res.message || 'Error merging tags');
+                }}
+            }} catch (e) {{
+                alert('Merge tags request failed: ' + e);
+            }}
+        }}
+
         function promptEditMetadata(key) {{
             const file = allFiles.find(f => f.key === key);
             if (!file) return;
@@ -7847,6 +8537,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 aliasesBox.style.display = 'block';
                 renderEditAliases(key, aliases);
             }}
+
+            updateCandidateTitlePicker(file, key);
 
             renderEditSubtitles(key, file.subtitles || []);
             resetSubUploadForm();
@@ -8222,12 +8914,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 listEl.innerHTML = '<span style="font-size: 0.78rem; color: #6b7280; font-style: italic;">No filenames registered</span>';
                 return;
             }}
-            listEl.innerHTML = aliasArr.map(a => `
+            listEl.innerHTML = aliasArr.map(a => {{
+                const cleanName = cleanTitleExtension(a);
+                return `
                 <span class="alias-pill">
                     &#128206; <span>${{escapeHtml(a)}}</span>
+                    <button type="button" class="alias-use-title-btn" onclick="setEditTitle('${{escapeHtml(cleanName)}}')" title="Set this filename as Title (without extension)">&#9998; Use as Title</button>
                     <button type="button" class="alias-del-btn" onclick="promptRemoveAlias(event, '${{escapeHtml(fileKey)}}', '${{escapeHtml(a)}}')" title="Remove this unsuitable filename">&times;</button>
-                </span>
-            `).join('');
+                </span>`;
+            }}).join('');
         }}
 
         let aliasActionInProgress = false;
