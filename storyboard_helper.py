@@ -293,6 +293,11 @@ def probe_duration(input_source: str) -> float:
 def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_path: str = None, overwrite: bool = False) -> bool:
     ck = clean_key(key)
     safe_id = get_safe_id(ck)
+    # If video has a companion screens/poster image, NEVER generate an ffmpeg storyboard!
+    import screens_helper
+    if screens_helper.has_screens(safe_id):
+        return False
+
     jpg_path = os.path.join(STORYBOARD_DIR, f"{safe_id}.jpg")
     json_path = os.path.join(STORYBOARD_DIR, f"{safe_id}.json")
 
@@ -397,6 +402,11 @@ def trigger_priority_storyboard(key: str, duration: float = 0, port: int = 8080,
     """Submits the storyboard generation to the PRIORITY pool for the currently active/watched video."""
     ck = clean_key(key)
     safe_id = get_safe_id(ck)
+    # Do not trigger storyboard if companion screen exists
+    import screens_helper
+    if screens_helper.has_screens(safe_id):
+        return
+
     jpg_path = os.path.join(STORYBOARD_DIR, f"{safe_id}.jpg")
     if os.path.exists(jpg_path):
         return
@@ -422,9 +432,12 @@ def prewarm_all_storyboards(manifest_path="upload_manifest.json", port: int = 80
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
             files = list(manifest.get("files", {}).items())
+            import screens_helper
             for k, info in files:
                 ck = clean_key(k)
                 safe_id = get_safe_id(ck)
+                if screens_helper.has_screens(safe_id):
+                    continue
                 jpg_path = os.path.join(STORYBOARD_DIR, f"{safe_id}.jpg")
                 if not os.path.exists(jpg_path):
                     time.sleep(1.2)

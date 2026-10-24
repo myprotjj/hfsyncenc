@@ -2859,6 +2859,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(400, "Missing key parameter")
             return
 
+        safe_id = storyboard_helper.get_safe_id(key)
+        if screens_helper.has_screens(safe_id):
+            resp_body = json.dumps({"available": False, "has_screens": True, "safe_id": safe_id}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_body)
+            return
+
         meta = storyboard_helper.get_storyboard_meta(key)
         if not meta.get("available"):
             port = self.server.server_address[1] if hasattr(self.server, "server_address") else 8080
@@ -2917,6 +2928,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             safe_id = storyboard_helper.get_safe_id(key)
 
         img_path = screens_helper.get_screens_path(safe_id) if safe_id else None
+
+        # 1. Check local search folders if not in storyboards/screens
+        if not img_path or not os.path.exists(img_path):
+            manifest = load_manifest()
+            for k, info in manifest.get("files", {}).items():
+                if storyboard_helper.get_safe_id(k) == safe_id or k == key:
+                    matched = screens_helper.find_matching_screens_file(Path(k))
+                    if matched and matched.is_file():
+                        screens_helper.process_screens_image(matched, safe_id)
+                        img_path = screens_helper.get_screens_path(safe_id)
+                    break
+
+        # 2. Check cloud Hugging Face dataset
         if not img_path or not os.path.exists(img_path):
             manifest = load_manifest()
             target_info = None
@@ -2930,27 +2954,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 try:
                     repo_id = screens_info.get("repo_id")
                     blob_path = screens_info.get("blob_path")
-                    acc_owner = screens_info.get("account")
-                    accounts = get_all_accounts()
-                    token = None
-                    for a in accounts:
-                        if a.get("username") == acc_owner:
-                            token = a.get("token")
-                            break
-                    if not token and accounts:
-                        token = accounts[0].get("token")
-
-                    api = HfApi(token=token)
+                    api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                     local_downloaded = api.hf_hub_download(repo_id=repo_id, filename=blob_path, repo_type="dataset")
                     temp_plain = os.path.join(screens_helper.SCREENS_DIR, f"{safe_id}.jpg")
-                    crypto_engine.decrypt_file(local_downloaded, temp_plain, ENCRYPTION_PASSWORD)
+                    crypto_engine.decrypt_file(local_downloaded, temp_plain, self.password)
                     screens_helper.process_screens_image(Path(temp_plain), safe_id)
-                    img_path = temp_plain
+                    img_path = screens_helper.get_screens_path(safe_id)
                 except Exception as e:
-                    print(f"[!] Warning on-demand restoring screens {safe_id}: {e}")
-
-        if not img_path or not os.path.exists(img_path):
-            img_path = storyboard_helper.get_storyboard_image_path(safe_id) if safe_id else None
+                    logger.warning("Could not restore cloud screens for image %s: %s", safe_id, e)
 
         if not img_path or not os.path.exists(img_path):
             self.send_error(404, "Screens image not found")
@@ -3264,8 +3275,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         duration_str = format_duration(dur_sec)
 
                 safe_id = storyboard_helper.get_safe_id(key)
-                has_sb_flag = bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key)
-                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id) or has_sb_flag
+                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+                has_sb_flag = False if has_screens_flag else (bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key))
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
@@ -3393,8 +3404,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         duration_str = format_duration(dur_sec)
 
                 safe_id = storyboard_helper.get_safe_id(key)
-                has_sb_flag = bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key)
-                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id) or has_sb_flag
+                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+                has_sb_flag = False if has_screens_flag else (bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key))
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
@@ -8120,13 +8131,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (!modal || !img) return;
 
             const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
-            const sb = storyboardCache[safeId];
             let url = '';
-            if (sb && sb.sprite_url) {{
-                url = sb.sprite_url;
+            // 1. Companion screen image ALWAYS takes top priority!
+            if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
+                url = fileObj.screens_url || `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }} else if (fileObj && fileObj.has_storyboard) {{
-                const v = fileObj.sb_version || Date.now();
-                url = `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{v}}`;
+                const sb = storyboardCache[safeId];
+                url = (sb && sb.sprite_url) ? sb.sprite_url : `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{fileObj.sb_version || Date.now()}}`;
             }} else {{
                 url = `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }}
@@ -8194,13 +8205,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (!overlay) return;
 
             const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
-            const sb = storyboardCache[safeId];
             let screensUrl = '';
-            if (sb && sb.sprite_url) {{
-                screensUrl = sb.sprite_url;
+            // 1. Companion screen image ALWAYS takes top priority!
+            if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
+                screensUrl = fileObj.screens_url || `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }} else if (fileObj && fileObj.has_storyboard) {{
-                const v = fileObj.sb_version || Date.now();
-                screensUrl = `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{v}}`;
+                const sb = storyboardCache[safeId];
+                screensUrl = (sb && sb.sprite_url) ? sb.sprite_url : `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{fileObj.sb_version || Date.now()}}`;
             }} else {{
                 screensUrl = `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }}
@@ -10231,6 +10242,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const safeId = card.dataset.safeid;
             const canvas = card.querySelector('.thumb-canvas');
             if (!canvas) return;
+
+            const fileObj = (allFiles || []).find(f => (f.safe_id === safeId || f.key === key));
+            // If the video already has companion screens, do NOT generate or poll ffmpeg storyboards!
+            if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
+                return;
+            }}
 
             // Remember initial static poster background
             if (!canvas.dataset.staticBg || canvas.dataset.staticBg === 'none' || canvas.dataset.staticBg === '') {{
