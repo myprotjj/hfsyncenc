@@ -113,7 +113,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 master_repo = self.acc_mgr.get_master_repo_id() if hasattr(self, "acc_mgr") and self.acc_mgr else (os.getenv("REPO_ID") or f"{self.hf_username}/{self.default_repo}")
                 api = self.acc_mgr.get_api_for_repo(master_repo) if hasattr(self, "acc_mgr") and self.acc_mgr else HfApi(token=self.token)
                 manifest = load_manifest()
-                metadata_helper.sync_master_manifest_to_hf(api, master_repo, manifest, self.password)
+                master_pw = self.acc_mgr.get_password_for_repo(master_repo) if hasattr(self, "acc_mgr") and self.acc_mgr else self.password
+                metadata_helper.sync_master_manifest_to_hf(api, master_repo, manifest, master_pw)
             except Exception as e:
                 logger.warning("Error updating master index: %s", e)
 
@@ -222,7 +223,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if hdr_bytes and len(hdr_bytes) == crypto_engine.HEADER_SIZE:
                 try:
                     hdr = crypto_engine.read_header(hdr_bytes)
-                    key = crypto_engine.derive_key(self.password, hdr["salt"])
+                    repo_pw = self.acc_mgr.get_password_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
+                    key = crypto_engine.derive_key(repo_pw, hdr["salt"])
                     aesgcm = AESGCM(key)
                     metadata = {
                         "header": hdr,
@@ -267,7 +269,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         try:
             hdr = crypto_engine.read_header(resp.content)
-            key = crypto_engine.derive_key(self.password, hdr["salt"])
+            repo_pw = self.acc_mgr.get_password_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
+            key = crypto_engine.derive_key(repo_pw, hdr["salt"])
             aesgcm = AESGCM(key)
             stream_cache.write_header_bytes(cache_id, resp.content, hdr["total_size"], hdr["chunk_size"])
         except Exception as e:
@@ -394,6 +397,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_delete_skipped()
         elif path == "/api/accounts/add":
             self.handle_accounts_add()
+        elif path == "/api/accounts/update-key":
+            self.handle_accounts_update_key()
         elif path == "/api/accounts/toggle":
             self.handle_accounts_toggle()
         elif path == "/api/accounts/set-primary":
@@ -2912,7 +2917,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         log_msg(f"🔐 Building unified Master Index for '{master_repo}'...", stage="master_index", percent=90)
         try:
             master_api = self.acc_mgr.get_api_for_repo(master_repo)
-            metadata_helper.sync_master_manifest_to_hf(master_api, master_repo, manifest, self.password)
+            master_pw = self.acc_mgr.get_password_for_repo(master_repo)
+            metadata_helper.sync_master_manifest_to_hf(master_api, master_repo, manifest, master_pw)
             log_msg(f"✅ Canonical Master Index successfully committed and synced to '{master_repo}'!", stage="master_index", percent=96)
         except Exception as me:
             err_m = str(me)
@@ -3583,6 +3589,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             req_data = json.loads(body)
             token = req_data.get("token", "").strip()
             is_upload = bool(req_data.get("is_upload", False))
+            password = req_data.get("password", "").strip() or None
         except Exception:
             self.send_error(400, "Invalid JSON payload")
             return
@@ -3592,7 +3599,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            res = self.acc_mgr.add_account(token=token, is_upload=is_upload)
+            res = self.acc_mgr.add_account(token=token, is_upload=is_upload, password=password)
             if is_upload:
                 self.token = self.acc_mgr.upload_token
                 self.hf_username = self.acc_mgr.primary_username
@@ -3602,7 +3609,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             activity_tracker.tracker.add_event(
                 "info",
                 f"Account Connected: {acc_user}",
-                f"{desc_role} (Scanning repositories in background)",
+                f"{desc_role} (Key: {'Custom' if res.get('has_custom_key') else 'Master'})",
                 account=acc_user
             )
 
@@ -3627,7 +3634,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 "success": True,
                 "account": res,
                 "discovered": 0,
-                "message": f"Successfully connected '{acc_user}'! Scanning vault repositories in background."
+                "message": res.get("message") or f"Successfully connected '{acc_user}'!"
             }).encode("utf-8")
 
         except Exception as e:
@@ -3635,6 +3642,43 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 "success": False,
                 "message": str(e)
             }).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_accounts_update_key(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            username = req_data.get("username", "").strip()
+            password = req_data.get("password", "").strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not username:
+            self.send_error(400, "Missing 'username'")
+            return
+
+        try:
+            res = self.acc_mgr.update_account_password(username, password)
+            if res.get("discarded_count", 0) > 0:
+                self.sync_master_index_to_cloud(async_mode=True)
+            activity_tracker.tracker.add_event(
+                "info",
+                f"Encryption Key Updated: {username}",
+                f"{'Custom key set' if res.get('has_custom_key') else 'Reset to master key'}. {res.get('discarded_count', 0)} undecryptable file(s) discarded.",
+                account=username
+            )
+            activity_tracker.tracker.notify_manifest_updated()
+            resp_body = json.dumps(res).encode("utf-8")
+        except Exception as e:
+            resp_body = json.dumps({"success": False, "message": str(e)}).encode("utf-8")
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -3747,7 +3791,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     continue
 
                 verifier = info.get("verifier")
-                can_decrypt = crypto_engine.verify_password(verifier, self.password) if verifier else True
+                acc_pw = self.acc_mgr.get_password_for_repo(repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
+                can_decrypt = crypto_engine.verify_password(verifier, acc_pw) if verifier else True
+                if not can_decrypt:
+                    continue
 
                 size_bytes = info.get("orig_size", 0)
                 hf_url = f"https://huggingface.co/datasets/{repo}/blob/main/{blob}" if (blob and blob != "unknown") else f"https://huggingface.co/datasets/{repo}"
@@ -3888,7 +3935,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     metadata["overview"] = ""
 
                 verifier = info.get("verifier")
-                can_decrypt = crypto_engine.verify_password(verifier, self.password) if verifier else True
+                acc_pw = self.acc_mgr.get_password_for_repo(repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
+                can_decrypt = crypto_engine.verify_password(verifier, acc_pw) if verifier else True
+                if not can_decrypt:
+                    continue
 
                 account_owner = info.get("account") or (repo.split("/")[0] if "/" in repo else self.hf_username)
 
@@ -8681,7 +8731,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <button onclick="closeAccountsModal()" class="tool-btn btn-xs" style="font-size: 1.1rem; padding: 2px 8px;">&times;</button>
             </div>
             <p style="margin-top: 0; margin-bottom: 16px; font-size: 0.84rem; color: var(--text-muted); line-height: 1.5;">
-                Connect multiple Hugging Face accounts to distribute storage. All accounts share your master encryption password. New video uploads always route to your <b>Primary Upload Account (&#128081;)</b>.
+                Connect multiple Hugging Face accounts to distribute storage. Each account can have its own dedicated encryption key or inherit the Master Password. Keys are verified instantly against existing repositories.
             </p>
 
             <!-- Accounts List -->
@@ -8698,6 +8748,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <label class="form-label">Hugging Face Access Token</label>
                     <input type="password" id="newAccountToken" class="form-input" placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
                 </div>
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>Encryption Key (Password)</span>
+                        <span style="font-weight: normal; font-size: 0.74rem; color: var(--text-muted);">Optional (defaults to Master Password)</span>
+                    </label>
+                    <input type="password" id="newAccountPassword" class="form-input" placeholder="Leave empty to use Master Password" autocomplete="off">
+                </div>
                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
                     <label style="display: flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer; color: var(--text);">
                         <input type="checkbox" id="chkSetPrimary" style="cursor: pointer;">
@@ -8711,6 +8768,32 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             <div class="modal-actions" style="margin-top: 18px;">
                 <button onclick="closeAccountsModal()" class="tool-btn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Account Encryption Key Modal -->
+    <div id="editKeyModal" class="modal-overlay" style="z-index: 1200; display: none;">
+        <div class="modal" style="max-width: 520px; width: 92vw; background: #0b1120; border: 1px solid #1e293b; box-shadow: 0 20px 60px rgba(0,0,0,0.85); padding: 22px; border-radius: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+                <h3 style="color: #38bdf8; margin: 0; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;">
+                    🔑 Account Encryption Key
+                </h3>
+                <button onclick="closeEditKeyModal()" class="tool-btn btn-xs" style="font-size: 1.1rem; padding: 2px 8px;">&times;</button>
+            </div>
+            <p style="font-size: 0.84rem; color: var(--text-muted); line-height: 1.5; margin-top: 0; margin-bottom: 14px;">
+                Configure a dedicated encryption key for <b id="lblEditKeyUsername" style="color: #fff;"></b>. The key is verified instantly against existing repositories. Any files that cannot be decrypted using this key will be discarded from the index.
+            </p>
+            <div class="form-group" style="margin-bottom: 12px;">
+                <label class="form-label">Encryption Key (Password)</label>
+                <input type="password" id="inputEditKeyPassword" class="form-input" placeholder="Enter key (leave empty to reset to Master Password)" autocomplete="off">
+            </div>
+            <div id="editKeyStatusMsg" style="font-size: 0.82rem; margin-bottom: 14px; min-height: 20px;"></div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button onclick="closeEditKeyModal()" class="tool-btn">Cancel</button>
+                <button id="btnSaveAccountKey" onclick="submitEditAccountKey()" class="btn btn-play" style="padding: 8px 18px;">
+                    Verify &amp; Save Key
+                </button>
             </div>
         </div>
     </div>
@@ -15398,6 +15481,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 ${{isPrimary ? '<span class="account-pill is-primary" style="font-size: 0.68rem;">👑 Primary Uploader</span>' : ''}}
                                 ${{isEnabled ? '<span class="meta-pill genre-pill" style="font-size: 0.68rem;">Active</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: #374151; color: #9ca3af;">Disabled</span>'}}
                                 ${{acc.can_write ? '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3);">&#9997;&#65039; Write</span>' : `<span class="meta-pill" style="font-size: 0.68rem; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3);" title="${{escapeHtml(acc.role_desc || 'Read-Only')}}">&#128274; Read-Only (Write Disabled)</span>`}}
+                                ${{acc.has_custom_key ? '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">🔑 Custom Key</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25);">🔑 Master Key</span>'}}
                             </div>
                             <div class="acc-token">
                                 Token: ${{escapeHtml(acc.token_masked)}} &bull; Hosted: ${{acc.video_count || 0}} videos (${{acc.size_str || '0 MB'}})
@@ -15405,6 +15489,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         </div>
                     </div>
                     <div class="acc-actions">
+                        <button onclick="openEditKeyModal('${{escapeHtml(acc.username)}}', ${{Boolean(acc.has_custom_key)}})" class="btn btn-link btn-xs" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" title="Configure dedicated encryption key for this account">
+                            🔑 Key
+                        </button>
                         ${{!isPrimary ? `
                             <button onclick="setPrimaryAccount('${{escapeHtml(acc.username)}}')" class="btn btn-link btn-xs" title="Make this account the primary uploader">
                                 👑 Make Primary
@@ -15423,9 +15510,66 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}).join('');
         }}
 
+        let activeEditKeyUser = '';
+        function openEditKeyModal(username, hasCustom) {{
+            activeEditKeyUser = username;
+            const modal = document.getElementById('editKeyModal');
+            document.getElementById('lblEditKeyUsername').innerText = username;
+            const input = document.getElementById('inputEditKeyPassword');
+            input.value = '';
+            input.placeholder = hasCustom ? 'Enter new key (or leave empty to reset to Master Key)' : 'Leave empty to keep Master Key';
+            const statusMsg = document.getElementById('editKeyStatusMsg');
+            statusMsg.innerHTML = hasCustom ? '<span style="color: #c084fc;">This account is currently using a <b>Dedicated Custom Encryption Key</b>.</span>' : '<span style="color: #38bdf8;">This account is currently using the shared <b>Master Password</b>.</span>';
+            modal.style.display = 'flex';
+        }}
+
+        function closeEditKeyModal() {{
+            const modal = document.getElementById('editKeyModal');
+            if (modal) modal.style.display = 'none';
+        }}
+
+        async function submitEditAccountKey() {{
+            if (!activeEditKeyUser) return;
+            const btn = document.getElementById('btnSaveAccountKey');
+            const input = document.getElementById('inputEditKeyPassword');
+            const statusMsg = document.getElementById('editKeyStatusMsg');
+            const newPassword = input.value;
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> Verifying key...';
+            statusMsg.innerHTML = '<span style="color: #38bdf8;">⚡ Instant Verification: Testing key against cloud repository files...</span>';
+
+            try {{
+                const res = await fetch('/api/accounts/update-key', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ username: activeEditKeyUser, password: newPassword }})
+                }});
+                const result = await res.json();
+                if (result.success) {{
+                    statusMsg.innerHTML = `<span style="color: #4ade80;">✅ ${{escapeHtml(result.message)}}</span>`;
+                    showToast(`🔑 Key updated for '${{activeEditKeyUser}}'`);
+                    setTimeout(() => {{
+                        closeEditKeyModal();
+                        loadAccountsList();
+                        reloadFilesList();
+                    }}, 1200);
+                }} else {{
+                    statusMsg.innerHTML = `<span style="color: #f87171;">❌ ${{escapeHtml(result.message || 'Key verification failed.')}}</span>`;
+                }}
+            }} catch (err) {{
+                statusMsg.innerHTML = `<span style="color: #f87171;">❌ Network error: ${{escapeHtml(err.message)}}</span>`;
+            }} finally {{
+                btn.disabled = false;
+                btn.innerHTML = 'Verify &amp; Save Key';
+            }}
+        }}
+
         async function submitAddAccount() {{
             const tokenInput = document.getElementById('newAccountToken');
             const token = tokenInput.value.trim();
+            const passwordElem = document.getElementById('newAccountPassword');
+            const password = passwordElem ? passwordElem.value.trim() : '';
             const isUpload = document.getElementById('chkSetPrimary').checked;
             const btn = document.getElementById('btnAddAccount');
 
@@ -15435,19 +15579,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
 
             const origText = btn.innerHTML;
-            btn.innerHTML = 'Connecting...';
+            btn.innerHTML = '<span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> Verifying &amp; Connecting...';
             btn.disabled = true;
 
             try {{
                 const res = await fetch('/api/accounts/add', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ token: token, is_upload: isUpload }})
+                    body: JSON.stringify({{ token: token, is_upload: isUpload, password: password }})
                 }});
                 const result = await res.json();
                 if (result.success) {{
                     showToast(`✅ Connected account: ${{result.account.username}}`);
                     tokenInput.value = '';
+                    if (passwordElem) passwordElem.value = '';
                     document.getElementById('chkSetPrimary').checked = false;
                     await loadAccountsList();
                     await reloadFilesList();
@@ -15673,7 +15818,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 return
 
             enc_bytes = resp.content
-            dec_bytes = crypto_engine.decrypt_bytes(enc_bytes, self.password)
+            sub_pw = self.acc_mgr.get_password_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
+            dec_bytes = crypto_engine.decrypt_bytes(enc_bytes, sub_pw)
             sub_text = companion_helper.decode_subtitle_bytes(dec_bytes)
             vtt_text = companion_helper.srt_to_webvtt(sub_text)
             body = vtt_text.encode("utf-8")

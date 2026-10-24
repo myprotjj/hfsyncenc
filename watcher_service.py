@@ -1063,7 +1063,7 @@ def watch_and_sync(
     hf_username = upload_acc["username"]
     token = upload_acc["token"]
     api = upload_acc["api"]
-    password = password or acc_mgr.password
+    password = acc_mgr.get_password_for_account(hf_username) or password or acc_mgr.password
 
     if not password:
         print("[!] Error: ENCRYPTION_PASSWORD not found.")
