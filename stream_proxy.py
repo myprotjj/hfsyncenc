@@ -843,13 +843,43 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "overview": overview
         }
 
-        # Resolve conflicts / clear obsolete duplicate names if requested
+        # Resolve conflicts & canonicalize filename to chosen title if requested
         old_aliases = list(file_info.get("aliases") or [])
         old_file_names = list(file_info.get("file_names") or [])
         blob_path = file_info.get("blob_path") or file_info.get("remote_path")
         media_hash = file_info.get("media_hash") or file_info.get("content_hash")
+        old_key = key
+        target_key = key
 
-        if resolve_conflicts and (old_aliases or len(old_file_names) > 1):
+        if resolve_conflicts:
+            safe_title = "".join([c for c in title if c.isalnum() or c in " ._-'()"]).strip()
+            if safe_title:
+                parent_dir = str(Path(key).parent).replace("\\", "/")
+                parent_dir = "" if parent_dir == "." else parent_dir
+                ext = Path(key).suffix or ".mp4"
+                cand_key = f"{parent_dir}/{safe_title}{ext}".lstrip("/")
+                target_key = cand_key
+
+            # If target_key differs from key, rename on disk and manifest to eliminate "(2)" conflict
+            if target_key != key:
+                old_strm = Path("jellyfin_library") / f"{key}.strm"
+                if old_strm.exists():
+                    try: old_strm.unlink()
+                    except Exception: pass
+                metadata_helper.delete_nfo_files("jellyfin_library", key)
+
+                manifest["files"].pop(key, None)
+                FILE_CACHE.pop(key, None)
+                manifest["files"][target_key] = file_info
+                FILE_CACHE[target_key] = file_info
+
+                new_strm = Path("jellyfin_library") / f"{target_key}.strm"
+                new_strm.parent.mkdir(parents=True, exist_ok=True)
+                port = self.server.server_port if hasattr(self.server, "server_port") else 8080
+                strm_url = f"http://127.0.0.1:{port}/stream/{quote(target_key)}"
+                new_strm.write_text(strm_url, encoding="utf-8")
+                key = target_key
+
             canonical_files = set()
             try:
                 canonical_files.add((Path("jellyfin_library") / f"{key}.strm").resolve())
@@ -903,6 +933,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             file_info["aliases"] = []
             file_info["file_names"] = [key]
 
+        if media_hash:
+            for table in ("media_hashes", "content_hashes", "fingerprints"):
+                if table in manifest:
+                    manifest[table][media_hash] = file_info
+
         # Update manifest & record verifier
         file_info["metadata"] = clean_meta
         file_info["verifier"] = crypto_engine.create_verifier(self.password)
@@ -910,7 +945,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         # Write clean Jellyfin NFO files (.nfo, .mp4.nfo, .strm.nfo)
         try:
-            metadata_helper.write_nfo_files("jellyfin_library", key, clean_meta)
+            metadata_helper.write_nfo_files("jellyfin_library", key, clean_meta, media_info=file_info.get("media_info"))
         except Exception as e:
             logger.warning("Error writing NFO for %s: %s", key, e)
 
@@ -937,6 +972,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         resp_body = json.dumps({
             "success": True,
             "key": key,
+            "old_key": old_key,
             "metadata": clean_meta,
             "aliases": file_info.get("aliases", []),
             "file_names": file_info.get("file_names", [key]),
@@ -7426,9 +7462,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             setupAZInteractions(azAvailableMap);
 
             // Initialize buffer on initial visible letter if not yet set
-            if (!currentActiveLetter) {{
-                const sortedAvail = AZ_LETTERS.filter(c => azAvailableMap.has(c));
-                if (sortedAvail.length > 0) {{
+            const sortedAvail = AZ_LETTERS.filter(c => azAvailableMap.has(c));
+            if (sortedAvail.length > 0) {{
+                if (topFolders.length <= 3) {{
+                    topFolders.forEach(fg => openFolderElement(fg));
+                }} else if (!currentActiveLetter) {{
                     currentActiveLetter = sortedAvail[0];
                     applyBufferedLetterWindow(currentActiveLetter);
                 }}
@@ -7570,15 +7608,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (topFolders.length === 0) return;
 
             let detectedLetter = null;
-            for (let i = 0; i < topFolders.length; i++) {{
-                const rect = topFolders[i].getBoundingClientRect();
-                if (rect.top <= 250 && rect.bottom > 80) {{
-                    detectedLetter = topFolders[i].getAttribute('data-letter');
-                    break;
+            const scrollBottom = window.innerHeight + window.scrollY;
+            const docHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
+            const isNearBottom = (scrollBottom >= docHeight - 80);
+
+            if (isNearBottom) {{
+                detectedLetter = topFolders[topFolders.length - 1].getAttribute('data-letter');
+            }} else {{
+                for (let i = 0; i < topFolders.length; i++) {{
+                    const rect = topFolders[i].getBoundingClientRect();
+                    if (rect.top <= (window.innerHeight * 0.45) && rect.bottom > 50) {{
+                        detectedLetter = topFolders[i].getAttribute('data-letter');
+                    }}
                 }}
-                if (rect.top > 250 && !detectedLetter) {{
-                    detectedLetter = topFolders[0].getAttribute('data-letter');
-                    break;
+                if (!detectedLetter) {{
+                    for (let i = 0; i < topFolders.length; i++) {{
+                        const rect = topFolders[i].getBoundingClientRect();
+                        if (rect.top >= 0 && rect.top < window.innerHeight) {{
+                            detectedLetter = topFolders[i].getAttribute('data-letter');
+                            break;
+                        }}
+                    }}
                 }}
             }}
 
@@ -8516,7 +8566,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
             const cleanTitle = title.trim().toLowerCase();
-            const showSubtitle = (cleanNode !== cleanTitle && nodeName.trim().toLowerCase() !== cleanTitle);
+            const strippedNode = cleanNode.replace(/\s*\(\d+\)$/, '').trim();
+            const showSubtitle = (cleanNode !== cleanTitle && strippedNode !== cleanTitle && nodeName.trim().toLowerCase() !== cleanTitle);
             const subtitleHtml = showSubtitle ? `<div class="video-card-sub" title="${{escapeHtml(nodeName)}}">${{escapeHtml(nodeName)}}</div>` : '';
 
             const ov = (meta.overview || "").trim();
@@ -9363,28 +9414,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const isCurrentlyOpen = arrow ? arrow.classList.contains('open') : false;
 
             if (isCurrentlyOpen) {{
-                // Close this folder
                 closeFolderElement(folderGroup);
                 openedTreesQueue = openedTreesQueue.filter(p => p !== folderPath);
                 saveOpenedTrees();
             }} else {{
-                // Open this folder
                 openFolderElement(folderGroup);
-
-                // Add to queue (remove first if already exists to push to most recent)
-                openedTreesQueue = openedTreesQueue.filter(p => p !== folderPath);
-                openedTreesQueue.push(folderPath);
-
-                // FIFO: Max 3 trees can be open at one time; opening 4th will close earliest one
-                while (openedTreesQueue.length > MAX_OPEN_TREES) {{
-                    const oldestPath = openedTreesQueue.shift();
-                    const oldestEl = findFolderGroup(oldestPath);
-                    if (oldestEl) {{
-                        closeFolderElement(oldestEl);
-                    }}
+                const letter = folderGroup.getAttribute('data-letter');
+                if (letter && folderGroup.classList.contains('top-level-folder')) {{
+                    currentActiveLetter = letter;
+                    applyBufferedLetterWindow(letter);
+                }} else {{
+                    openedTreesQueue = openedTreesQueue.filter(p => p !== folderPath);
+                    openedTreesQueue.push(folderPath);
+                    saveOpenedTrees();
                 }}
-
-                saveOpenedTrees();
                 saveLastInteractedTree(folderPath);
             }}
         }}
@@ -10808,8 +10851,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             (file.aliases || []).forEach(a => addCandidate(a));
             (file.file_names || []).forEach(fn => addCandidate(fn));
 
-            const curVal = (document.getElementById('editTitle').value || '').trim();
-            const alternateNames = candidateNames.filter(n => n.toLowerCase() !== curVal.toLowerCase());
+            const curVal = (document.getElementById('editTitle').value || '').trim().toLowerCase();
+            const cleanCurVal = curVal.replace(/\s*\(\d+\)$/, '').trim();
+            const alternateNames = candidateNames.filter(n => {{
+                const nl = n.toLowerCase();
+                const stripped = nl.replace(/\s*\(\d+\)$/, '').trim();
+                return nl !== curVal && stripped !== cleanCurVal;
+            }});
 
             if (alternateNames.length > 0) {{
                 box.style.display = 'block';
@@ -12378,17 +12426,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }});
                 const result = await res.json();
                 if (result && result.success) {{
-                    const f = allFiles.find(item => item.key === editingKey);
+                    const newKey = result.key || editingKey;
+                    const oldKey = result.old_key || editingKey;
+
+                    const f = allFiles.find(item => item.key === oldKey);
                     if (f) {{
+                        f.key = newKey;
+                        f.name = newKey.split('/').pop();
                         f.metadata = result.metadata;
-                        if (result.aliases !== undefined) f.aliases = result.aliases;
-                        if (result.file_names !== undefined) f.file_names = result.file_names;
+                        f.aliases = result.aliases !== undefined ? result.aliases : [];
+                        f.file_names = result.file_names !== undefined ? result.file_names : [newKey];
                     }}
-                    if (typeof FILE_CACHE !== 'undefined' && FILE_CACHE && FILE_CACHE[editingKey]) {{
-                        FILE_CACHE[editingKey].metadata = result.metadata;
-                        if (result.aliases !== undefined) FILE_CACHE[editingKey].aliases = result.aliases;
-                        if (result.file_names !== undefined) FILE_CACHE[editingKey].file_names = result.file_names;
+                    if (typeof FILE_CACHE !== 'undefined' && FILE_CACHE) {{
+                        if (oldKey !== newKey) delete FILE_CACHE[oldKey];
+                        if (f) FILE_CACHE[newKey] = f;
                     }}
+                    editingKey = newKey;
                     populateFilterDropdowns();
                     refreshTreeDisplay();
                     filterTree();
