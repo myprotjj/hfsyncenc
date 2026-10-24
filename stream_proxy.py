@@ -4595,6 +4595,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             border-radius: 10px;
             padding: 16px;
             min-height: 200px;
+            overflow-anchor: auto;
         }}
         .tree-node {{ margin-left: 20px; }}
         .folder-header {{
@@ -7386,12 +7387,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
     <script>
 
-        /* Android-style A-Z Fast Scroller & Fluid Viewport Auto-Expand */
+        /* Android-style A-Z Fast Scroller with 1-Letter Lookahead & Lookbehind Buffer Engine */
         const AZ_LETTERS = ['#', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
         let azScrollTimeout = null;
         let isUserInteractingWithAZ = false;
         let azBubbleHideTimeout = null;
-        let folderIntersectionObserver = null;
+        let azAvailableMap = new Map();
+        let currentActiveLetter = null;
+        let bufferedScrollThrottleTimeout = null;
 
         function updateAZScroller() {{
             const rail = document.getElementById('azScrollerRail');
@@ -7406,26 +7409,72 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             rail.style.display = 'flex';
 
-            const availableMap = new Map();
+            azAvailableMap = new Map();
             topFolders.forEach(fg => {{
                 const letter = fg.getAttribute('data-letter') || '#';
-                if (!availableMap.has(letter)) {{
-                    availableMap.set(letter, fg);
+                if (!azAvailableMap.has(letter)) {{
+                    azAvailableMap.set(letter, fg);
                 }}
             }});
 
             container.innerHTML = AZ_LETTERS.map(char => {{
-                const isAvail = availableMap.has(char);
+                const isAvail = azAvailableMap.has(char);
                 return `<div class="az-letter-item ${{isAvail ? 'available' : 'disabled'}}" data-char="${{char}}" title="${{isAvail ? 'Jump to ' + char : 'No folders starting with ' + char}}">${{char}}</div>`;
             }}).join('');
 
             // Attach event listeners for click and scrub
-            setupAZInteractions(availableMap);
+            setupAZInteractions(azAvailableMap);
+
+            // Initialize buffer on initial visible letter if not yet set
+            if (!currentActiveLetter) {{
+                const sortedAvail = AZ_LETTERS.filter(c => azAvailableMap.has(c));
+                if (sortedAvail.length > 0) {{
+                    currentActiveLetter = sortedAvail[0];
+                    applyBufferedLetterWindow(currentActiveLetter);
+                }}
+            }}
+        }}
+
+        /* Expands 1 letter above (-1), current letter (0), and 1 letter below (+1) where data is available.
+           All expansion and collapse happens offscreen in the background, ensuring 100% zero jitter / zero glitter! */
+        function applyBufferedLetterWindow(centerLetter) {{
+            if (!centerLetter || userExplicitExpandAll) return;
+
+            // Ordered list of available letters that have data
+            const availableLetters = AZ_LETTERS.filter(char => azAvailableMap.has(char));
+            const idx = availableLetters.indexOf(centerLetter);
+            if (idx === -1) return;
+
+            const prevLetter = idx > 0 ? availableLetters[idx - 1] : null;
+            const nextLetter = idx < availableLetters.length - 1 ? availableLetters[idx + 1] : null;
+
+            const lettersToKeepOpen = new Set([prevLetter, centerLetter, nextLetter].filter(Boolean));
+
+            // Expand letters in buffer window, collapse letters outside window in background
+            const topFolders = document.querySelectorAll('.top-level-folder');
+            topFolders.forEach(fg => {{
+                const letter = fg.getAttribute('data-letter');
+                const shouldBeOpen = lettersToKeepOpen.has(letter);
+                const children = fg.querySelector(':scope > .folder-children');
+                const isCollapsed = children ? children.classList.contains('collapsed') : false;
+
+                if (shouldBeOpen && isCollapsed) {{
+                    openFolderElement(fg);
+                }} else if (!shouldBeOpen && !isCollapsed) {{
+                    closeFolderElement(fg);
+                }}
+            }});
+
+            // Save active trees in local storage
+            openedTreesQueue = Array.from(lettersToKeepOpen);
+            saveOpenedTrees();
         }}
 
         function jumpToAZLetter(char, availableMap, letterEl) {{
-            const target = availableMap.get(char);
+            const target = (availableMap || azAvailableMap).get(char);
             if (!target) return;
+
+            currentActiveLetter = char;
 
             // Magnifier bubble
             const bubble = document.getElementById('azMagnifierBubble');
@@ -7444,7 +7493,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
             }}
 
-            // Highlight current
+            // Highlight current in rail
             document.querySelectorAll('.az-letter-item').forEach(el => {{
                 if (el.getAttribute('data-char') === char) {{
                     el.classList.add('current');
@@ -7453,23 +7502,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
             }});
 
+            // Expand current + 1 above + 1 below immediately in background so scrolling into target is instant
+            applyBufferedLetterWindow(char);
+
             // Smooth scroll to target
             target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-
-            // Fluid behavior: Expand the target, collapse offscreen folders
-            openFolderElement(target);
-            const folderPath = target.getAttribute('data-folder');
-            if (folderPath) {{
-                openedTreesQueue = [folderPath];
-                saveOpenedTrees();
-            }}
-
-            const allTop = document.querySelectorAll('.top-level-folder');
-            allTop.forEach(fg => {{
-                if (fg !== target) {{
-                    closeFolderElement(fg);
-                }}
-            }});
         }}
 
         function setupAZInteractions(availableMap) {{
@@ -7492,7 +7529,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const letterEl = el.closest('.az-letter-item');
                 if (letterEl && letterEl.classList.contains('available')) {{
                     const char = letterEl.getAttribute('data-char');
-                    if (char) {{
+                    if (char && char !== currentActiveLetter) {{
                         jumpToAZLetter(char, availableMap, letterEl);
                     }}
                 }}
@@ -7532,64 +7569,40 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const topFolders = Array.from(document.querySelectorAll('.top-level-folder:not(.is-filter-hidden)'));
             if (topFolders.length === 0) return;
 
-            let currentLetter = null;
+            let detectedLetter = null;
             for (let i = 0; i < topFolders.length; i++) {{
                 const rect = topFolders[i].getBoundingClientRect();
                 if (rect.top <= 250 && rect.bottom > 80) {{
-                    currentLetter = topFolders[i].getAttribute('data-letter');
+                    detectedLetter = topFolders[i].getAttribute('data-letter');
                     break;
                 }}
-                if (rect.top > 250 && !currentLetter) {{
-                    currentLetter = topFolders[0].getAttribute('data-letter');
+                if (rect.top > 250 && !detectedLetter) {{
+                    detectedLetter = topFolders[0].getAttribute('data-letter');
                     break;
                 }}
             }}
-            if (currentLetter) {{
+
+            if (detectedLetter && detectedLetter !== currentActiveLetter) {{
+                currentActiveLetter = detectedLetter;
                 document.querySelectorAll('.az-letter-item').forEach(el => {{
-                    if (el.getAttribute('data-char') === currentLetter) {{
+                    if (el.getAttribute('data-char') === detectedLetter) {{
                         el.classList.add('current');
                     }} else {{
                         el.classList.remove('current');
                     }}
                 }});
-            }}
-        }}
 
-        function setupFluidFolderObserver() {{
-            if (folderIntersectionObserver) {{
-                folderIntersectionObserver.disconnect();
-            }}
-
-            const topFolders = document.querySelectorAll('.top-level-folder');
-            if (topFolders.length === 0) return;
-
-            folderIntersectionObserver = new IntersectionObserver((entries) => {{
-                if (isUserInteractingWithAZ || userExplicitExpandAll) return;
-
-                entries.forEach(entry => {{
-                    const fg = entry.target;
-                    if (entry.isIntersecting && entry.intersectionRatio >= 0.25) {{
-                        // On-screen: auto-expand
-                        if (fg.querySelector(':scope > .folder-children.collapsed')) {{
-                            openFolderElement(fg);
-                        }}
-                    }} else if (!entry.isIntersecting) {{
-                        // Off-screen: auto-collapse for fluid performance
-                        if (!fg.querySelector(':scope > .folder-children.collapsed')) {{
-                            closeFolderElement(fg);
-                        }}
+                // Smooth background pre-expansion buffer for 1 above and 1 below (debounced 100ms)
+                clearTimeout(bufferedScrollThrottleTimeout);
+                bufferedScrollThrottleTimeout = setTimeout(() => {{
+                    if (!isUserInteractingWithAZ) {{
+                        applyBufferedLetterWindow(detectedLetter);
                     }}
-                }});
-            }}, {{
-                root: null,
-                rootMargin: "60px 0px 60px 0px",
-                threshold: [0, 0.25, 0.7]
-            }});
-
-            topFolders.forEach(fg => folderIntersectionObserver.observe(fg));
+                }}, 100);
+            }}
         }}
 
-        // Listen for window scroll to wake up A-Z scroller and update active letter
+        // Listen for window scroll to wake up A-Z scroller and update active letter & lookahead buffer
         window.addEventListener('scroll', () => {{
             const rail = document.getElementById('azScrollerRail');
             if (rail) {{
@@ -7603,6 +7616,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
             updateCurrentVisibleLetter();
         }}, {{ passive: true }});
+
         function openScreensModal(safeId, title, event) {{
             if (event) event.stopPropagation();
             const modal = document.getElementById('screensModal');
@@ -9330,9 +9344,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
             applyHideTagsState();
 
-            // Android-style A-Z Fast Scroller & Fluid Viewport Auto-Expand
+            // Android-style A-Z Fast Scroller with 1-Letter Lookahead Buffer
             updateAZScroller();
-            setupFluidFolderObserver();
         }}
 
         function toggleFolder(header) {{
