@@ -5199,13 +5199,21 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             bottom: 0;
             left: 0;
             width: 100%;
-            height: 6px;
+            height: 7px;
             background: rgba(255, 255, 255, 0.25);
             opacity: 0;
             transition: opacity 0.15s, height 0.15s;
             pointer-events: auto;
             cursor: pointer;
-            z-index: 5;
+            z-index: 10;
+        }}
+        .thumb-scrub-bar::before {{
+            content: '';
+            position: absolute;
+            top: -10px;
+            bottom: 0;
+            left: 0;
+            right: 0;
         }}
         .card-thumb-wrap:hover .thumb-scrub-bar,
         .list-thumb-wrap:hover .thumb-scrub-bar,
@@ -5213,7 +5221,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             opacity: 1;
         }}
         .thumb-scrub-bar:hover {{
-            height: 10px;
+            height: 12px;
+            background: rgba(255, 255, 255, 0.4);
         }}
         .thumb-scrub-fill {{
             height: 100%;
@@ -9079,12 +9088,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                      onmouseenter="handleThumbEnter(this)"
                      onmouseleave="handleThumbLeave(this)"
                      onmousemove="handleThumbMove(this, event)"
-                     title="Click to play from scrub position">
+                     title="Click to play / resume (click bottom blue bar to play from scrub position)">
                     <div class="thumb-canvas" id="thumb-canvas-${{safeId}}" style="${{thumbBgStyle}}">
                         ${{fallbackHtml}}
                     </div>
                     <div class="thumb-screens-overlay" id="screens-overlay-${{safeId}}"></div>
-                    <div class="thumb-scrub-bar">
+                    <div class="thumb-scrub-bar" title="Click blue scrub bar to play from this position">
                         <div class="thumb-scrub-fill"></div>
                     </div>
                     <div class="thumb-overlay-play">
@@ -9264,12 +9273,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                      onmouseenter="handleThumbEnter(this)"
                      onmouseleave="handleThumbLeave(this)"
                      onmousemove="handleThumbMove(this, event)"
-                     title="Click to play from scrub position">
+                     title="Click to play / resume (click bottom blue bar to play from scrub position)">
                     <div class="thumb-canvas" id="thumb-canvas-${{safeId}}" style="${{thumbBgStyle}}">
                         ${{fallbackHtml}}
                     </div>
                     <div class="thumb-screens-overlay" id="screens-overlay-list-${{safeId}}"></div>
-                    <div class="thumb-scrub-bar">
+                    <div class="thumb-scrub-bar" title="Click blue scrub bar to play from this position">
                         <div class="thumb-scrub-fill"></div>
                     </div>
                     <div class="thumb-overlay-play">
@@ -10294,6 +10303,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             
             card.dataset.lastScrubPct = pct;
             card.dataset.scrubbing = '1';
+            const isNearScrubBar = (event.clientY >= rect.bottom - 18) || Boolean(event.target && event.target.closest && event.target.closest('.thumb-scrub-bar'));
+            card.dataset.overScrub = isNearScrubBar ? '1' : '0';
             setThumbCardFrame(card, frameIndex);
 
             thumbManualScrubTimeout = setTimeout(() => {{
@@ -10319,6 +10330,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 activeHoveredThumb = null;
             }}
             delete card.dataset.scrubbing;
+            delete card.dataset.overScrub;
             const canvas = card.querySelector('.thumb-canvas');
             if (canvas) {{
                 if (canvas.dataset.staticBg && canvas.dataset.staticBg !== 'none' && canvas.dataset.staticBg !== '') {{
@@ -10615,23 +10627,25 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const blobPath = fileObj ? (fileObj.blob_path || '') : '';
             const dur = fileObj ? (fileObj.duration_sec || 0) : 0;
 
-            const clickedScrubBar = Boolean(event && event.target && event.target.closest('.thumb-scrub-bar'));
-            const isActivelyScrubbing = card.classList.contains('is-scrubbing') || (card.dataset.scrubbing === '1');
+            const rect = card.getBoundingClientRect();
+            // Strictly detect if user specifically clicked in the blue line area / scrub seekbar
+            const clickedOnScrubBar = Boolean(event && event.target && event.target.closest && event.target.closest('.thumb-scrub-bar'))
+                || (card.dataset.overScrub === '1')
+                || (event && typeof event.clientY === 'number' && (event.clientY >= rect.bottom - 18));
 
             let seekTime = 0;
             const savedPos = getSavedVideoPosition(safeId);
 
-            if (clickedScrubBar) {{
-                const scrubBar = card.querySelector('.thumb-scrub-bar') || card;
-                const rect = scrubBar.getBoundingClientRect();
+            if (clickedOnScrubBar && event && typeof event.clientX === 'number') {{
+                // ONLY play from scrub location when clicking on the blue scrub seekbar
                 const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-                seekTime = Math.floor(pct * dur);
+                seekTime = Math.max(0, Math.floor(pct * dur));
             }} else if (savedPos && savedPos.time > 5) {{
+                // Otherwise play from where left earlier (resume position)
                 seekTime = savedPos.time;
-            }} else if (isActivelyScrubbing && event && event.clientX) {{
-                const rect = card.getBoundingClientRect();
-                const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-                seekTime = Math.floor(pct * dur);
+            }} else {{
+                // Or start from the beginning (0:00)
+                seekTime = 0;
             }}
             playVideo('/stream/' + key, title, blobPath, seekTime);
         }}
