@@ -336,6 +336,8 @@ class AccountManager:
                     if existing:
                         if existing.get("media_info") and not rec.get("media_info"):
                             rec["media_info"] = existing["media_info"]
+                        if existing.get("extra_media_hashes") and not rec.get("extra_media_hashes"):
+                            rec["extra_media_hashes"] = list(existing["extra_media_hashes"])
                         ex_meta = existing.get("metadata", {})
                         if ex_meta:
                             rec_meta = rec.get("metadata", {})
@@ -355,6 +357,14 @@ class AccountManager:
                         if "media_hashes" not in manifest:
                             manifest["media_hashes"] = {}
                         manifest["media_hashes"][media_hash] = rec
+
+                    # Register any extra media hashes (from duplicate merges) so they are never re-uploaded
+                    for eh in rec.get("extra_media_hashes", []):
+                        eh_val = eh.get("hash") if isinstance(eh, dict) else str(eh)
+                        if eh_val:
+                            if "media_hashes" not in manifest:
+                                manifest["media_hashes"] = {}
+                            manifest["media_hashes"][eh_val] = rec
 
                     if library_dir:
                         strm_path = Path(library_dir) / f"{key}.strm"

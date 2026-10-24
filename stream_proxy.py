@@ -1,6 +1,10 @@
 import os
 import sys
+import time
 import json
+import logging
+
+logger = logging.getLogger("stream_proxy")
 import shutil
 import mimetypes
 import re
@@ -339,6 +343,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_delete_tag_category()
         elif path == "/api/tag-category/rename":
             self.handle_rename_tag_category()
+        elif path == "/api/videos/merge":
+            self.handle_merge_videos()
+        elif path == "/api/videos/unlink-hash":
+            self.handle_unlink_video_hash()
         else:
             self.send_error(404, "Not Found")
 
@@ -1739,6 +1747,295 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "new_name": new_name,
             "updated_count": len(updated_keys),
             "message": f"Successfully renamed {'category' if is_genre else 'tag'} '{old_name}' to '{new_name}' across {len(updated_keys)} video(s)."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_merge_videos(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            keep_key = str(req_data.get("keep_key", "")).strip()
+            discard_keys = req_data.get("discard_keys", [])
+            delete_remote = bool(req_data.get("delete_remote", True))
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not keep_key:
+            self.send_error(400, "Missing 'keep_key' in request")
+            return
+
+        if not isinstance(discard_keys, list) or not discard_keys:
+            self.send_error(400, "Missing or empty 'discard_keys' list")
+            return
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        if keep_key not in files:
+            self.send_error(404, f"Keep key '{keep_key}' not found in manifest")
+            return
+
+        keep_record = files[keep_key]
+        keep_record.setdefault("extra_media_hashes", [])
+        keep_record.setdefault("aliases", [])
+        keep_record.setdefault("file_names", [keep_key])
+
+        existing_hashes = set()
+        for h in keep_record.get("extra_media_hashes", []):
+            val = h.get("hash") if isinstance(h, dict) else h
+            if val:
+                existing_hashes.add(val)
+        primary_hash = keep_record.get("media_hash") or keep_record.get("content_hash")
+        if primary_hash:
+            existing_hashes.add(primary_hash)
+
+        merged_hashes = []
+        discarded_info_list = []
+
+        for disc_key in discard_keys:
+            if disc_key == keep_key:
+                continue
+            if disc_key not in files:
+                continue
+
+            disc_record = files[disc_key]
+            disc_hash = disc_record.get("media_hash") or disc_record.get("content_hash")
+            disc_name = Path(disc_key).name
+            res_label = (disc_record.get("media_info") or {}).get("resolution_label") or (disc_record.get("metadata") or {}).get("resolution") or ""
+            size_bytes = disc_record.get("orig_size") or 0
+
+            # 1. Add discarded video's media hash to keep_record["extra_media_hashes"]
+            if disc_hash and disc_hash not in existing_hashes:
+                entry = {
+                    "hash": disc_hash,
+                    "source_key": disc_key,
+                    "source_name": disc_name,
+                    "merged_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "resolution": res_label,
+                    "orig_size": size_bytes,
+                    "repo_id": disc_record.get("repo_id", "")
+                }
+                keep_record["extra_media_hashes"].append(entry)
+                existing_hashes.add(disc_hash)
+                merged_hashes.append(disc_hash)
+
+            # 2. Carry over any hashes previously merged into the discarded record
+            for prev_h in disc_record.get("extra_media_hashes", []):
+                val = prev_h.get("hash") if isinstance(prev_h, dict) else prev_h
+                if val and val not in existing_hashes:
+                    entry = prev_h if isinstance(prev_h, dict) else {
+                        "hash": val,
+                        "source_key": disc_key,
+                        "source_name": disc_name,
+                        "merged_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    keep_record["extra_media_hashes"].append(entry)
+                    existing_hashes.add(val)
+                    merged_hashes.append(val)
+
+            # 3. Add filename and aliases to keep_record
+            if disc_name and disc_name not in keep_record["aliases"] and disc_name != Path(keep_key).name:
+                keep_record["aliases"].append(disc_name)
+            for a in disc_record.get("aliases", []):
+                if a and a not in keep_record["aliases"] and a != Path(keep_key).name:
+                    keep_record["aliases"].append(a)
+
+            # Also maintain file_names list
+            if disc_key not in keep_record["file_names"]:
+                keep_record["file_names"].append(disc_key)
+
+            # 4. Remove physical files in jellyfin_library for discarded video
+            library_dir = "jellyfin_library"
+            try:
+                disc_strm = os.path.join(library_dir, f"{disc_key}.strm")
+                if os.path.exists(disc_strm):
+                    os.remove(disc_strm)
+                for nfo_suffix in [".nfo", ".strm.nfo"]:
+                    disc_nfo = os.path.join(library_dir, f"{disc_key}{nfo_suffix}")
+                    if os.path.exists(disc_nfo):
+                        os.remove(disc_nfo)
+                disc_thumb = os.path.join(library_dir, f"{Path(disc_key).stem}-thumb.jpg")
+                if os.path.exists(disc_thumb):
+                    os.remove(disc_thumb)
+            except Exception as e:
+                logger.warning("Error cleaning local library files for discarded %s: %s", disc_key, e)
+
+            discarded_info_list.append({
+                "key": disc_key,
+                "repo_id": disc_record.get("repo_id"),
+                "blob_path": disc_record.get("blob_path"),
+                "audio": disc_record.get("audio", {}).get("blob_path"),
+                "storyboard": disc_record.get("storyboard", {}).get("blob_path"),
+                "screens": disc_record.get("screens", {}).get("blob_path"),
+            })
+
+            # 5. Remove discarded key from manifest
+            del files[disc_key]
+
+        # 6. Register all merged hashes in manifest["media_hashes"] pointing to keep_record
+        if "media_hashes" not in manifest:
+            manifest["media_hashes"] = {}
+        if primary_hash:
+            manifest["media_hashes"][primary_hash] = keep_record
+        for mh in merged_hashes:
+            manifest["media_hashes"][mh] = keep_record
+
+        # 7. Update verifier and save manifest
+        keep_record["verifier"] = crypto_engine.create_verifier(self.password)
+        files[keep_key] = keep_record
+        save_manifest(manifest)
+
+        # 8. Re-write Jellyfin NFO files for keep_record
+        try:
+            metadata_helper.write_nfo_files(library_dir, keep_key, keep_record.get("metadata", {}))
+        except Exception as e:
+            logger.warning("Error updating NFO for %s after merge: %s", keep_key, e)
+
+        # 9. Background thread: Sync keep_record metadata to HF & Delete remote discarded blobs
+        def _bg_merge_cloud(keep_k, keep_rec, disc_list, do_del_remote):
+            try:
+                repo_id = keep_rec.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                blob_path = keep_rec.get("blob_path") or keep_rec.get("remote_path")
+                if blob_path:
+                    metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, keep_rec, self.password)
+
+                # Sync repo index for keep_record
+                m = load_manifest()
+                repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == repo_id}
+                metadata_helper.sync_repo_manifest_to_hf(api, repo_id, repo_files, self.password)
+
+                # Delete remote discarded blobs if requested
+                if do_del_remote:
+                    for disc_item in disc_list:
+                        d_repo = disc_item.get("repo_id")
+                        if not d_repo:
+                            continue
+                        d_api = self.acc_mgr.get_api_for_repo(d_repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        blobs_to_delete = [
+                            disc_item.get("blob_path"),
+                            disc_item.get("audio"),
+                            disc_item.get("storyboard"),
+                            disc_item.get("screens"),
+                        ]
+                        if disc_item.get("blob_path"):
+                            blobs_to_delete.append(disc_item.get("blob_path").replace(".enc", ".meta.enc"))
+
+                        for b in blobs_to_delete:
+                            if b:
+                                try:
+                                    d_api.delete_file(path_in_repo=b, repo_id=d_repo, repo_type="dataset")
+                                except Exception:
+                                    pass
+
+                        # Update repo manifest for discarded repo if different from keep_repo
+                        if d_repo != repo_id:
+                            d_repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == d_repo}
+                            metadata_helper.sync_repo_manifest_to_hf(d_api, d_repo, d_repo_files, self.password)
+            except Exception as ex:
+                logger.warning("Background cloud merge sync warning: %s", ex)
+
+        threading.Thread(target=_bg_merge_cloud, args=(keep_key, dict(keep_record), discarded_info_list, delete_remote), daemon=True).start()
+
+        activity_tracker.tracker.add_event(
+            "info",
+            "Videos Merged",
+            f"Merged {len(discarded_info_list)} duplicate(s) into '{Path(keep_key).name}'. Retained {len(merged_hashes)} sparse hash(es)."
+        )
+
+        resp = {
+            "success": True,
+            "keep_key": keep_key,
+            "merged_count": len(discarded_info_list),
+            "merged_hashes": merged_hashes,
+            "extra_media_hashes": keep_record.get("extra_media_hashes", []),
+            "message": f"Successfully merged {len(discarded_info_list)} duplicate video(s) into '{Path(keep_key).name}'."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_unlink_video_hash(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            key = str(req_data.get("key", "")).strip()
+            target_hash = str(req_data.get("hash", "")).strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not key or not target_hash:
+            self.send_error(400, "Both 'key' and 'hash' are required")
+            return
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        if key not in files:
+            self.send_error(404, f"Video key '{key}' not found in manifest")
+            return
+
+        record = files[key]
+        extra_hashes = record.get("extra_media_hashes", [])
+        
+        # Remove target hash
+        new_extra = []
+        removed = False
+        for h in extra_hashes:
+            val = h.get("hash") if isinstance(h, dict) else h
+            if val == target_hash:
+                removed = True
+            else:
+                new_extra.append(h)
+
+        record["extra_media_hashes"] = new_extra
+
+        # Remove from manifest["media_hashes"] if it points to this record
+        if "media_hashes" in manifest and target_hash in manifest["media_hashes"]:
+            del manifest["media_hashes"][target_hash]
+
+        record["verifier"] = crypto_engine.create_verifier(self.password)
+        files[key] = record
+        save_manifest(manifest)
+
+        # Background sync updated metadata to HF
+        def _bg_sync(k, rec):
+            try:
+                repo_id = rec.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                blob_path = rec.get("blob_path") or rec.get("remote_path")
+                if blob_path:
+                    metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, rec, self.password)
+            except Exception as ex:
+                logger.warning("Background unlink hash sync warning: %s", ex)
+
+        threading.Thread(target=_bg_sync, args=(key, dict(record)), daemon=True).start()
+
+        activity_tracker.tracker.add_event(
+            "info",
+            "Hash Unlinked",
+            f"Unlinked fingerprint '{target_hash[:16]}...' from '{Path(key).name}'."
+        )
+
+        resp = {
+            "success": True,
+            "removed": removed,
+            "key": key,
+            "hash": target_hash,
+            "extra_media_hashes": new_extra,
+            "message": f"Successfully unlinked hash '{target_hash[:16]}...'. This video file can now be synced independently again."
         }
         resp_body = json.dumps(resp).encode("utf-8")
         self.send_response(200)
@@ -6313,6 +6610,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </div>
 
                 <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn" title="Toggle tag badges visibility on video cards">&#127991; Tags: <span id="tagsStateLabel">Shown</span></button>
+                <button onclick="openMergeVideosModal(null, event)" class="tool-btn" title="Merge duplicate videos across library and lock hashes">&#128256; Merge Videos</button>
                 <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
                 <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
                 <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
@@ -6393,6 +6691,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <span>Resolve conflict on Save: remove conflicting filenames and keep only chosen title</span>
                     </label>
                 </div>
+            </div>
+
+            <!-- Merged Duplicate Hashes & Fingerprints Section -->
+            <div id="editLinkedHashesBox" style="margin-bottom: 16px; background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 12px 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <div style="font-size: 0.78rem; font-weight: 600; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px;">
+                        <span>&#128279; Merged Hashes &amp; Duplicate Fingerprints</span>
+                        <span id="linkedHashesBadge" class="badge badge-info" style="font-size: 0.65rem; padding: 1px 6px;">0</span>
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-xs" onclick="openMergeVideosModal(document.getElementById('editKey').value, event)" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); font-size: 0.72rem; padding: 2px 8px;" title="Merge another duplicate into this video and lock its hash">
+                        &#128256; Merge Duplicate Video
+                    </button>
+                </div>
+                <div style="font-size: 0.72rem; color: #94a3b8; margin-bottom: 8px;">
+                    Sparse hashes from merged duplicate videos. Files with these hashes are automatically recognized and prevented from re-uploading. You can unlink any hash if merged mistakenly.
+                </div>
+                <div id="editLinkedHashesList" style="display: flex; flex-direction: column; gap: 6px;"></div>
             </div>
 
             <div class="form-row">
@@ -6536,6 +6851,119 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <button type="button" id="btnSubmitMergeTags" onclick="submitMergeTags()" class="btn btn-play" style="background: #9333ea; border-color: #a855f7; padding: 8px 18px;" disabled>
                     &#128256; Merge Tags
                 </button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Merge Duplicate Videos Modal -->
+    <div id="mergeVideosModal" class="modal-overlay" style="display: none; z-index: 1160;">
+        <div class="modal" style="max-width: 820px; width: 95%;">
+            <div class="modal-header">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div>
+                        <h3 style="color: #a855f7; margin: 0 0 4px 0; display: flex; align-items: center; gap: 8px;">
+                            <span>&#128256; Merge Duplicate Videos</span>
+                            <span class="badge badge-purple" style="font-size: 0.65rem;">Fingerprint Lock</span>
+                        </h3>
+                        <span style="font-size: 0.8rem; color: #9ca3af;">
+                            Select which version to keep (e.g. higher resolution or preferred encode). Discarded duplicates will have their media hashes permanently linked so they never re-upload.
+                        </span>
+                    </div>
+                    <button type="button" onclick="closeMergeVideosModal()" class="tool-btn btn-xs" style="font-size: 1.1rem; padding: 2px 8px; line-height: 1;">&times;</button>
+                </div>
+            </div>
+
+            <div class="modal-body" style="padding-top: 10px;">
+                <!-- Compare Side-by-Side Cards -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;" id="mergeComparisonGrid">
+                    
+                    <!-- Left Video Card: Video 1 -->
+                    <div id="mergeCardA" class="merge-video-card" style="background: rgba(15, 23, 42, 0.7); border: 2px solid #a855f7; border-radius: 10px; padding: 12px; position: relative;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-size: 0.72rem; font-weight: 700; color: #c084fc; text-transform: uppercase;">Video 1</span>
+                            <span id="mergeStatusA" class="badge badge-success" style="font-size: 0.70rem; padding: 2px 8px;">👑 Keep this video</span>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                            <div id="mergeThumbA" style="width: 100px; height: 60px; background: #1e293b; border-radius: 6px; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center;">
+                                <span style="font-size: 1.4rem;">🎬</span>
+                            </div>
+                            <div style="flex: 1; min-width: 0;">
+                                <div id="mergeTitleA" style="font-size: 0.9rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">-</div>
+                                <div id="mergeKeyA" style="font-size: 0.72rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">-</div>
+                            </div>
+                        </div>
+                        <div id="mergeBadgesA" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px;"></div>
+                        <button type="button" id="btnChooseA" onclick="setMergeKeepChoice('A')" class="btn btn-sm" style="width: 100%; background: #10b981; color: #fff; font-weight: 700; padding: 6px 10px; border-radius: 6px;">
+                            ✓ Keep Video 1 (Canonical)
+                        </button>
+                    </div>
+
+                    <!-- Right Video Card: Video 2 -->
+                    <div id="mergeCardB" class="merge-video-card" style="background: rgba(15, 23, 42, 0.7); border: 2px solid rgba(255, 255, 255, 0.15); border-radius: 10px; padding: 12px; position: relative;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-size: 0.72rem; font-weight: 700; color: #94a3b8; text-transform: uppercase;">Video 2 (Duplicate to Merge)</span>
+                            <span id="mergeStatusB" class="badge badge-danger" style="font-size: 0.70rem; padding: 2px 8px;">🗑️ Discard &amp; Link Hash</span>
+                        </div>
+                        
+                        <!-- Video B Search / Selector -->
+                        <div id="mergeSelectBBox" style="margin-bottom: 10px;">
+                            <input type="text" id="mergeSearchB" class="form-input form-input-sm" placeholder="🔍 Search duplicate video in library..." oninput="onMergeSearchBInput(this.value)" style="margin-bottom: 6px; font-size: 0.8rem; padding: 6px 10px;">
+                            <div id="mergeSuggestionsB" style="max-height: 140px; overflow-y: auto; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; display: none;"></div>
+                        </div>
+
+                        <div id="mergeDetailsB" style="display: none;">
+                            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                <div id="mergeThumbB" style="width: 100px; height: 60px; background: #1e293b; border-radius: 6px; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center;">
+                                    <span style="font-size: 1.4rem;">🎬</span>
+                                </div>
+                                <div style="flex: 1; min-width: 0;">
+                                    <div id="mergeTitleB" style="font-size: 0.9rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">-</div>
+                                    <div id="mergeKeyB" style="font-size: 0.72rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">-</div>
+                                </div>
+                            </div>
+                            <div id="mergeBadgesB" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px;"></div>
+                            <div style="display: flex; gap: 6px;">
+                                <button type="button" id="btnChooseB" onclick="setMergeKeepChoice('B')" class="btn btn-sm" style="flex: 1; background: rgba(255,255,255,0.1); color: #fff; font-weight: 700; padding: 6px 10px; border-radius: 6px;">
+                                    Keep Video 2 Instead
+                                </button>
+                                <button type="button" onclick="resetMergeVideoB()" class="tool-btn btn-xs" title="Select a different video" style="padding: 6px 8px;">
+                                    Change
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="mergeEmptyPromptB" style="padding: 24px 10px; text-align: center; color: #64748b; font-size: 0.8rem;">
+                            Type in the box above to find and select the duplicate video to merge.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Merge Outcome Summary -->
+                <div style="background: rgba(147, 51, 234, 0.08); border: 1px solid rgba(147, 51, 234, 0.25); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+                    <div style="font-size: 0.82rem; font-weight: 700; color: #d8b4fe; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+                        <span>&#9889; Merge Outcome Summary</span>
+                    </div>
+                    <div id="mergeSummaryText" style="font-size: 0.78rem; color: #cbd5e1; line-height: 1.5; margin-bottom: 8px;">
+                        Select a duplicate video on the right to configure merge.
+                    </div>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: #e2e8f0; cursor: pointer;">
+                        <input type="checkbox" id="chkMergeDeleteRemote" checked>
+                        <span>Delete discarded video's encrypted files from Hugging Face dataset (reclaims cloud storage)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="modal-actions" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="font-size: 0.72rem; color: #64748b;">
+                    Hashes can be unlinked at any time from the Edit modal.
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" onclick="closeMergeVideosModal()" class="tool-btn">Cancel</button>
+                    <button type="button" id="btnConfirmMergeVideos" onclick="submitExecuteMergeVideos()" class="btn btn-play" style="background: #9333ea; border-color: #a855f7; padding: 8px 18px;" disabled>
+                        &#128256; Confirm &amp; Merge
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -7674,6 +8102,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <a href="${{escapeHtml(f.hf_url)}}" target="_blank" class="card-icon-btn btn-card-hf" title="Open dataset on Hugging Face">&#129303;</a>
                     </div>
                     <div class="card-action-group-right">
+                        <button onclick="openMergeVideosModal('${{escapeHtml(f.key)}}', event)" class="card-icon-btn btn-card-merge" title="Merge Duplicates (Keep best, link hashes)" style="color: #c084fc;">&#128256;</button>
                         <button onclick="promptEditMetadata('${{escapeHtml(f.key)}}')" class="card-icon-btn btn-card-edit" title="Edit Tags, Categories &amp; Metadata">&#127991;</button>
                         <button onclick="promptDeleteFile('${{escapeHtml(f.key)}}')" class="card-icon-btn btn-card-delete" title="Delete Video Permanently">&#128465;</button>
                     </div>
@@ -9767,6 +10196,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const file = allFiles.find(f => f.key === key);
                 if (file) {{
                     updateCandidateTitlePicker(file, key);
+            renderEditLinkedHashes(key, file.extra_media_hashes || []);
                 }}
             }}
         }}
@@ -9799,7 +10229,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const seenNames = new Set();
             function addCandidate(raw) {{
                 if (!raw) return;
-                const cleaned = cleanTitleExtension(raw);
+                let leaf = raw;
+                if (leaf.indexOf('/') !== -1) leaf = leaf.substring(leaf.lastIndexOf('/') + 1);
+                if (leaf.indexOf(String.fromCharCode(92)) !== -1) leaf = leaf.substring(leaf.lastIndexOf(String.fromCharCode(92)) + 1);
+                const cleaned = cleanTitleExtension(leaf);
                 if (cleaned && !seenNames.has(cleaned.toLowerCase())) {{
                     seenNames.add(cleaned.toLowerCase());
                     candidateNames.push(cleaned);
@@ -9816,7 +10249,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             (file.file_names || []).forEach(fn => addCandidate(fn));
 
             const curVal = (document.getElementById('editTitle').value || '').trim();
-            if (candidateNames.length > 0) {{
+            const alternateNames = candidateNames.filter(n => n.toLowerCase() !== curVal.toLowerCase());
+
+            if (alternateNames.length > 0) {{
                 box.style.display = 'block';
                 list.innerHTML = candidateNames.map(n => {{
                     const isCurrent = (n.toLowerCase() === curVal.toLowerCase());
@@ -10059,6 +10494,438 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             document.getElementById('metadataModal').style.display = 'flex';
         }}
 
+
+
+
+        /* Merged Duplicate Hashes & Video Deduplication Engine */
+        function PathLeaf(p) {{
+            if (!p) return '';
+            let s = String(p);
+            if (s.indexOf('/') !== -1) s = s.substring(s.lastIndexOf('/') + 1);
+            if (s.indexOf(String.fromCharCode(92)) !== -1) s = s.substring(s.lastIndexOf(String.fromCharCode(92)) + 1);
+            return s;
+        }}
+
+        function renderEditLinkedHashes(key, hashes) {{
+            const box = document.getElementById('editLinkedHashesBox');
+            const list = document.getElementById('editLinkedHashesList');
+            const badge = document.getElementById('linkedHashesBadge');
+            if (!box || !list) return;
+
+            const count = (hashes || []).length;
+            if (badge) badge.textContent = count;
+
+            if (!hashes || count === 0) {{
+                list.innerHTML = `
+                    <div style="font-size: 0.75rem; color: #64748b; font-style: italic; padding: 4px 0;">
+                        No merged duplicate hashes linked yet. 
+                        <a href="javascript:void(0)" onclick="openMergeVideosModal('${{escapeHtml(key)}}')" style="color: #38bdf8; text-decoration: underline; font-style: normal; margin-left: 4px;">
+                            Merge a duplicate video
+                        </a> to link its fingerprint.
+                    </div>`;
+                return;
+            }}
+
+            list.innerHTML = hashes.map(h => {{
+                const hVal = (typeof h === 'object' && h !== null) ? (h.hash || '') : String(h);
+                const sName = (typeof h === 'object' && h !== null) ? (h.source_name || h.source_key || 'Duplicate Video') : 'Duplicate Video';
+                const sRes = (typeof h === 'object' && h !== null && h.resolution) ? h.resolution : '';
+                const sSize = (typeof h === 'object' && h !== null && h.orig_size) ? formatBytes(h.orig_size) : '';
+                const sDate = (typeof h === 'object' && h !== null && h.merged_at) ? h.merged_at : '';
+                const metaDetails = [sRes, sSize, sDate ? `Merged ${{sDate}}` : ''].filter(Boolean).join(' &bull; ');
+
+                return `
+                <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 6px; padding: 6px 10px;">
+                    <div style="min-width: 0; flex: 1; margin-right: 8px;">
+                        <div style="font-size: 0.8rem; font-weight: 600; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${{escapeHtml(sName)}}
+                        </div>
+                        <div style="font-size: 0.70rem; color: #94a3b8; display: flex; align-items: center; gap: 6px; margin-top: 1px;">
+                            ${{metaDetails ? `<span>${{escapeHtml(metaDetails)}}</span> &bull; ` : ''}}
+                            <code style="color: #38bdf8; font-size: 0.68rem;">${{escapeHtml(hVal.substring(0, 16))}}...</code>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-danger btn-xs" onclick="unlinkVideoHash('${{escapeHtml(key)}}', '${{escapeHtml(hVal)}}')" style="padding: 2px 7px; font-size: 0.70rem; white-space: nowrap;" title="Unlink this hash. This duplicate file will then be allowed to sync again.">
+                        &#128465; Unlink
+                    </button>
+                </div>`;
+            }}).join('');
+        }}
+
+        async function unlinkVideoHash(key, hash) {{
+            if (!confirm(`Are you sure you want to unlink this fingerprint (${{hash.substring(0, 12)}}...)?\n\nIf you unlinked by mistake, that video file will be eligible to sync again.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast('Unlinking fingerprint...', 'info');
+                const resp = await fetch('/api/videos/unlink-hash', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ key, hash }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(res.message || 'Hash unlinked successfully!', 'success');
+                    const file = allFiles.find(f => f.key === key);
+                    if (file) {{
+                        file.extra_media_hashes = res.extra_media_hashes || [];
+                        renderEditLinkedHashes(key, file.extra_media_hashes);
+                    }}
+                }} else {{
+                    alert('Failed to unlink hash: ' + (res.error || 'Unknown error'));
+                }}
+            }} catch (e) {{
+                alert('Unlink hash error: ' + e);
+            }}
+        }}
+
+        let mergeVideoA = null;
+        let mergeVideoB = null;
+        let mergeKeepChoice = 'A';
+
+        function openMergeVideosModal(initialKey, event) {{
+            if (event) event.stopPropagation();
+
+            if (initialKey) {{
+                mergeVideoA = initialKey;
+            }} else if (!mergeVideoA && allFiles.length > 0) {{
+                mergeVideoA = allFiles[0].key;
+            }}
+
+            mergeKeepChoice = 'A';
+            const modal = document.getElementById('mergeVideosModal');
+            if (modal) modal.style.display = 'flex';
+
+            renderMergeCardA();
+            resetMergeVideoB();
+        }}
+
+        function closeMergeVideosModal() {{
+            const modal = document.getElementById('mergeVideosModal');
+            if (modal) modal.style.display = 'none';
+        }}
+
+        function setMergeKeepChoice(choice) {{
+            mergeKeepChoice = choice;
+            updateMergeCardStyles();
+            updateMergeSummary();
+        }}
+
+        function renderMergeCardA() {{
+            if (!mergeVideoA) return;
+            const fileA = allFiles.find(f => f.key === mergeVideoA);
+            if (!fileA) return;
+
+            const metaA = fileA.metadata || {{}};
+            const miA = fileA.media_info || {{}};
+
+            document.getElementById('mergeTitleA').textContent = metaA.title || PathLeaf(mergeVideoA);
+            document.getElementById('mergeKeyA').textContent = mergeVideoA;
+
+            const thumbBox = document.getElementById('mergeThumbA');
+            if (thumbBox) {{
+                const thumbUrl = (fileA.screens && fileA.screens.safe_id) ? `/api/screens/thumb?id=${{fileA.screens.safe_id}}` : ((fileA.storyboard && fileA.storyboard.safe_id) ? `/api/storyboard/thumb?id=${{fileA.storyboard.safe_id}}` : '');
+                if (thumbUrl) {{
+                    thumbBox.innerHTML = `<img src="${{thumbUrl}}" style="width: 100%; height: 100%; object-fit: cover;">`;
+                }} else {{
+                    thumbBox.innerHTML = `<span style="font-size: 1.4rem;">🎬</span>`;
+                }}
+            }}
+
+            const badgesA = document.getElementById('mergeBadgesA');
+            if (badgesA) {{
+                const res = miA.resolution_label || metaA.resolution || 'Video';
+                const sizeStr = fileA.orig_size ? formatBytes(fileA.orig_size) : '';
+                const durStr = miA.duration_str || metaA.duration || '';
+                const codec = miA.video_codec || '';
+                const cat = (metaA.genres && metaA.genres[0]) || '';
+
+                badgesA.innerHTML = `
+                    <span class="badge badge-info">${{escapeHtml(res)}}</span>
+                    ${{sizeStr ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeStr)}}</span>` : ''}}
+                    ${{durStr ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(durStr)}}</span>` : ''}}
+                    ${{codec ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #94a3b8;">${{escapeHtml(codec)}}</span>` : ''}}
+                    ${{cat ? `<span class="badge badge-warning">&#128193; ${{escapeHtml(cat)}}</span>` : ''}}
+                `;
+            }}
+
+            updateMergeCardStyles();
+            updateMergeSummary();
+        }}
+
+        function resetMergeVideoB() {{
+            mergeVideoB = null;
+            document.getElementById('mergeSelectBBox').style.display = 'block';
+            document.getElementById('mergeDetailsB').style.display = 'none';
+            document.getElementById('mergeEmptyPromptB').style.display = 'block';
+            document.getElementById('mergeSearchB').value = '';
+            document.getElementById('btnConfirmMergeVideos').disabled = true;
+            updateMergeCardStyles();
+            updateMergeSummary();
+
+            populateMergeSuggestionsB('');
+        }}
+
+        function populateMergeSuggestionsB(query) {{
+            const list = document.getElementById('mergeSuggestionsB');
+            if (!list) return;
+
+            const q = (query || '').toLowerCase().trim();
+            const fileA = allFiles.find(f => f.key === mergeVideoA);
+            const titleA = (fileA && fileA.metadata && fileA.metadata.title) ? fileA.metadata.title.toLowerCase() : '';
+
+            const candidates = allFiles.filter(f => f.key !== mergeVideoA).map(f => {{
+                const m = f.metadata || {{}};
+                const t = (m.title || PathLeaf(f.key)).toLowerCase();
+                let score = 0;
+                if (q) {{
+                    if (t.includes(q) || f.key.toLowerCase().includes(q)) score += 10;
+                }} else if (titleA) {{
+                    const wordsA = titleA.split(/[^a-z0-9]+/).filter(w => w.length > 2);
+                    for (const w of wordsA) {{
+                        if (t.includes(w)) score += 3;
+                    }}
+                }}
+                return {{ file: f, score }};
+            }});
+
+            candidates.sort((a, b) => b.score - a.score);
+            const top = candidates.slice(0, 15).filter(c => q ? c.score > 0 : true);
+
+            if (top.length === 0) {{
+                list.style.display = 'none';
+                return;
+            }}
+
+            list.style.display = 'block';
+            list.innerHTML = top.map(c => {{
+                const f = c.file;
+                const m = f.metadata || {{}};
+                const mi = f.media_info || {{}};
+                const res = mi.resolution_label || m.resolution || '';
+                const sizeStr = f.orig_size ? formatBytes(f.orig_size) : '';
+
+                return `
+                <div class="merge-suggest-item" onclick="selectMergeVideoB('${{escapeHtml(f.key)}}')" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                    <div style="min-width: 0; flex: 1; margin-right: 8px;">
+                        <div style="font-size: 0.82rem; font-weight: 600; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${{escapeHtml(m.title || PathLeaf(f.key))}}
+                        </div>
+                        <div style="font-size: 0.70rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${{escapeHtml(f.key)}}
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 4px; flex-shrink: 0;">
+                        ${{res ? `<span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(res)}}</span>` : ''}}
+                        ${{sizeStr ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeStr)}}</span>` : ''}}
+                    </div>
+                </div>`;
+            }}).join('');
+        }}
+
+        function onMergeSearchBInput(val) {{
+            populateMergeSuggestionsB(val);
+        }}
+
+        function selectMergeVideoB(key) {{
+            mergeVideoB = key;
+            const fileB = allFiles.find(f => f.key === key);
+            if (!fileB) return;
+
+            document.getElementById('mergeSelectBBox').style.display = 'none';
+            document.getElementById('mergeEmptyPromptB').style.display = 'none';
+            document.getElementById('mergeDetailsB').style.display = 'block';
+
+            const metaB = fileB.metadata || {{}};
+            const miB = fileB.media_info || {{}};
+
+            document.getElementById('mergeTitleB').textContent = metaB.title || PathLeaf(key);
+            document.getElementById('mergeKeyB').textContent = key;
+
+            const thumbBox = document.getElementById('mergeThumbB');
+            if (thumbBox) {{
+                const thumbUrl = (fileB.screens && fileB.screens.safe_id) ? `/api/screens/thumb?id=${{fileB.screens.safe_id}}` : ((fileB.storyboard && fileB.storyboard.safe_id) ? `/api/storyboard/thumb?id=${{fileB.storyboard.safe_id}}` : '');
+                if (thumbUrl) {{
+                    thumbBox.innerHTML = `<img src="${{thumbUrl}}" style="width: 100%; height: 100%; object-fit: cover;">`;
+                }} else {{
+                    thumbBox.innerHTML = `<span style="font-size: 1.4rem;">🎬</span>`;
+                }}
+            }}
+
+            const badgesB = document.getElementById('mergeBadgesB');
+            if (badgesB) {{
+                const res = miB.resolution_label || metaB.resolution || 'Video';
+                const sizeStr = fileB.orig_size ? formatBytes(fileB.orig_size) : '';
+                const durStr = miB.duration_str || metaB.duration || '';
+                const codec = miB.video_codec || '';
+                const cat = (metaB.genres && metaB.genres[0]) || '';
+
+                badgesB.innerHTML = `
+                    <span class="badge badge-info">${{escapeHtml(res)}}</span>
+                    ${{sizeStr ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeStr)}}</span>` : ''}}
+                    ${{durStr ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(durStr)}}</span>` : ''}}
+                    ${{codec ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #94a3b8;">${{escapeHtml(codec)}}</span>` : ''}}
+                    ${{cat ? `<span class="badge badge-warning">&#128193; ${{escapeHtml(cat)}}</span>` : ''}}
+                `;
+            }}
+
+            const fileA = allFiles.find(f => f.key === mergeVideoA);
+            if (fileA) {{
+                const resOrder = {{ '4k': 4, '1440p': 3, '1080p': 2, '720p': 1, 'sd': 0 }};
+                const resA = (fileA.media_info && fileA.media_info.resolution_label ? fileA.media_info.resolution_label : '').toLowerCase();
+                const resB = (miB.resolution_label ? miB.resolution_label : '').toLowerCase();
+                const scoreA = resOrder[resA] !== undefined ? resOrder[resA] : -1;
+                const scoreB = resOrder[resB] !== undefined ? resOrder[resB] : -1;
+
+                if (scoreB > scoreA) {{
+                    mergeKeepChoice = 'B';
+                }} else {{
+                    mergeKeepChoice = 'A';
+                }}
+            }}
+
+            document.getElementById('btnConfirmMergeVideos').disabled = false;
+            updateMergeCardStyles();
+            updateMergeSummary();
+        }}
+
+        function updateMergeCardStyles() {{
+            const cardA = document.getElementById('mergeCardA');
+            const cardB = document.getElementById('mergeCardB');
+            const statusA = document.getElementById('mergeStatusA');
+            const statusB = document.getElementById('mergeStatusB');
+            const btnA = document.getElementById('btnChooseA');
+            const btnB = document.getElementById('btnChooseB');
+
+            if (!cardA || !cardB) return;
+
+            if (mergeKeepChoice === 'A') {{
+                cardA.style.borderColor = '#10b981';
+                cardA.style.boxShadow = '0 0 15px rgba(16, 185, 129, 0.25)';
+                statusA.className = 'badge badge-success';
+                statusA.innerHTML = '👑 Keep this video';
+                if (btnA) {{
+                    btnA.style.background = '#10b981';
+                    btnA.innerHTML = '✓ Keeping Video 1 (Canonical)';
+                }}
+
+                cardB.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+                cardB.style.boxShadow = 'none';
+                statusB.className = 'badge badge-danger';
+                statusB.innerHTML = '🗑️ Discard &amp; Link Hash';
+                if (btnB) {{
+                    btnB.style.background = 'rgba(255,255,255,0.1)';
+                    btnB.innerHTML = 'Keep Video 2 Instead';
+                }}
+            }} else {{
+                cardB.style.borderColor = '#10b981';
+                cardB.style.boxShadow = '0 0 15px rgba(16, 185, 129, 0.25)';
+                statusB.className = 'badge badge-success';
+                statusB.innerHTML = '👑 Keep this video';
+                if (btnB) {{
+                    btnB.style.background = '#10b981';
+                    btnB.innerHTML = '✓ Keeping Video 2 (Canonical)';
+                }}
+
+                cardA.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+                cardA.style.boxShadow = 'none';
+                statusA.className = 'badge badge-danger';
+                statusA.innerHTML = '🗑️ Discard &amp; Link Hash';
+                if (btnA) {{
+                    btnA.style.background = 'rgba(255,255,255,0.1)';
+                    btnA.innerHTML = 'Keep Video 1 Instead';
+                }}
+            }}
+        }}
+
+        function updateMergeSummary() {{
+            const summary = document.getElementById('mergeSummaryText');
+            if (!summary) return;
+
+            if (!mergeVideoB) {{
+                summary.innerHTML = 'Select a duplicate video on the right to configure merge.';
+                return;
+            }}
+
+            const fileA = allFiles.find(f => f.key === mergeVideoA);
+            const fileB = allFiles.find(f => f.key === mergeVideoB);
+            if (!fileA || !fileB) return;
+
+            const keepFile = (mergeKeepChoice === 'A') ? fileA : fileB;
+            const discFile = (mergeKeepChoice === 'A') ? fileB : fileA;
+
+            const keepTitle = (keepFile.metadata && keepFile.metadata.title) ? keepFile.metadata.title : PathLeaf(keepFile.key);
+            const discTitle = (discFile.metadata && discFile.metadata.title) ? discFile.metadata.title : PathLeaf(discFile.key);
+
+            const keepRes = (keepFile.media_info && keepFile.media_info.resolution_label) ? keepFile.media_info.resolution_label : '';
+            const discRes = (discFile.media_info && discFile.media_info.resolution_label) ? discFile.media_info.resolution_label : '';
+
+            const discHash = discFile.media_hash || 'fingerprint';
+
+            summary.innerHTML = `
+                <div>
+                    👑 <b>Keeping</b>: <span style="color: #34d399; font-weight: 700;">${{escapeHtml(keepTitle)}}</span> ${{keepRes ? `(${{escapeHtml(keepRes)}})` : ''}} (<span style="color: #94a3b8; font-size: 0.72rem;">${{escapeHtml(keepFile.key)}}</span>)
+                </div>
+                <div style="margin-top: 4px;">
+                    🗑️ <b>Discarding</b>: <span style="color: #f87171;">${{escapeHtml(discTitle)}}</span> ${{discRes ? `(${{escapeHtml(discRes)}})` : ''}} (<span style="color: #94a3b8; font-size: 0.72rem;">${{escapeHtml(discFile.key)}}</span>)
+                </div>
+                <div style="margin-top: 6px; font-size: 0.74rem; color: #94a3b8;">
+                    🔒 <b>Fingerprint Lock</b>: Discarded sparse hash <code style="color: #38bdf8;">${{escapeHtml(discHash.substring(0, 16))}}...</code> will be saved into the kept video's record and registered in the duplicate index. Any future upload matching this file will be automatically skipped!
+                </div>
+            `;
+        }}
+
+        async function submitExecuteMergeVideos() {{
+            if (!mergeVideoA || !mergeVideoB) {{
+                alert('Please select both videos to merge.');
+                return;
+            }}
+
+            const keepKey = (mergeKeepChoice === 'A') ? mergeVideoA : mergeVideoB;
+            const discKey = (mergeKeepChoice === 'A') ? mergeVideoB : mergeVideoA;
+            const delRemote = document.getElementById('chkMergeDeleteRemote').checked;
+
+            const keepName = PathLeaf(keepKey);
+            const discName = PathLeaf(discKey);
+
+            if (!confirm(`Are you sure you want to merge these duplicate videos?\n\n👑 KEEP: ${{keepName}}\n🗑️ DISCARD: ${{discName}}\n\nThe discarded video's media hash will be permanently linked to "${{keepName}}" so it can never be uploaded again.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast(`Merging duplicate videos into "${{keepName}}"...`, 'info');
+                const btn = document.getElementById('btnConfirmMergeVideos');
+                if (btn) btn.disabled = true;
+
+                const resp = await fetch('/api/videos/merge', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        keep_key: keepKey,
+                        discard_keys: [discKey],
+                        delete_remote: delRemote
+                    }})
+                }});
+
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(res.message || 'Videos merged successfully!', 'success');
+                    closeMergeVideosModal();
+                    await loadFiles();
+                    if (editingKey === keepKey) {{
+                        promptEditMetadata(keepKey);
+                    }}
+                }} else {{
+                    alert('Merge failed: ' + (res.error || 'Unknown error'));
+                    if (btn) btn.disabled = false;
+                }}
+            }} catch (e) {{
+                alert('Merge request error: ' + e);
+                const btn = document.getElementById('btnConfirmMergeVideos');
+                if (btn) btn.disabled = false;
+            }}
+        }}
 
 
         /* Subtitles & Audio Mode Engine */
