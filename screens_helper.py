@@ -160,21 +160,28 @@ def process_screens_image(
 
             save_img.save(out_screens_jpg, "JPEG", quality=88, optimize=True)
 
-            # 2. Crop a crisp 16:9 thumbnail for the video card & Jellyfin
-            # Check if this is a multi-tile contact sheet or a single poster
-            is_contact_sheet = (orig_h >= orig_w) or (orig_h > 1000 and orig_w > 1000)
+            # 2. Crop or fit a crisp 16:9 thumbnail for the video card & Jellyfin
+            sname = Path(screen_path).name.lower()
+            is_explicit_cover = any(x in sname for x in ["thumb", "poster", "cover", "preview", "front", "folder"])
+            aspect = orig_w / float(orig_h) if orig_h else 1.0
+
+            # Determine if this image is a multi-tile contact sheet grid or a single cover image
+            # Note: Single widescreen screenshots (aspect >= 1.4) should NEVER be sliced into a 4x4 grid!
+            is_contact_sheet = False
+            if not is_explicit_cover:
+                if abs(aspect - (16.0 / 9.0)) < 0.04 and orig_w >= 1600:
+                    # 10x10 storyboard grid (100 frames)
+                    is_contact_sheet = True
+                elif (orig_h >= orig_w * 1.15) or (aspect < 1.4 and any(x in sname for x in ["screens", "sheet"]) and orig_h > 1200):
+                    # Multi-row contact sheet with top metadata header
+                    is_contact_sheet = True
 
             if is_contact_sheet:
-                # Check if it's a 10x10 storyboard (16:9 aspect ratio, e.g. 3840x2160)
-                aspect = orig_w / float(orig_h) if orig_h else 1.0
                 if abs(aspect - (16.0 / 9.0)) < 0.04 and orig_w >= 1600:
-                    # 10x10 grid with no header
-                    cols = 10
-                    rows = 10
-                    header_h = 0
+                    # 10x10 grid with no header: pick frame 3
+                    cols, rows = 10, 10
                     tile_w = orig_w // cols
                     tile_h = orig_h // rows
-                    # Pick frame 2 or 3 (col 2, row 0)
                     col_idx = 2
                     row_idx = 0
                     crop_x1 = col_idx * tile_w
@@ -188,24 +195,40 @@ def process_screens_image(
                     header_h = int(orig_h * 0.08)
                     tile_w = orig_w // cols
                     tile_h = (orig_h - header_h) // rows
-                    # Pick Tile (col 0, row 0) or (col 1, row 0)
-                    crop_x1 = 0
+                    # Pick tile (col 1, row 0) or center tile to avoid black opening frames
+                    crop_x1 = min(tile_w, max(0, orig_w - tile_w))
                     crop_y1 = header_h
-                    crop_x2 = tile_w
+                    crop_x2 = crop_x1 + tile_w
                     crop_y2 = header_h + tile_h
 
-                # Ensure positive bounds
                 if crop_x2 > crop_x1 and crop_y2 > crop_y1:
                     tile_crop = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-                    # Resize to standard 480x270 (16:9) thumbnail
-                    tile_crop = tile_crop.resize((480, 270), Image.Resampling.LANCZOS)
-                    tile_crop.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
+                    thumb_img = tile_crop.resize((480, 270), Image.Resampling.LANCZOS)
                 else:
                     thumb_img = img.resize((480, 270), Image.Resampling.LANCZOS)
-                    thumb_img.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
+                thumb_img.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
             else:
-                # Single landscape frame or banner
-                thumb_img = img.resize((480, 270), Image.Resampling.LANCZOS)
+                # Single cover, poster, or landscape screenshot:
+                # Center crop & scale preserving full image composition!
+                target_ratio = 16.0 / 9.0
+                if aspect > target_ratio:
+                    new_w = int(orig_h * target_ratio)
+                    offset_x = (orig_w - new_w) // 2
+                    crop_box = (offset_x, 0, offset_x + new_w, orig_h)
+                    cover_crop = img.crop(crop_box)
+                elif aspect < target_ratio:
+                    new_h = int(orig_w / target_ratio)
+                    offset_y = (orig_h - new_h) // 3  # center-high to capture faces/titles
+                    if offset_y < 0:
+                        offset_y = 0
+                    if offset_y + new_h > orig_h:
+                        new_h = orig_h - offset_y
+                    crop_box = (0, offset_y, orig_w, offset_y + new_h)
+                    cover_crop = img.crop(crop_box)
+                else:
+                    cover_crop = img
+
+                thumb_img = cover_crop.resize((480, 270), Image.Resampling.LANCZOS)
                 thumb_img.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
 
             # 3. Copy thumb to Jellyfin library if available
@@ -248,4 +271,14 @@ def get_screens_thumb_path(safe_id: str) -> str:
 
 
 def has_screens(safe_id: str) -> bool:
-    return bool(get_screens_path(safe_id))
+    if get_screens_path(safe_id) or get_screens_thumb_path(safe_id):
+        return True
+    try:
+        from manifest_helper import load_manifest
+        mf = load_manifest()
+        for k, v in mf.get("files", {}).items():
+            if get_safe_id(k) == safe_id:
+                return bool(v.get("screens"))
+    except Exception:
+        pass
+    return False

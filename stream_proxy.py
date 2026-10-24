@@ -2449,7 +2449,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp_body)
 
-    def purge_video_entry(self, key_to_delete: str, manifest: dict, force_cloud_delete: bool = False) -> dict:
+    def _send_stream_chunk(self, data_dict: dict):
+        try:
+            line = json.dumps(data_dict) + "\n"
+            raw = line.encode("utf-8")
+            chunk = f"{len(raw):X}\r\n".encode("ascii") + raw + b"\r\n"
+            self.wfile.write(chunk)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+    def _finish_stream_chunked(self):
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+    def purge_video_entry(self, key_to_delete: str, manifest: dict, force_cloud_delete: bool = False, sync_repo_index: bool = True) -> dict:
         """
         Exhaustively and permanently purges a video from A to Z across all systems:
         - Local storyboards cache (jpg, json, thumb, screens, audio)
@@ -2543,7 +2560,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 logger.warning("Error deleting blob %s from HF: %s", blob_path, e)
 
         # 7. Immediately re-sync vault_index.enc on Hugging Face so no ghost index remains
-        if can_write:
+        if sync_repo_index and can_write:
             try:
                 remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
                 metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
@@ -2582,10 +2599,96 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(404, f"No files found under folder '{folder_prefix}'")
             return
 
+        total_files = len(matching_keys)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        self._send_stream_chunk({
+            "stage": "init",
+            "percent": 2,
+            "current": 0,
+            "total": total_files,
+            "folder": folder_prefix,
+            "message": f"Found {total_files} video(s) in '{folder_prefix}'. Initiating permanent purge...",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
+
         deleted_count = 0
-        for key in matching_keys:
-            self.purge_video_entry(key, manifest, force_cloud_delete=True)
-            deleted_count += 1
+        affected_repos = {}
+
+        for idx, key in enumerate(matching_keys, 1):
+            base_name = Path(key).name
+            pct_start = int(3 + ((idx - 1) / total_files) * 80)
+            self._send_stream_chunk({
+                "stage": "purging",
+                "percent": pct_start,
+                "current": idx,
+                "total": total_files,
+                "key": key,
+                "message": f"[{idx}/{total_files}] Purging cloud blob & sidecars: {base_name}",
+                "timestamp": time.strftime("%H:%M:%S")
+            })
+
+            info = manifest.get("files", {}).get(key, {})
+            repo_id = info.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+            api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+            can_write = self.acc_mgr.can_write_to_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else True
+            if repo_id not in affected_repos:
+                affected_repos[repo_id] = (api, can_write)
+
+            try:
+                self.purge_video_entry(key, manifest, force_cloud_delete=True, sync_repo_index=False)
+                deleted_count += 1
+            except Exception as pe:
+                logger.warning("Error purging %s: %s", key, pe)
+
+            pct_done = int(3 + (idx / total_files) * 80)
+            self._send_stream_chunk({
+                "stage": "item_deleted",
+                "percent": pct_done,
+                "current": idx,
+                "total": total_files,
+                "key": key,
+                "message": f"[{idx}/{total_files}] Successfully deleted {base_name}",
+                "timestamp": time.strftime("%H:%M:%S")
+            })
+
+        # Sync vault_index.enc once per affected repository
+        if affected_repos:
+            self._send_stream_chunk({
+                "stage": "syncing_index",
+                "percent": 86,
+                "current": total_files,
+                "total": total_files,
+                "message": f"Synchronizing remote vault index for {len(affected_repos)} repo(s)...",
+                "timestamp": time.strftime("%H:%M:%S")
+            })
+            for repo_id, (api, can_write) in affected_repos.items():
+                if can_write:
+                    try:
+                        remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
+                        metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
+                        if not remaining_repo_files and repo_id.split("/")[-1].startswith("vault-"):
+                            rem = [f for f in api.list_repo_files(repo_id=repo_id, repo_type="dataset") if f.endswith(".enc")]
+                            if not rem:
+                                api.delete_repo(repo_id=repo_id, repo_type="dataset")
+                                logger.info("Deleted empty HF vault repository %s", repo_id)
+                    except Exception as e:
+                        logger.warning("Could not sync repo manifest after batch delete for %s: %s", repo_id, e)
+
+        # Clean local library folder and save manifest
+        self._send_stream_chunk({
+            "stage": "cleaning_library",
+            "percent": 94,
+            "current": total_files,
+            "total": total_files,
+            "message": "Cleaning local Jellyfin library pointers & empty folders...",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
 
         local_folder_path = Path("jellyfin_library") / folder_prefix
         if local_folder_path.exists():
@@ -2601,19 +2704,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         activity_tracker.tracker.notify_manifest_updated()
         activity_tracker.tracker.add_event("success", "Folder Deleted", f"Permanently purged folder '{folder_prefix}' ({deleted_count} video(s)) from Hugging Face and library")
 
-        resp_body = json.dumps({
+        self._send_stream_chunk({
+            "stage": "complete",
             "success": True,
+            "percent": 100,
+            "current": deleted_count,
+            "total": total_files,
             "folder": folder_prefix,
             "deleted_count": deleted_count,
-            "message": f"Successfully deleted folder '{folder_prefix}' ({deleted_count} video(s)) from Hugging Face and Jellyfin library."
-        }).encode("utf-8")
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(resp_body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(resp_body)
+            "message": f"Successfully deleted folder '{folder_prefix}' ({deleted_count} video(s)) from Hugging Face and Jellyfin library.",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
+        self._finish_stream_chunked()
 
 
     def handle_delete(self):
@@ -2635,7 +2737,35 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Video key not found in manifest")
             return
 
-        res = self.purge_video_entry(key_to_delete, manifest, force_cloud_delete=True)
+        base_name = Path(key_to_delete).name
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        self._send_stream_chunk({
+            "stage": "init",
+            "percent": 10,
+            "current": 0,
+            "total": 1,
+            "key": key_to_delete,
+            "message": f"Initiating permanent deletion of {base_name}...",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
+
+        self._send_stream_chunk({
+            "stage": "purging",
+            "percent": 45,
+            "current": 1,
+            "total": 1,
+            "key": key_to_delete,
+            "message": f"Purging remote encrypted blob, sidecars, and local Jellyfin files...",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
+
+        res = self.purge_video_entry(key_to_delete, manifest, force_cloud_delete=True, sync_repo_index=True)
         remove_empty_folders("jellyfin_library")
         save_manifest(manifest)
 
@@ -2643,19 +2773,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         activity_tracker.tracker.notify_manifest_updated()
         activity_tracker.tracker.add_event("success", "Video Deleted", f"Permanently purged {key_to_delete} from Hugging Face and library")
 
-        resp_body = json.dumps({
+        self._send_stream_chunk({
+            "stage": "complete",
             "success": True,
+            "percent": 100,
+            "current": 1,
+            "total": 1,
             "key": key_to_delete,
             "hf_deleted": res.get("hf_deleted", False),
-            "message": f"Successfully deleted {key_to_delete} from Hugging Face and Jellyfin library."
-        }).encode("utf-8")
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(resp_body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(resp_body)
+            "message": f"Successfully deleted {base_name} from Hugging Face and Jellyfin library.",
+            "timestamp": time.strftime("%H:%M:%S")
+        })
+        self._finish_stream_chunked()
 
 
     def handle_delete_skipped(self):
@@ -6027,6 +6156,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             color: var(--text-muted);
             font-size: 1rem;
         }}
+        @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
         .modal-overlay {{
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
@@ -7590,11 +7720,32 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
     <!-- Delete Confirmation Modal -->
     <div id="deleteModal" class="modal-overlay">
-        <div class="modal">
-            <h3 id="modalTitle">&#9888; Delete Content Permanently</h3>
-            <p id="deleteMessage">Are you sure you want to delete this content from Hugging Face and your Jellyfin library?</p>
-            <div class="modal-actions">
-                <button onclick="closeDeleteModal()" class="tool-btn">Cancel</button>
+        <div class="modal" style="max-width: 560px; width: 92%;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 id="modalTitle" style="margin: 0; display: flex; align-items: center; gap: 8px;">&#9888; Delete Content Permanently</h3>
+                <button id="closeDeleteModalX" onclick="closeDeleteModal()" class="tool-btn btn-xs" style="font-size: 1.1rem; padding: 2px 8px;">&times;</button>
+            </div>
+            <p id="deleteMessage" style="margin-bottom: 16px; font-size: 0.9rem; line-height: 1.5; color: var(--text-muted);"></p>
+            
+            <!-- Real-time Deletion Progress Container -->
+            <div id="deleteProgressBox" style="display: none; margin-bottom: 16px; background: rgba(0, 0, 0, 0.28); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 12px 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span id="deleteProgressStatusText" style="font-size: 0.84rem; font-weight: 600; color: #f3f4f6; display: flex; align-items: center; gap: 6px;">
+                        <span class="spinner-small" style="width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #ef4444; border-radius: 50%; display: inline-block; animation: spin 0.8s linear infinite;"></span>
+                        Starting deletion...
+                    </span>
+                    <span id="deleteProgressPct" style="font-size: 0.86rem; font-weight: 700; color: #f87171; font-family: monospace;">0%</span>
+                </div>
+                <!-- Animated Progress Bar -->
+                <div style="width: 100%; height: 10px; background: rgba(255,255,255,0.08); border-radius: 5px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); position: relative;">
+                    <div id="deleteProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981); transition: width 0.25s ease; border-radius: 5px;"></div>
+                </div>
+                <!-- Real-time Scrolling Event Log -->
+                <div id="deleteProgressLog" style="margin-top: 10px; background: #0a0d12; border: 1px solid #1f2937; border-radius: 6px; padding: 8px 10px; font-family: 'Consolas', 'Fira Code', monospace; font-size: 0.74rem; color: #9ca3af; max-height: 120px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45;"></div>
+            </div>
+
+            <div class="modal-actions" id="deleteModalActions">
+                <button id="cancelDeleteBtn" onclick="closeDeleteModal()" class="tool-btn">Cancel</button>
                 <button id="confirmDeleteBtn" class="btn btn-delete" style="padding: 8px 16px;">Delete Permanently</button>
             </div>
         </div>
@@ -12982,11 +13133,38 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         /* Delete Functions */
+        let isDeleting = false;
+
+        function resetDeleteProgressUI() {{
+            const pbox = document.getElementById('deleteProgressBox');
+            if (pbox) pbox.style.display = 'none';
+            const actions = document.getElementById('deleteModalActions');
+            if (actions) actions.style.display = 'flex';
+            const btn = document.getElementById('confirmDeleteBtn');
+            if (btn) {{
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.textContent = deleteTarget.type === 'file' ? "Delete Video" : `Delete Entire Folder (${{deleteTarget.count}} Videos)`;
+            }}
+            const cancelBtn = document.getElementById('cancelDeleteBtn');
+            if (cancelBtn) cancelBtn.disabled = false;
+            const closeX = document.getElementById('closeDeleteModalX');
+            if (closeX) closeX.disabled = false;
+            const bar = document.getElementById('deleteProgressBar');
+            if (bar) bar.style.width = '0%';
+            const pct = document.getElementById('deleteProgressPct');
+            if (pct) pct.textContent = '0%';
+            const log = document.getElementById('deleteProgressLog');
+            if (log) log.innerHTML = '';
+            isDeleting = false;
+        }}
+
         function promptDeleteFile(key) {{
             deleteTarget = {{ type: 'file', key: key, folder: null, count: 1 }};
             document.getElementById('modalTitle').innerHTML = "&#9888; Delete Video File";
             document.getElementById('deleteMessage').innerHTML = 
                 `Are you sure you want to permanently delete: <br><br><b>${{escapeHtml(key)}}</b><br><br>This will permanently remove the encrypted blob from Hugging Face and remove the stream pointer and NFO files from your Jellyfin library.`;
+            resetDeleteProgressUI();
             document.getElementById('confirmDeleteBtn').textContent = "Delete Video";
             document.getElementById('deleteModal').style.display = 'flex';
         }}
@@ -12996,61 +13174,146 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             document.getElementById('modalTitle').innerHTML = "&#9888; Delete Entire Folder &amp; All Videos";
             document.getElementById('deleteMessage').innerHTML = 
                 `Are you sure you want to permanently delete the entire folder:<br><br><span style="color:#f87171;font-size:1.1rem;">&#128193; <b>${{escapeHtml(folderPath)}}</b></span><br><br>Containing <b>${{count}}</b> video(s)?<br><br><small style="color:#9ca3af;">This will delete all ${{count}} encrypted blob(s) permanently from Hugging Face and remove all stream files from your Jellyfin library.</small>`;
+            resetDeleteProgressUI();
             document.getElementById('confirmDeleteBtn').textContent = `Delete Entire Folder (${{count}} Videos)`;
             document.getElementById('deleteModal').style.display = 'flex';
         }}
 
         function closeDeleteModal() {{
+            if (isDeleting) return;
             document.getElementById('deleteModal').style.display = 'none';
             deleteTarget = {{ type: null, key: null, folder: null, count: 0 }};
         }}
 
         document.getElementById('confirmDeleteBtn').addEventListener('click', async () => {{
-            if (!deleteTarget.type) return;
+            if (!deleteTarget.type || isDeleting) return;
+            isDeleting = true;
+
             const btn = document.getElementById('confirmDeleteBtn');
-            const originalText = btn.textContent;
-            btn.textContent = "Deleting from Hugging Face...";
+            const cancelBtn = document.getElementById('cancelDeleteBtn');
+            const closeX = document.getElementById('closeDeleteModalX');
+            const pbox = document.getElementById('deleteProgressBox');
+            const pbar = document.getElementById('deleteProgressBar');
+            const ppct = document.getElementById('deleteProgressPct');
+            const pstatus = document.getElementById('deleteProgressStatusText');
+            const plog = document.getElementById('deleteProgressLog');
+
             btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.textContent = "Purging...";
+            if (cancelBtn) cancelBtn.disabled = true;
+            if (closeX) closeX.disabled = true;
+            if (pbox) pbox.style.display = 'block';
+
+            const addLog = (msg, stage) => {{
+                if (!plog) return;
+                const d = document.createElement('div');
+                d.textContent = msg;
+                if (stage === 'error') d.style.color = '#ef4444';
+                else if (stage === 'complete') d.style.color = '#10b981';
+                else if (stage === 'item_deleted') d.style.color = '#38bdf8';
+                plog.appendChild(d);
+                plog.scrollTop = plog.scrollHeight;
+            }};
+
+            const url = deleteTarget.type === 'file' ? '/api/delete' : '/api/delete-folder';
+            const payload = deleteTarget.type === 'file' ? {{ key: deleteTarget.key }} : {{ folder: deleteTarget.folder }};
 
             try {{
-                let res, result;
-                if (deleteTarget.type === 'file') {{
-                    res = await fetch('/api/delete', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ key: deleteTarget.key }})
-                    }});
-                    result = await res.json();
-                    if (result && result.success) {{
-                        allFiles = allFiles.filter(f => f.key !== deleteTarget.key);
-                    }}
-                }} else if (deleteTarget.type === 'folder') {{
-                    res = await fetch('/api/delete-folder', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ folder: deleteTarget.folder }})
-                    }});
-                    result = await res.json();
-                    if (result && result.success) {{
-                        const prefix = deleteTarget.folder;
-                        allFiles = allFiles.filter(f => f.key !== prefix && !f.key.startsWith(prefix + '/'));
+                const res = await fetch(url, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify(payload)
+                }});
+
+                if (!res.ok) {{
+                    const errText = await res.text();
+                    throw new Error(errText || `Server returned status ${{res.status}}`);
+                }}
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let completedSuccessfully = false;
+
+                while (true) {{
+                    const {{ done, value }} = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, {{ stream: true }});
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {{
+                        const trimmed = line.trim();
+                        if (!trimmed) continue;
+                        try {{
+                            const data = JSON.parse(trimmed);
+                            if (data.percent !== undefined && pbar) {{
+                                pbar.style.width = data.percent + '%';
+                            }}
+                            if (data.percent !== undefined && ppct) {{
+                                ppct.textContent = data.percent + '%';
+                            }}
+                            if (data.message && pstatus) {{
+                                const spinnerHtml = (data.stage !== 'complete' && data.stage !== 'error') 
+                                    ? `<span class="spinner-small" style="width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #ef4444; border-radius: 50%; display: inline-block; animation: spin 0.8s linear infinite;"></span> `
+                                    : '';
+                                pstatus.innerHTML = `${{spinnerHtml}}${{escapeHtml(data.message)}}`;
+                            }}
+                            if (data.message) {{
+                                addLog(`[${{data.timestamp || new Date().toLocaleTimeString()}}] ${{data.message}}`, data.stage);
+                            }}
+
+                            // Real-time UI tree & stats update as items get purged!
+                            if (data.stage === 'item_deleted' && data.key) {{
+                                allFiles = allFiles.filter(f => f.key !== data.key);
+                                updateStats();
+                                filterTree();
+                            }}
+
+                            if (data.stage === 'complete' && data.success) {{
+                                completedSuccessfully = true;
+                                if (pstatus) {{
+                                    pstatus.innerHTML = `<span style="color:#10b981;font-weight:700;">✓ Purge Complete!</span>`;
+                                }}
+                            }}
+                        }} catch (pe) {{
+                            console.warn("Progress parse error:", pe, trimmed);
+                        }}
                     }}
                 }}
 
-                if (result && result.success) {{
+                if (completedSuccessfully) {{
+                    if (deleteTarget.type === 'folder') {{
+                        const prefix = deleteTarget.folder;
+                        allFiles = allFiles.filter(f => f.key !== prefix && !f.key.startsWith(prefix + '/'));
+                    }} else if (deleteTarget.type === 'file') {{
+                        allFiles = allFiles.filter(f => f.key !== deleteTarget.key);
+                    }}
                     updateStats();
                     populateFilterDropdowns();
                     filterTree();
-                    closeDeleteModal();
-                    showToast("🗑️ Content deleted permanently.");
+                    setTimeout(() => {{
+                        isDeleting = false;
+                        closeDeleteModal();
+                        showToast("🗑️ Content permanently deleted.");
+                    }}, 950);
                 }} else {{
-                    alert("Error deleting: " + ((result && result.message) || "Unknown error"));
+                    addLog("[!] Deletion stopped or returned warning", "error");
+                    isDeleting = false;
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    if (cancelBtn) cancelBtn.disabled = false;
+                    if (closeX) closeX.disabled = false;
                 }}
             }} catch (err) {{
-                alert("Failed to communicate with server: " + err);
-            }} finally {{
-                btn.textContent = originalText;
+                addLog("[!] Error: " + err.message, "error");
+                alert("Failed during deletion: " + err.message);
+                isDeleting = false;
                 btn.disabled = false;
+                btn.style.opacity = '1';
+                if (cancelBtn) cancelBtn.disabled = false;
+                if (closeX) closeX.disabled = false;
             }}
         }});
 
