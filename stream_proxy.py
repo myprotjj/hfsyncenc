@@ -5713,6 +5713,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         let hiddenTagsSet = new Set(JSON.parse(localStorage.getItem('hfsync_hidden_tags') || '[]'));
 
+        function saveHiddenTags() {{
+            try {{
+                localStorage.setItem('hfsync_hidden_tags', JSON.stringify(Array.from(hiddenTagsSet)));
+            }} catch(e) {{}}
+        }}
+
         function isTagHidden(tag) {{
             return hiddenTagsSet.has(tag);
         }}
@@ -5727,9 +5733,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 hiddenTagsSet.add(cleanTag);
                 flashCenterFeedback(`🙈 Hidden: "${{cleanTag}}" is now hidden on card faces`);
             }}
-            try {{
-                localStorage.setItem('hfsync_hidden_tags', JSON.stringify(Array.from(hiddenTagsSet)));
-            }} catch(e) {{}}
+            saveHiddenTags();
             populateFilterDropdowns();
             refreshTreeDisplay();
         }}
@@ -5737,7 +5741,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         function unhideAllTags(event) {{
             if (event) event.stopPropagation();
             hiddenTagsSet.clear();
-            try {{ localStorage.setItem('hfsync_hidden_tags', '[]'); }} catch(e) {{}}
+            saveHiddenTags();
             populateFilterDropdowns();
             refreshTreeDisplay();
             flashCenterFeedback('👁️ All tags are now visible on cards');
