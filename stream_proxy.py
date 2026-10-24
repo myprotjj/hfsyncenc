@@ -2337,6 +2337,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             box-shadow: 0 0 8px rgba(56, 189, 248, 0.6) !important;
         }}
 
+        .sticky-filter-bar {{
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(11, 15, 25, 0.94);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            padding: 12px 0 8px 0;
+            margin-bottom: 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+            transition: all 0.2s ease;
+        }}
+        .sticky-filter-bar .toolbar {{
+            margin-bottom: 0;
+        }}
+        .sticky-filter-bar .active-chips-bar {{
+            margin-top: 8px;
+            margin-bottom: 0;
+        }}
+
         .toolbar {{
             display: flex;
             gap: 10px;
@@ -4079,83 +4100,85 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             </div>
         </div>
 
-        <div class="toolbar">
-            <input type="text" id="searchInput" class="search-input" placeholder="&#128269; Search by title, tag, genre, account, folder..." oninput="filterTree()">
-            
-            <div class="multi-filter-group">
-                <!-- Multi-select Tags Popover -->
-                <div class="popover-wrapper" id="tagPopoverWrapper">
-                    <button type="button" class="filter-pill-btn" id="tagPillBtn" onclick="toggleFilterPopover('tagPopover', event)" title="Filter by tags (resolution, duration, content type)">
-                        <span class="pill-icon">&#127991;</span>
-                        <span class="pill-label">Tags</span>
-                        <span class="pill-badge" id="tagCountBadge" style="display: none;">0</span>
-                        <span class="pill-arrow">&#9662;</span>
-                    </button>
-                    <div class="filter-popover" id="tagPopover" style="display: none;">
-                        <div class="popover-header">
-                            <input type="text" class="popover-search" placeholder="Filter tags..." oninput="filterPopoverList('tagPopover', this.value)">
-                            <div class="popover-actions">
-                                <button type="button" onclick="selectAllFilter('tag')">Select All</button>
-                                <button type="button" onclick="clearFilter('tag')">Clear</button>
+        <div class="sticky-filter-bar" id="stickyFilterBar">
+            <div class="toolbar">
+                <input type="text" id="searchInput" class="search-input" placeholder="&#128269; Search by title, tag, genre, account, folder..." oninput="filterTree()">
+                
+                <div class="multi-filter-group">
+                    <!-- Multi-select Tags Popover -->
+                    <div class="popover-wrapper" id="tagPopoverWrapper">
+                        <button type="button" class="filter-pill-btn" id="tagPillBtn" onclick="toggleFilterPopover('tagPopover', event)" title="Filter by tags (resolution, duration, content type)">
+                            <span class="pill-icon">&#127991;</span>
+                            <span class="pill-label">Tags</span>
+                            <span class="pill-badge" id="tagCountBadge" style="display: none;">0</span>
+                            <span class="pill-arrow">&#9662;</span>
+                        </button>
+                        <div class="filter-popover" id="tagPopover" style="display: none;">
+                            <div class="popover-header">
+                                <input type="text" class="popover-search" placeholder="Filter tags..." oninput="filterPopoverList('tagPopover', this.value)">
+                                <div class="popover-actions">
+                                    <button type="button" onclick="selectAllFilter('tag')">Select All</button>
+                                    <button type="button" onclick="clearFilter('tag')">Clear</button>
+                                </div>
                             </div>
+                            <div class="popover-list" id="tagPopoverList"></div>
                         </div>
-                        <div class="popover-list" id="tagPopoverList"></div>
                     </div>
+
+                    <!-- Multi-select Categories Popover -->
+                    <div class="popover-wrapper" id="genrePopoverWrapper">
+                        <button type="button" class="filter-pill-btn" id="genrePillBtn" onclick="toggleFilterPopover('genrePopover', event)" title="Filter by category or genre">
+                            <span class="pill-icon">&#128193;</span>
+                            <span class="pill-label">Categories</span>
+                            <span class="pill-badge" id="genreCountBadge" style="display: none;">0</span>
+                            <span class="pill-arrow">&#9662;</span>
+                        </button>
+                        <div class="filter-popover" id="genrePopover" style="display: none;">
+                            <div class="popover-header">
+                                <input type="text" class="popover-search" placeholder="Filter categories..." oninput="filterPopoverList('genrePopover', this.value)">
+                                <div class="popover-actions">
+                                    <button type="button" onclick="selectAllFilter('genre')">Select All</button>
+                                    <button type="button" onclick="clearFilter('genre')">Clear</button>
+                                </div>
+                            </div>
+                            <div class="popover-list" id="genrePopoverList"></div>
+                        </div>
+                    </div>
+
+                    <!-- Multi-select Accounts Popover -->
+                    <div class="popover-wrapper" id="accountPopoverWrapper">
+                        <button type="button" class="filter-pill-btn" id="accountPillBtn" onclick="toggleFilterPopover('accountPopover', event)" title="Filter by Hugging Face account">
+                            <span class="pill-icon">&#128100;</span>
+                            <span class="pill-label">Accounts</span>
+                            <span class="pill-badge" id="accountCountBadge" style="display: none;">0</span>
+                            <span class="pill-arrow">&#9662;</span>
+                        </button>
+                        <div class="filter-popover" id="accountPopover" style="display: none;">
+                            <div class="popover-header">
+                                <input type="text" class="popover-search" placeholder="Filter accounts..." oninput="filterPopoverList('accountPopover', this.value)">
+                                <div class="popover-actions">
+                                    <button type="button" onclick="selectAllFilter('account')">Select All</button>
+                                    <button type="button" onclick="clearFilter('account')">Clear</button>
+                                </div>
+                            </div>
+                            <div class="popover-list" id="accountPopoverList"></div>
+                        </div>
+                    </div>
+
+                    <button onclick="resetAllFilters()" id="btnResetFilters" class="tool-btn" style="display: none;" title="Reset all active filters and search">&#128260; Reset</button>
                 </div>
 
-                <!-- Multi-select Categories Popover -->
-                <div class="popover-wrapper" id="genrePopoverWrapper">
-                    <button type="button" class="filter-pill-btn" id="genrePillBtn" onclick="toggleFilterPopover('genrePopover', event)" title="Filter by category or genre">
-                        <span class="pill-icon">&#128193;</span>
-                        <span class="pill-label">Categories</span>
-                        <span class="pill-badge" id="genreCountBadge" style="display: none;">0</span>
-                        <span class="pill-arrow">&#9662;</span>
-                    </button>
-                    <div class="filter-popover" id="genrePopover" style="display: none;">
-                        <div class="popover-header">
-                            <input type="text" class="popover-search" placeholder="Filter categories..." oninput="filterPopoverList('genrePopover', this.value)">
-                            <div class="popover-actions">
-                                <button type="button" onclick="selectAllFilter('genre')">Select All</button>
-                                <button type="button" onclick="clearFilter('genre')">Clear</button>
-                            </div>
-                        </div>
-                        <div class="popover-list" id="genrePopoverList"></div>
-                    </div>
+                <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
+                <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
+                <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
+                <div class="view-toggle-group">
+                    <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn" title="Switch to Cards Grid View">&#127183; Cards</button>
+                    <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn" title="Switch to List Row View">&#9776; List</button>
                 </div>
-
-                <!-- Multi-select Accounts Popover -->
-                <div class="popover-wrapper" id="accountPopoverWrapper">
-                    <button type="button" class="filter-pill-btn" id="accountPillBtn" onclick="toggleFilterPopover('accountPopover', event)" title="Filter by Hugging Face account">
-                        <span class="pill-icon">&#128100;</span>
-                        <span class="pill-label">Accounts</span>
-                        <span class="pill-badge" id="accountCountBadge" style="display: none;">0</span>
-                        <span class="pill-arrow">&#9662;</span>
-                    </button>
-                    <div class="filter-popover" id="accountPopover" style="display: none;">
-                        <div class="popover-header">
-                            <input type="text" class="popover-search" placeholder="Filter accounts..." oninput="filterPopoverList('accountPopover', this.value)">
-                            <div class="popover-actions">
-                                <button type="button" onclick="selectAllFilter('account')">Select All</button>
-                                <button type="button" onclick="clearFilter('account')">Clear</button>
-                            </div>
-                        </div>
-                        <div class="popover-list" id="accountPopoverList"></div>
-                    </div>
-                </div>
-
-                <button onclick="resetAllFilters()" id="btnResetFilters" class="tool-btn" style="display: none;" title="Reset all active filters and search">&#128260; Reset</button>
             </div>
 
-            <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
-            <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
-            <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
-            <div class="view-toggle-group">
-                <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn" title="Switch to Cards Grid View">&#127183; Cards</button>
-                <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn" title="Switch to List Row View">&#9776; List</button>
-            </div>
+            <div id="activeFilterChipsBar" class="active-chips-bar" style="display: none;"></div>
         </div>
-
-        <div id="activeFilterChipsBar" class="active-chips-bar" style="display: none;"></div>
 
         <div class="tree-container" id="treeContainer">
             <!-- Tree populated dynamically via JS -->
@@ -5083,12 +5106,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         topFolder = topFolder.parentElement.closest('.folder-group');
                     }}
 
-                    // Move this playing folder to the very top of the list!
-                    if (treeContainer.firstElementChild !== topFolder) {{
-                        treeContainer.prepend(topFolder);
-                    }}
-
-                    // Mark as playing group
+                    // Root top folder remains in its natural tree position (do not reorder DOM)
                     document.querySelectorAll('.folder-group').forEach(fg => {{
                         fg.classList.remove('is-playing-group');
                         fg.querySelector('.folder-playing-badge')?.remove();
