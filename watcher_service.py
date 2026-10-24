@@ -1008,10 +1008,8 @@ def process_file_pipeline(
         safe_print(f"[{time.strftime('%H:%M:%S')}] [Syncing Cloud Metadata] Encrypted sidecar -> {repo_id}...")
         metadata_helper.sync_item_metadata_to_hf(api, repo_id, obfuscated_blob_path, record, password)
         cur_manifest = load_manifest()
-        repo_files = {k: v for k, v in cur_manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
-        metadata_helper.sync_repo_manifest_to_hf(api, repo_id, repo_files, password)
 
-        # Update canonical Master Index on Hugging Face
+        # Update canonical Master Index on Hugging Face (1 Master Index Update Only)
         master_repo = acc_mgr.get_master_repo_id() if acc_mgr else (os.getenv("REPO_ID") or f"{hf_username}/encrypted-media-vault")
         m_api = acc_mgr.get_api_for_repo(master_repo) if acc_mgr else api
         try:

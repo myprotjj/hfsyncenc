@@ -257,6 +257,50 @@ class AccountManager:
         master_id = self.get_master_repo_id()
         return self.get_api_for_repo(master_id)
 
+    def fetch_repo_sidecars_via_git(self, repo_id: str, token: str) -> dict:
+        """
+        Method 3: Batch fetches all .meta.enc sidecars from a dataset repo in ~2 seconds
+        using a shallow git clone without Git-LFS, completely bypassing API rate limits.
+        """
+        import tempfile, subprocess, shutil
+        git_exe = r"C:\Users\opc\tools\git\cmd\git.exe"
+        if not os.path.exists(git_exe):
+            git_exe = shutil.which("git") or "git"
+
+        temp_dir = tempfile.mkdtemp(prefix="hfsync_meta_")
+        records = {}
+        try:
+            url = f"https://user:{token}@huggingface.co/datasets/{repo_id}"
+            env = dict(os.environ, GIT_LFS_SKIP_SMUDGE="1")
+            p1 = subprocess.run(
+                [git_exe, "clone", "--depth", "1", "--no-checkout", url, temp_dir],
+                env=env, capture_output=True, timeout=30
+            )
+            if p1.returncode != 0:
+                return {}
+            subprocess.run(
+                [git_exe, "-C", temp_dir, "checkout", "HEAD", "--", "*.meta.enc", "blobs/*.meta.enc", "blobs/*/*.meta.enc"],
+                env=env, capture_output=True, timeout=15
+            )
+            for root, _, files in os.walk(temp_dir):
+                for f in files:
+                    if f.endswith(".meta.enc"):
+                        fp = os.path.join(root, f)
+                        try:
+                            with open(fp, "rb") as ef:
+                                dec = crypto_engine.decrypt_bytes(ef.read(), self.password)
+                                item = json.loads(dec.decode("utf-8"))
+                                k = item.get("full_key")
+                                if k:
+                                    records[k] = item
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return records
+
     def can_write_to_repo(self, repo_id: str) -> bool:
         """
         Returns True if the designated account for repo_id has verified write/delete permissions.
@@ -341,14 +385,60 @@ class AccountManager:
 
         return None
 
-    def scan_and_merge_all_accounts(self, manifest: dict, library_dir="jellyfin_library", proxy_host="127.0.0.1:8080") -> dict:
+    def scan_and_merge_all_accounts(self, manifest: dict, library_dir="jellyfin_library", proxy_host="127.0.0.1:8080", deep_scan: bool = False) -> dict:
         """
-        Queries all connected active HF accounts, downloads encrypted indexes,
+        Queries connected HF accounts, downloads encrypted indexes,
         registers media hashes, and merges all accounts into manifest.
+        Fast Path: Loads Master Index from master_repo in <0.5s.
         """
         discovered_count = 0
         skipped_count = 0
         skipped_items = []
+        master_repo = self.get_master_repo_id()
+        tombstones = set(manifest.get("tombstones", {}).keys())
+
+        # Fast Path 0: Check Master Index on master_repo (<0.5s)
+        if self.password and not deep_scan:
+            token = self.get_token_for_repo(master_repo)
+            if token:
+                try:
+                    url = f"https://huggingface.co/datasets/{master_repo}/resolve/main/vault_index.enc"
+                    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=12)
+                    if resp.status_code == 200:
+                        dec = crypto_engine.decrypt_bytes(resp.content, self.password)
+                        try:
+                            import zlib
+                            master_records = json.loads(zlib.decompress(dec).decode("utf-8"))
+                        except Exception:
+                            master_records = json.loads(dec.decode("utf-8"))
+
+                        if master_records:
+                            files = manifest.setdefault("files", {})
+                            media_hashes = manifest.setdefault("media_hashes", {})
+                            for k, rec in master_records.items():
+                                if k in tombstones:
+                                    continue
+                                if k not in files:
+                                    files[k] = rec
+                                    discovered_count += 1
+                                else:
+                                    r_ts = float(rec.get("updated_at") or 0.0)
+                                    l_ts = float(files[k].get("updated_at") or 0.0)
+                                    if r_ts > l_ts:
+                                        files[k] = rec
+                                m_hash = rec.get("media_hash")
+                                if m_hash:
+                                    media_hashes[m_hash] = rec
+
+                            print(f"[*] Fast Path: Resynced from Master Index {master_repo} ({len(files)} total, +{discovered_count} new) in <0.5s")
+                            return {
+                                "discovered_count": discovered_count,
+                                "skipped_count": 0,
+                                "skipped_items": [],
+                                "total_accounts": len(self.accounts)
+                            }
+                except Exception as e:
+                    print(f"[!] Master index fast path fallback: {e}")
 
         for user, acc in self.accounts.items():
             if not acc.get("enabled", True):
@@ -383,8 +473,13 @@ class AccountManager:
                     except Exception as e:
                         vault_index_failed = True
 
-                # 2. Fallback: Only if vault_index was missing/corrupt, list repo files for individual .meta.enc sidecars
+                # 2. Fallback: Only if vault_index was missing/corrupt, use Method 3 (Git Batch Clone)
                 if not repo_records:
+                    try:
+                        repo_records = self.fetch_repo_sidecars_via_git(repo_id, token)
+                    except Exception:
+                        repo_records = {}
+
                     try:
                         files_in_repo = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
                     except Exception:

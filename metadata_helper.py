@@ -879,11 +879,7 @@ def sync_all_manifest_metadata_to_hf(api: HfApi, manifest: dict, password: str, 
                     files_by_repo[repo_id] = {}
                 files_by_repo[repo_id][key] = record
 
-    # Push per-repo vault_index.enc
-    for repo_id, r_files in files_by_repo.items():
-        sync_repo_manifest_to_hf(api, repo_id, r_files, password)
-
-    # Push unified master index to default/master repo
+    # Push unified master index to default/master repo (Single Master Update)
     master_repo = f"{hf_username}/{default_repo}"
     try:
         sync_master_manifest_to_hf(api, master_repo, manifest, password)
