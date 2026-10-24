@@ -151,14 +151,17 @@ def process_screens_image(
             orig_w, orig_h = img.size
 
             # 1. Save full contact sheet image
-            # If extremely large (e.g. > 3000px wide), downscale slightly for smooth web viewing
-            save_img = img
+            # Preserve 100% exact original file bytes and SHA-256 hash when under 2560px
             if orig_w > 2560:
                 scale_factor = 2560.0 / orig_w
                 new_h = int(orig_h * scale_factor)
                 save_img = img.resize((2560, new_h), Image.Resampling.LANCZOS)
-
-            save_img.save(out_screens_jpg, "JPEG", quality=88, optimize=True)
+                save_img.save(out_screens_jpg, "JPEG", quality=92, optimize=True)
+            elif Path(screen_path).suffix.lower() in [".jpg", ".jpeg"] and img.mode == "RGB":
+                import shutil
+                shutil.copyfile(str(screen_path), out_screens_jpg)
+            else:
+                img.save(out_screens_jpg, "JPEG", quality=92, optimize=True)
 
             # 2. Crop or fit a crisp 16:9 thumbnail for the video card & Jellyfin
             sname = Path(screen_path).name.lower()

@@ -839,49 +839,6 @@ def process_file_pipeline(
         except Exception as sc_err:
             safe_print(f"[!] Companion screens check warning: {sc_err}")
 
-        # 4a. Detect and Process Companion Screens / Poster from Watch Folder
-        # Established BEFORE storyboard generation so companion covers are preserved without ffmpeg overwrite
-        screens_record = None
-        try:
-            matched_screen = screens_helper.find_matching_screens_file(file_path, base_dir=base_dir)
-            if matched_screen and matched_screen.is_file():
-                safe_id = storyboard_helper.get_safe_id(full_key)
-                screens_helper.process_screens_image(
-                    screen_path=matched_screen,
-                    safe_id=safe_id,
-                    library_dir=library_dir,
-                    video_rel_path=full_key
-                )
-                temp_screen_enc = f"{str(matched_screen)}.enc"
-                enc_sc_size = crypto_engine.encrypt_file(str(matched_screen), temp_screen_enc, password)
-                screens_blob = obfuscated_blob_path.replace(".enc", ".screens.jpg.enc")
-                api.upload_file(
-                    path_or_fileobj=temp_screen_enc,
-                    path_in_repo=screens_blob,
-                    repo_id=repo_id,
-                    repo_type="dataset",
-                    commit_message=commit_helper.get_human_commit_message("upload")
-                )
-                screens_record = {
-                    "blob_path": screens_blob,
-                    "repo_id": repo_id,
-                    "account": hf_username,
-                    "orig_size": os.path.getsize(str(matched_screen)),
-                    "enc_size": enc_sc_size,
-                    "format": "jpg",
-                    "safe_id": safe_id,
-                    "verifier": crypto_engine.create_verifier(password)
-                }
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Companion Screens Live] ({matched_screen.name}) -> {screens_blob}")
-                if os.path.exists(temp_screen_enc):
-                    os.remove(temp_screen_enc)
-                if delete_local and os.path.exists(str(matched_screen)):
-                    os.remove(str(matched_screen))
-                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned screens image: {matched_screen.name}")
-                    remove_empty_folders(base_dir)
-        except Exception as sc_err:
-            safe_print(f"[!] Companion screens check warning: {sc_err}")
-
         # Pre-generate 100-screen HD storyboard sprite sheet before deleting local video
         storyboard_record = None
         try:
