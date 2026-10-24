@@ -72,7 +72,9 @@ def get_storyboard_meta(key: str) -> dict:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             data["available"] = True
-            data["sprite_url"] = f"/api/storyboard/image?id={safe_id}"
+            mtime = int(os.path.getmtime(jpg_path)) if os.path.exists(jpg_path) else int(time.time())
+            data["sprite_url"] = f"/api/storyboard/image?id={safe_id}&v={mtime}"
+            data["mtime"] = mtime
             return data
         except Exception:
             pass
@@ -94,6 +96,23 @@ def get_storyboard_image_path(safe_id: str) -> str:
     if os.path.exists(jpg_path):
         return jpg_path
     return None
+
+
+def get_storyboard_version(safe_id_or_key: str) -> int:
+    """
+    Returns the modification timestamp of the storyboard image as an integer version tag.
+    Returns 0 if no storyboard exists.
+    """
+    try:
+        sid = str(safe_id_or_key).strip()
+        if len(sid) != 24 or not all(c in "0123456789abcdefABCDEF" for c in sid):
+            sid = get_safe_id(clean_key(sid))
+        jpg_path = os.path.join(STORYBOARD_DIR, f"{sid}.jpg")
+        if os.path.exists(jpg_path):
+            return int(os.path.getmtime(jpg_path))
+    except Exception:
+        pass
+    return 0
 
 
 def get_poster_thumb_path(safe_id: str) -> str:
@@ -161,6 +180,80 @@ def slice_poster_thumbnail(safe_id: str, overwrite: bool = False) -> str:
     except Exception as e:
         sys.stderr.write(f"[!] Error slicing poster thumbnail for {clean_id}: {e}\n")
         return None
+
+
+def add_timestamps_to_storyboard(jpg_path: str, duration: float, cols: int = 10, rows: int = 10) -> bool:
+    """
+    Overlays professional translucent timestamp badges (e.g. 00:05:24) in the bottom-right
+    corner of each tile in the 100-frame storyboard, matching movie contact sheet screenshots.
+    """
+    if not os.path.exists(jpg_path):
+        return False
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        dur = float(duration) if duration and duration > 0 else 180.0
+        total_frames = cols * rows
+
+        with Image.open(jpg_path) as base_im:
+            im = base_im.convert("RGBA")
+            overlay = Image.new("RGBA", im.size, (255, 255, 255, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            tw = im.width // cols
+            th = im.height // rows
+
+            font = None
+            font_paths = [
+                "C:/Windows/Fonts/arialbd.ttf",
+                "C:/Windows/Fonts/arial.ttf",
+                "C:/Windows/Fonts/segoeui.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            ]
+            for fp in font_paths:
+                if os.path.exists(fp):
+                    try:
+                        font = ImageFont.truetype(fp, 18)
+                        break
+                    except Exception:
+                        pass
+            if not font:
+                font = ImageFont.load_default()
+
+            for idx in range(total_frames):
+                c = idx % cols
+                r = idx // cols
+                x0 = c * tw
+                y0 = r * th
+
+                t_sec = int(round((idx / float(total_frames)) * dur))
+                m, s = divmod(t_sec, 60)
+                h, m = divmod(m, 60)
+                time_str = f"{h:02d}:{m:02d}:{s:02d}" if dur >= 3600 else f"{m:02d}:{s:02d}"
+
+                bbox = draw.textbbox((0, 0), time_str, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+
+                pad_x = 7
+                pad_y = 3
+                badge_w = text_w + pad_x * 2
+                badge_h = text_h + pad_y * 2
+
+                bx2 = x0 + tw - 8
+                by2 = y0 + th - 8
+                bx1 = bx2 - badge_w
+                by1 = by2 - badge_h
+
+                draw.rounded_rectangle([bx1, by1, bx2, by2], radius=4, fill=(0, 0, 0, 195), outline=(255, 255, 255, 50))
+                draw.text((bx1 + pad_x, by1 + pad_y - 1), time_str, fill=(255, 255, 255, 245), font=font)
+
+            out = Image.alpha_composite(im, overlay).convert("RGB")
+            out.save(jpg_path, "JPEG", quality=92, optimize=True)
+            return True
+    except Exception as e:
+        sys.stderr.write(f"[!] Warning overlaying timestamps on {jpg_path}: {e}\n")
+        return False
 
 
 def has_storyboard(key: str) -> bool:
@@ -263,6 +356,10 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
                 json.dump(meta, f, indent=2)
             try:
                 slice_poster_thumbnail(safe_id, overwrite=True)
+            except Exception:
+                pass
+            try:
+                add_timestamps_to_storyboard(jpg_path, duration=dur, cols=cols, rows=rows)
             except Exception:
                 pass
             return True

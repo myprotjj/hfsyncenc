@@ -1368,13 +1368,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Storyboard image not found")
             return
 
+        mtime = int(os.path.getmtime(img_path)) if os.path.exists(img_path) else int(time.time())
+        etag = f'"{safe_id}_{mtime}"'
+        if_none_match = self.headers.get("If-None-Match")
+        if if_none_match and if_none_match == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
         with open(img_path, "rb") as f:
             data = f.read()
 
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
@@ -1424,13 +1435,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Screens image not found")
             return
 
+        mtime = int(os.path.getmtime(img_path)) if os.path.exists(img_path) else int(time.time())
+        etag = f'"{safe_id}_{mtime}"'
+        if_none_match = self.headers.get("If-None-Match")
+        if if_none_match and if_none_match == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
         with open(img_path, "rb") as f:
             data = f.read()
 
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
@@ -1458,13 +1480,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Thumbnail not found")
             return
 
+        mtime = int(os.path.getmtime(thumb_path)) if os.path.exists(thumb_path) else int(time.time())
+        etag = f'"{safe_id}_{mtime}"'
+        if_none_match = self.headers.get("If-None-Match")
+        if if_none_match and if_none_match == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
         with open(thumb_path, "rb") as f:
             data = f.read()
 
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
@@ -1666,14 +1699,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 safe_id = storyboard_helper.get_safe_id(key)
                 has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+                sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 item = {
                     "key": key,
                     "safe_id": safe_id,
                     "has_storyboard": storyboard_helper.has_storyboard(key),
+                    "sb_version": sb_v,
                     "has_screens": has_screens_flag,
-                    "screens_url": f"/api/screens/image?id={safe_id}",
-                    "screens_thumb_url": f"/api/screens/thumb?id={safe_id}",
+                    "screens_url": f"/api/screens/image?id={safe_id}&v={sb_v}" if sb_v else f"/api/screens/image?id={safe_id}",
+                    "screens_thumb_url": f"/api/screens/thumb?id={safe_id}&v={sb_v}" if sb_v else f"/api/screens/thumb?id={safe_id}",
                     "duration_sec": dur_sec,
                     "duration_str": duration_str,
                     "account": account_owner,
@@ -1776,14 +1811,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 safe_id = storyboard_helper.get_safe_id(key)
                 has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+                sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 item = {
                     "key": key,
                     "safe_id": safe_id,
                     "has_storyboard": storyboard_helper.has_storyboard(key),
+                    "sb_version": sb_v,
                     "has_screens": has_screens_flag,
-                    "screens_url": f"/api/screens/image?id={safe_id}",
-                    "screens_thumb_url": f"/api/screens/thumb?id={safe_id}",
+                    "screens_url": f"/api/screens/image?id={safe_id}&v={sb_v}" if sb_v else f"/api/screens/image?id={safe_id}",
+                    "screens_thumb_url": f"/api/screens/thumb?id={safe_id}&v={sb_v}" if sb_v else f"/api/screens/thumb?id={safe_id}",
                     "duration_sec": dur_sec,
                     "duration_str": duration_str,
                     "account": account_owner,
@@ -4580,7 +4617,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
             let url = '/api/screens/image?id=' + encodeURIComponent(safeId);
             if (fileObj && !fileObj.has_screens && fileObj.has_storyboard) {{
-                url = '/api/storyboard/image?id=' + encodeURIComponent(safeId);
+                const sb = storyboardCache[safeId];
+                url = sb ? sb.sprite_url : ('/api/storyboard/image?id=' + encodeURIComponent(safeId) + '&v=' + Date.now());
             }}
 
             img.src = url;
@@ -4602,8 +4640,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         let editingKey = null;
 
         const storyboardCache = {{}};
-        function registerStoryboard(safeId, key) {{
+        function registerStoryboard(safeId, key, version) {{
             if (!safeId) return;
+            const vTag = version || Date.now();
             const entry = {{
                 available: true,
                 safe_id: safeId,
@@ -4613,7 +4652,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 thumb_width: 384,
                 thumb_height: 216,
                 total_frames: 100,
-                sprite_url: `/api/storyboard/image?id=${{safeId}}`
+                vTag: vTag,
+                sprite_url: `/api/storyboard/image?id=${{safeId}}&v=${{vTag}}`
             }};
             storyboardCache[safeId] = entry;
             if (key) storyboardCache[key] = entry;
@@ -4622,7 +4662,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         function syncStoryboardCache(filesList) {{
             (filesList || []).forEach(f => {{
                 if ((f.has_storyboard || f.has_screens) && f.safe_id) {{
-                    registerStoryboard(f.safe_id, f.key);
+                    const v = f.sb_version || f.uploaded_at || Date.now();
+                    registerStoryboard(f.safe_id, f.key, v);
                 }}
             }});
         }}
@@ -4774,7 +4815,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             let thumbBgStyle = '';
             let fallbackHtml = '';
             if ((hasStoryboard || hasScreens) && safeId) {{
-                const vTag = f.uploaded_at ? encodeURIComponent(f.uploaded_at) : '1';
+                const vTag = f.sb_version || (f.uploaded_at ? encodeURIComponent(f.uploaded_at) : '1');
                 thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "&v=" + vTag + "'); background-size: cover; background-position: center;";
             }} else {{
                 fallbackHtml = '<div class="thumb-fallback"><span class="thumb-fallback-icon">&#127916;</span><span class="thumb-fallback-txt">PREVIEW</span></div>';
@@ -4917,7 +4958,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             let thumbBgStyle = '';
             let fallbackHtml = '';
             if ((hasStoryboard || hasScreens) && safeId) {{
-                const vTag = f.uploaded_at ? encodeURIComponent(f.uploaded_at) : '1';
+                const vTag = f.sb_version || (f.uploaded_at ? encodeURIComponent(f.uploaded_at) : '1');
                 thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "&v=" + vTag + "'); background-size: cover; background-position: center;";
             }} else {{
                 fallbackHtml = '<div class="thumb-fallback"><span class="thumb-fallback-icon">&#127916;</span><span class="thumb-fallback-txt">PREVIEW</span></div>';
