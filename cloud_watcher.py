@@ -59,6 +59,7 @@ def merge_remote_repo_records(
 
         files = manifest.setdefault("files", {})
         media_hashes = manifest.setdefault("media_hashes", {})
+        tombstones = manifest.setdefault("tombstones", {})
 
         added = []
         updated = []
@@ -78,6 +79,10 @@ def merge_remote_repo_records(
 
         # 1. Process remote records (additions and updates)
         for key, r_rec in remote_records.items():
+            # Never resurrect files that were explicitly deleted!
+            if key in tombstones:
+                continue
+
             r_rec["full_key"] = key
             r_rec["repo_id"] = r_rec.get("repo_id") or repo_id
             r_ts = float(r_rec.get("updated_at") or 0.0)
@@ -101,9 +106,11 @@ def merge_remote_repo_records(
 
         # 2. Detect remote deletions (file existed locally in repo_id, but is gone from remote index)
         remote_keys_set = set(remote_records.keys())
+        now_ts = time.time()
         for k in local_repo_keys:
             if k not in remote_keys_set:
                 del files[k]
+                tombstones[k] = now_ts
                 deleted.append(k)
 
         # 3. Save updated manifest atomically if any changes occurred

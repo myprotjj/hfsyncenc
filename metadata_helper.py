@@ -768,7 +768,7 @@ def sync_master_manifest_to_hf(
     Encrypts the entire multi-repository library index and uploads it as
     the canonical 'vault_index.enc' in the Master Repository root.
     Uses zlib compression before AES-256-GCM encryption for ultra-compact storage (<30MB for 100k files).
-    Uses optimistic union-merge so concurrent writes from multiple servers merge cleanly.
+    Uses optimistic union-merge with tombstone support so deleted files stay deleted.
     """
     import random
     import time
@@ -777,14 +777,19 @@ def sync_master_manifest_to_hf(
     if not manifest_or_files:
         return False
 
-    if isinstance(manifest_or_files, dict) and "files" in manifest_or_files:
-        raw_files = manifest_or_files["files"]
+    tombstones = set()
+    if isinstance(manifest_or_files, dict):
+        if "tombstones" in manifest_or_files and isinstance(manifest_or_files["tombstones"], dict):
+            tombstones = set(manifest_or_files["tombstones"].keys())
+        raw_files = manifest_or_files.get("files", manifest_or_files)
     else:
         raw_files = manifest_or_files
 
     local_records = {}
     now_ts = round(time.time(), 3)
     for k, v in raw_files.items():
+        if k in tombstones:
+            continue
         if isinstance(v, dict) and v.get("status") == "uploaded":
             rec = dict(v)
             rec["full_key"] = k
@@ -795,16 +800,14 @@ def sync_master_manifest_to_hf(
                 rec["updated_at"] = now_ts
             local_records[k] = rec
 
-    if not local_records:
-        return False
-
     token = getattr(api, "token", None) or os.environ.get("HF_TOKEN", "")
 
     for attempt in range(max_retries):
         payload_records = dict(local_records)
 
-        # On every attempt, pull latest remote master index to union-merge
-        if token:
+        # On retry (conflict detected), fetch remote master index and union-merge additions
+        # BUT explicitly skip any deleted files in tombstones!
+        if attempt > 0 and token:
             try:
                 url = f"https://huggingface.co/datasets/{master_repo_id}/resolve/main/vault_index.enc"
                 resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
@@ -816,6 +819,9 @@ def sync_master_manifest_to_hf(
                         remote_dict = json.loads(dec.decode("utf-8"))
 
                     for r_k, r_v in remote_dict.items():
+                        if r_k in tombstones:
+                            # File was deleted! Never resurrect!
+                            continue
                         if r_k not in payload_records:
                             payload_records[r_k] = r_v
                         else:

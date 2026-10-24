@@ -135,6 +135,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
     def resolve_remote_blob(self, path_after_stream: str):
         manifest = load_manifest()
         clean_key = path_after_stream.strip("/").replace("\\", "/")
+        if clean_key in manifest.get("tombstones", {}):
+            return None, None
 
         if clean_key in manifest.get("files", {}):
             info = manifest["files"][clean_key]
@@ -2713,9 +2715,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 pass
         metadata_helper.delete_nfo_files("jellyfin_library", key_to_delete)
 
-        # 3. Clean memory cache and manifest file entry
+        # 3. Clean memory cache and manifest file entry + add to tombstones
         FILE_CACHE.pop(key_to_delete, None)
         manifest.get("files", {}).pop(key_to_delete, None)
+        manifest.setdefault("tombstones", {})[key_to_delete] = time.time()
 
         # 4. Clean all references from other file entries (aliases, file_names)
         base_del = Path(key_to_delete).name
@@ -2769,9 +2772,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     logger.info("Deleted empty HF vault repository %s", repo_id)
                 else:
                     metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
-                    self.sync_master_index_to_cloud()
             except Exception as e:
                 logger.warning("Could not sync repo manifest after delete for %s: %s", repo_id, e)
+
+        # Always sync canonical master index so deleted files are removed from the master index!
+        self.sync_master_index_to_cloud()
 
         return {"success": True, "hf_deleted": hf_deleted, "repo_id": repo_id}
 
@@ -2877,9 +2882,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             logger.info("Deleted empty HF vault repository %s", repo_id)
                         else:
                             metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
-                            self.sync_master_index_to_cloud()
                     except Exception as e:
                         logger.warning("Could not sync repo manifest after batch delete for %s: %s", repo_id, e)
+
+            # Always sync master index after batch delete
+            self.sync_master_index_to_cloud()
 
         # Clean local library folder and save manifest
         self._send_stream_chunk({
@@ -15244,6 +15251,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         meta = self.get_file_metadata(path_after_stream, repo_id=repo_id, blob_path=blob_path, custom_content_type=custom_content_type)
         if not meta:
+            # Ghost file detected (blob/repo was deleted on HF) -> auto-prune from local manifest and master index
+            try:
+                if clean_key in manifest.get("files", {}):
+                    manifest["files"].pop(clean_key, None)
+                    manifest.setdefault("tombstones", {})[clean_key] = time.time()
+                    save_manifest(manifest)
+                    self.sync_master_index_to_cloud()
+                    activity_tracker.tracker.notify_manifest_updated()
+            except Exception:
+                pass
             self.send_error(404, f"File {path_after_stream} not found in Hugging Face dataset")
             return
 
