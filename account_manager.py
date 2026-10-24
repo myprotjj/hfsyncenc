@@ -148,6 +148,13 @@ class AccountManager:
             return self.accounts[first_user]
         return None
 
+    def get_alternative_upload_account(self, current_username: str):
+        """Returns another enabled account with valid write API when current_username is throttled."""
+        for user, acc in self.accounts.items():
+            if user != current_username and acc.get("enabled", True) and acc.get("api"):
+                return acc
+        return None
+
     def get_all_accounts(self):
         """Returns list of all configured Hugging Face accounts."""
         return list(self.accounts.values())

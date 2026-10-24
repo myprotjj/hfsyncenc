@@ -43,6 +43,95 @@ def safe_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
+RATE_LIMIT_LOCK = threading.Lock()
+RATE_LIMIT_PAUSE_UNTIL = 0
+CONSECUTIVE_RATE_LIMITS = 0
+THROTTLED_ACCOUNTS = {}  # {username: unpause_timestamp}
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """
+    Detects if an exception is an HTTP 429 Too Many Requests or commit rate limit from Hugging Face.
+    """
+    if exc is None:
+        return False
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 429:
+        return True
+    if getattr(exc, "status_code", None) == 429:
+        return True
+    msg = str(exc).lower()
+    patterns = [
+        "429",
+        "rate limit",
+        "too many requests",
+        "secondary rate limit",
+        "quota exceeded",
+        "commit limit",
+        "exceeded your",
+        "please wait",
+    ]
+    return any(p in msg for p in patterns)
+
+
+def extract_retry_after(exc: Exception) -> int:
+    """
+    Attempts to extract explicit retry-after duration from response headers or error message.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        headers = getattr(resp, "headers", {})
+        ra = headers.get("Retry-After") or headers.get("retry-after")
+        if ra and str(ra).strip().isdigit():
+            return int(str(ra).strip())
+    msg = str(exc).lower()
+    m = re.search(r"wait\s+(\d+)\s*(s|sec|second|m|min|minute|h|hour)", msg)
+    if m:
+        val, unit = int(m.group(1)), m.group(2)
+        if "h" in unit:
+            return val * 3600
+        elif "m" in unit:
+            return val * 60
+        return val
+    return 0
+
+
+def trigger_rate_limit_cooldown(exc: Exception, account_username: str) -> int:
+    """
+    Enters a graceful cooldown period when Hugging Face rate limit is encountered.
+    Never forces or hammers the API. All original files stay safe on disk.
+    """
+    global RATE_LIMIT_PAUSE_UNTIL, CONSECUTIVE_RATE_LIMITS, THROTTLED_ACCOUNTS
+    with RATE_LIMIT_LOCK:
+        CONSECUTIVE_RATE_LIMITS += 1
+        explicit_wait = extract_retry_after(exc)
+        if explicit_wait > 0:
+            pause_sec = explicit_wait + 5
+        else:
+            # Exponential backoff schedule: 60s -> 300s (5m) -> 900s (15m) -> 1800s (30m)
+            backoff_schedule = [60, 300, 900, 1800]
+            idx = min(CONSECUTIVE_RATE_LIMITS - 1, len(backoff_schedule) - 1)
+            pause_sec = backoff_schedule[idx]
+
+        cooldown_until = time.time() + pause_sec
+        RATE_LIMIT_PAUSE_UNTIL = max(RATE_LIMIT_PAUSE_UNTIL, cooldown_until)
+        if account_username:
+            THROTTLED_ACCOUNTS[account_username] = cooldown_until
+
+        pause_min = pause_sec / 60
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [⏸️ HF RATE LIMIT COOLDOWN] Commit rate limit reached on Hugging Face for '{account_username}'.")
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [*] Zero files lost! Local originals stay untouched in watch folder.")
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [*] Pausing upload worker for {pause_sec}s ({pause_min:.1f} min). Zero requests sent during cooldown.")
+
+        activity_tracker.tracker.add_event(
+            "warning",
+            "⏸️ HF Rate Limit Cooldown",
+            f"Commit quota reached on Hugging Face ({account_username}). Pausing for {pause_sec}s. All files remain safe on disk.",
+            account=account_username
+        )
+        return pause_sec
+
+
 def sanitize_repo_name(name: str) -> str:
     clean = re.sub(r'[^a-zA-Z0-9_\-\.]', '-', name).strip('-._')
     return clean or "default-vault"
@@ -231,7 +320,10 @@ def process_standalone_subtitle(
             safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned standalone subtitle: {file_path.name}")
         return True
     except Exception as e:
-        safe_print(f"[!] Error processing standalone subtitle {file_path}: {e}")
+        if is_rate_limit_error(e):
+            trigger_rate_limit_cooldown(e, hf_username)
+        else:
+            safe_print(f"[!] Error processing standalone subtitle {file_path}: {e}")
         return False
 
 
@@ -568,9 +660,13 @@ def process_file_pipeline(
         safe_print(f"[{time.strftime('%H:%M:%S')}] SUCCESS: {full_key} is live and streamable on Jellyfin with NFO & HF Cloud metadata!\n")
 
     except Exception as e:
-        safe_print(f"[!] Error processing {file_path}: {e}")
-        activity_tracker.tracker.finish_task(full_key, "error", f"Error: {e}", 0)
-        activity_tracker.tracker.add_event("error", f"Failed: {file_path.name}", str(e), account=hf_username)
+        if is_rate_limit_error(e):
+            trigger_rate_limit_cooldown(e, hf_username)
+            activity_tracker.tracker.finish_task(full_key, "paused", "Paused: HF rate limit reached. Auto-resuming safely.", 0)
+        else:
+            safe_print(f"[!] Error processing {file_path}: {e}")
+            activity_tracker.tracker.finish_task(full_key, "error", f"Error: {e}", 0)
+            activity_tracker.tracker.add_event("error", f"Failed: {file_path.name}", str(e), account=hf_username)
         temp_enc = f"{str_path}.tmp.enc"
         if os.path.exists(temp_enc):
             try:
@@ -657,6 +753,36 @@ def watch_and_sync(
                         api = new_upload_acc["api"]
                         safe_print(f"[*] Live Config Reload: Primary upload account switched to: {hf_username} [Primary]")
                         activity_tracker.tracker.add_event("info", "Upload Account Switched", f"Primary uploader is now {hf_username}", account=hf_username)
+
+            # Check for Hugging Face Rate Limit Cooldown
+            now = time.time()
+            if now < RATE_LIMIT_PAUSE_UNTIL:
+                # Check if an alternative un-throttled account is available
+                alt_acc = acc_mgr.get_alternative_upload_account(hf_username) if acc_mgr else None
+                alt_throttled = False
+                if alt_acc:
+                    alt_name = alt_acc["username"]
+                    if THROTTLED_ACCOUNTS.get(alt_name, 0) > now:
+                        alt_throttled = True
+
+                if alt_acc and not alt_throttled:
+                    safe_print(f"[*] [Rate Limit Failover] Account '{hf_username}' is in cooldown. Switching upload worker to '{alt_acc['username']}'...")
+                    hf_username = alt_acc["username"]
+                    api = alt_acc["api"]
+                    activity_tracker.tracker.add_event("info", "Rate Limit Failover", f"Switched uploader to {hf_username}", account=hf_username)
+                    RATE_LIMIT_PAUSE_UNTIL = 0
+                else:
+                    remaining = int(RATE_LIMIT_PAUSE_UNTIL - now)
+                    if remaining % 30 == 0 or remaining <= 5:
+                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Rate Limit Cooldown Active] Paused for {remaining}s. Zero API requests sent. Originals safe on disk.")
+                    time.sleep(poll_interval)
+                    continue
+
+            # If cooldown just elapsed:
+            if CONSECUTIVE_RATE_LIMITS > 0 and time.time() >= RATE_LIMIT_PAUSE_UNTIL:
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [Rate Limit Cooldown Finished] Resuming upload pipeline automatically...")
+                activity_tracker.tracker.add_event("info", "Uploads Resumed", "Rate limit cooldown finished; resuming processing.")
+                CONSECUTIVE_RATE_LIMITS = 0
 
             candidates = []
             for root, _, files in os.walk(base_dir):

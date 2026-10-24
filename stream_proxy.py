@@ -6301,6 +6301,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         else if (t.stage === 'metadata') {{ stageIcon = '🏷️'; stageColor = '#34d399'; }}
                         else if (t.stage === 'completed') {{ stageIcon = '✅'; stageColor = '#10b981'; }}
                         else if (t.stage === 'skipped_duplicate') {{ stageIcon = '⏭️'; stageColor = '#f59e0b'; }}
+                        else if (t.stage === 'paused') {{ stageIcon = '⏸️'; stageColor = '#f59e0b'; }}
                         else if (t.stage === 'error') {{ stageIcon = '❌'; stageColor = '#ef4444'; }}
 
                         return `
