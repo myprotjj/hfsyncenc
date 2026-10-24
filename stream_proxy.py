@@ -2858,16 +2858,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return
 
         safe_id = storyboard_helper.get_safe_id(key)
-        if screens_helper.has_screens(safe_id):
-            resp_body = json.dumps({"available": False, "has_screens": True, "safe_id": safe_id}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(resp_body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(resp_body)
-            return
-
         meta = storyboard_helper.get_storyboard_meta(key)
         if not meta.get("available"):
             port = self.server.server_address[1] if hasattr(self.server, "server_address") else 8080
@@ -3274,7 +3264,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 safe_id = storyboard_helper.get_safe_id(key)
                 has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
-                has_sb_flag = False if has_screens_flag else (bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key))
+                has_sb_flag = bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key)
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
@@ -3403,7 +3393,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 safe_id = storyboard_helper.get_safe_id(key)
                 has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
-                has_sb_flag = False if has_screens_flag else (bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key))
+                has_sb_flag = bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key)
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
@@ -10242,10 +10232,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (!canvas) return;
 
             const fileObj = (allFiles || []).find(f => (f.safe_id === safeId || f.key === key));
-            // If the video already has companion screens, do NOT generate or poll ffmpeg storyboards!
-            if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
-                return;
-            }}
 
             // Remember initial static poster background
             if (!canvas.dataset.staticBg || canvas.dataset.staticBg === 'none' || canvas.dataset.staticBg === '') {{
