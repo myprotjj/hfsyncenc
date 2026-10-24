@@ -29,6 +29,26 @@ SUPPORTED_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".webp"
 }
 
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm",
+    ".flv", ".ts", ".m4v"
+}
+
+IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".webp"
+}
+
+SCREEN_FOLDER_NAMES = {
+    "screens", "screen", "thumbs", "thumb", "covers", "cover", "posters", "poster", "artwork", "storyboards"
+}
+
+SUB_FOLDER_NAMES = {
+    "subs", "sub", "subtitles", "subtitle"
+}
+
+SKIPPED_UNMATCHED_FILES = set()
+UNMATCHED_ATTEMPTS = {}
+
 IGNORED_EXTENSIONS = {
     ".tmp", ".part", ".crdownload", ".!qb", ".downloading", ".temp"
 }
@@ -243,6 +263,124 @@ def auto_generate_strm(repo_folder: str, rel_in_repo: str, proxy_host="127.0.0.1
         safe_print(f"[!] Warning generating .strm for {rel_in_repo}: {e}")
 
 
+def find_manifest_video_for_companion(file_path: Path, base_dir: Path, manifest: dict, companion_type: str = "screens") -> str:
+    """
+    Finds the matching video record key in the manifest for a companion screen/poster/subtitle file.
+    Robustly handles:
+      - video.mp4.jpg / video.mp4.png / video.mp4.webp
+      - video.screens.jpg / video_thumb.jpg / video-poster.jpg
+      - video.mp4.screens.jpg
+      - Files located in Screens/, Thumbs/, Covers/, Subs/ subfolders or parallel ancestor folders.
+      - Top-level repository directory name sanitization differences.
+    """
+    if not file_path or not manifest:
+        return None
+
+    raw_name = file_path.name.lower()
+    raw_stem = file_path.stem.lower()
+
+    # 1. Build comprehensive set of possible video stems and names
+    candidate_stems = {raw_stem, raw_name}
+
+    # If the stem ends with a video extension (e.g. video.mp4.jpg -> stem is video.mp4)
+    for vext in VIDEO_EXTENSIONS:
+        if raw_stem.endswith(vext):
+            candidate_stems.add(raw_stem[:-len(vext)])
+            break
+
+    # Strip screen and thumbnail suffixes
+    suffixes = [
+        ".screens", "-screens", "_screens", " screens",
+        ".screen", "_screen", "-screen",
+        "_thumb", "-thumb", ".thumb",
+        "_poster", "-poster", ".poster",
+        "_cover", "-cover", ".cover",
+        "_preview", "-preview", ".preview"
+    ]
+    for sfx in suffixes:
+        for s in list(candidate_stems):
+            if s.endswith(sfx):
+                rem = s[:-len(sfx)]
+                candidate_stems.add(rem)
+                for vext in VIDEO_EXTENSIONS:
+                    if rem.endswith(vext):
+                        candidate_stems.add(rem[:-len(vext)])
+
+    # If subtitle: also strip language codes (e.g. video.en.srt -> video)
+    if companion_type == "subtitles":
+        for s in list(candidate_stems):
+            if "." in s:
+                rem = s.rsplit(".", 1)[0]
+                candidate_stems.add(rem)
+                for vext in VIDEO_EXTENSIONS:
+                    if rem.endswith(vext):
+                        candidate_stems.add(rem[:-len(vext)])
+
+    # 2. Extract and normalize directory path
+    try:
+        rel = file_path.relative_to(base_dir)
+        parts = list(rel.parts)
+    except Exception:
+        parts = [file_path.name]
+
+    ignored_folders = SCREEN_FOLDER_NAMES if companion_type == "screens" else SUB_FOLDER_NAMES
+
+    if len(parts) > 1:
+        repo_name = sanitize_repo_name(parts[0])
+        # Filter out screen/sub folder tokens from intermediate parts
+        clean_subparts = [p for p in parts[1:-1] if p.lower() not in ignored_folders]
+        norm_parent = "/".join([repo_name] + clean_subparts).lower()
+        norm_sub_parent = "/".join(clean_subparts).lower()
+    else:
+        repo_name = ""
+        norm_parent = "."
+        norm_sub_parent = ""
+
+    files = manifest.get("files", {})
+
+    # 3. Direct match: Exact parent and candidate stem/name
+    for key in files.keys():
+        k_path = Path(key)
+        k_parent = k_path.parent.as_posix().lower()
+        k_sub_parent = "/".join(k_path.parent.parts[1:]).lower() if len(k_path.parent.parts) > 1 else ""
+        k_stem = k_path.stem.lower()
+        k_name = k_path.name.lower()
+
+        if norm_parent == "." or k_parent == norm_parent or (norm_sub_parent and k_sub_parent == norm_sub_parent):
+            if k_stem in candidate_stems or k_name in candidate_stems:
+                return key
+
+    # 4. Flexible match: Subfolder nesting / prefix / suffix parent matching
+    for key in files.keys():
+        k_path = Path(key)
+        k_parent = k_path.parent.as_posix().lower()
+        k_stem = k_path.stem.lower()
+        k_name = k_path.name.lower()
+
+        if k_stem in candidate_stems or k_name in candidate_stems:
+            if norm_parent != "." and (norm_parent.endswith(k_parent) or k_parent.endswith(norm_parent)):
+                return key
+
+    # 5. Repo-scoped unique fallback
+    if repo_name:
+        repo_matches = [
+            k for k in files.keys()
+            if k.lower().startswith(repo_name.lower() + "/") and (Path(k).stem.lower() in candidate_stems or Path(k).name.lower() in candidate_stems)
+        ]
+        if len(repo_matches) == 1:
+            return repo_matches[0]
+
+    # 6. Global unique fallback across vault
+    global_matches = [
+        k for k in files.keys()
+        if Path(k).stem.lower() in candidate_stems or Path(k).name.lower() in candidate_stems
+    ]
+    if len(global_matches) == 1:
+        return global_matches[0]
+
+    return None
+
+
 def process_standalone_subtitle(
     file_path: Path,
     base_dir: Path,
@@ -250,28 +388,46 @@ def process_standalone_subtitle(
     api: HfApi,
     hf_username: str,
     password: str,
-    delete_local: bool
+    delete_local: bool,
+    acc_mgr: account_manager.AccountManager = None
 ):
+    str_path = str(file_path)
     try:
         manifest = load_manifest()
-        sub_stem = file_path.stem.lower()
-        sub_parent = file_path.parent.relative_to(base_dir).as_posix()
-
-        matching_key = None
-        for key in manifest.get("files", {}).keys():
-            k_path = Path(key)
-            k_parent = k_path.parent.as_posix()
-            k_stem = k_path.stem.lower()
-            if (sub_parent == "." or k_parent == sub_parent) and (sub_stem == k_stem or sub_stem.startswith(k_stem + ".")):
-                matching_key = key
-                break
+        matching_key = find_manifest_video_for_companion(file_path, base_dir, manifest, companion_type="subtitles")
 
         if not matching_key:
+            video_stem = file_path.stem.lower()
+            if "." in video_stem:
+                video_stem = video_stem.rsplit(".", 1)[0]
+            for vext in VIDEO_EXTENSIONS:
+                if video_stem.endswith(vext):
+                    video_stem = video_stem[:-len(vext)]
+                    break
+            is_pending = False
+            with MANIFEST_LOCK:
+                for in_f in IN_PROGRESS_FILES:
+                    if video_stem in Path(in_f).name.lower():
+                        is_pending = True
+                        break
+
+            if is_pending:
+                return False
+
+            UNMATCHED_ATTEMPTS[str_path] = UNMATCHED_ATTEMPTS.get(str_path, 0) + 1
+            if UNMATCHED_ATTEMPTS[str_path] >= 3:
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [!] Standalone subtitle '{file_path.name}' has no matching video in manifest. Pausing retries.")
+                SKIPPED_UNMATCHED_FILES.add(str_path)
             return False
+
+        UNMATCHED_ATTEMPTS.pop(str_path, None)
 
         video_record = manifest["files"][matching_key]
         repo_id = video_record.get("repo_id")
         obfuscated_blob_path = video_record.get("blob_path")
+        target_acc = video_record.get("account") or hf_username
+        target_api = acc_mgr.get_api_for_repo(repo_id) if acc_mgr else api
+
         if not repo_id or not obfuscated_blob_path:
             return False
 
@@ -283,7 +439,7 @@ def process_standalone_subtitle(
         sub_enc_size = crypto_engine.encrypt_file(str(file_path), temp_sub_enc, password)
         sub_blob = obfuscated_blob_path.replace(".enc", f".sub.{lang_code}.srt.enc")
 
-        api.upload_file(
+        target_api.upload_file(
             path_or_fileobj=temp_sub_enc,
             path_in_repo=sub_blob,
             repo_id=repo_id,
@@ -296,7 +452,7 @@ def process_standalone_subtitle(
             "label": lang_name,
             "blob_path": sub_blob,
             "repo_id": repo_id,
-            "account": hf_username,
+            "account": target_acc,
             "orig_size": len(raw_sub),
             "enc_size": sub_enc_size,
             "format": "srt",
@@ -320,6 +476,7 @@ def process_standalone_subtitle(
         if delete_local and os.path.exists(str(file_path)):
             os.remove(str(file_path))
             safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned standalone subtitle: {file_path.name}")
+            remove_empty_folders(base_dir)
         return True
     except Exception as e:
         if is_rate_limit_error(e):
@@ -336,32 +493,45 @@ def process_standalone_screens(
     api: HfApi,
     hf_username: str,
     password: str,
-    delete_local: bool
+    delete_local: bool,
+    acc_mgr: account_manager.AccountManager = None
 ):
+    str_path = str(file_path)
     try:
         manifest = load_manifest()
-        sc_stem = file_path.stem.lower()
-        for sfx in [".screens", "-screens", "_screens", " screens", ".screen", "-screen", "_screen", "_thumb", "-thumb", ".thumb", "_poster", "-poster"]:
-            if sc_stem.endswith(sfx):
-                sc_stem = sc_stem[:-len(sfx)]
-                break
-
-        sc_parent = file_path.parent.relative_to(base_dir).as_posix()
-        matching_key = None
-        for key in manifest.get("files", {}).keys():
-            k_path = Path(key)
-            k_parent = k_path.parent.as_posix()
-            k_stem = k_path.stem.lower()
-            if (sc_parent == "." or k_parent == sc_parent) and (sc_stem == k_stem):
-                matching_key = key
-                break
+        matching_key = find_manifest_video_for_companion(file_path, base_dir, manifest, companion_type="screens")
 
         if not matching_key:
+            # Check if matching video is currently being uploaded in another thread
+            video_stem = file_path.stem.lower()
+            for vext in VIDEO_EXTENSIONS:
+                if video_stem.endswith(vext):
+                    video_stem = video_stem[:-len(vext)]
+                    break
+            is_pending = False
+            with MANIFEST_LOCK:
+                for in_f in IN_PROGRESS_FILES:
+                    if video_stem in Path(in_f).name.lower():
+                        is_pending = True
+                        break
+
+            if is_pending:
+                return False
+
+            UNMATCHED_ATTEMPTS[str_path] = UNMATCHED_ATTEMPTS.get(str_path, 0) + 1
+            if UNMATCHED_ATTEMPTS[str_path] >= 3:
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [!] Standalone image '{file_path.name}' has no matching video in manifest. Pausing retries.")
+                SKIPPED_UNMATCHED_FILES.add(str_path)
             return False
+
+        UNMATCHED_ATTEMPTS.pop(str_path, None)
 
         video_record = manifest["files"][matching_key]
         repo_id = video_record.get("repo_id")
         obfuscated_blob_path = video_record.get("blob_path")
+        target_acc = video_record.get("account") or hf_username
+        target_api = acc_mgr.get_api_for_repo(repo_id) if acc_mgr else api
+
         if not repo_id or not obfuscated_blob_path:
             return False
 
@@ -377,7 +547,7 @@ def process_standalone_screens(
         enc_size = crypto_engine.encrypt_file(str(file_path), temp_screen_enc, password)
         screens_blob = obfuscated_blob_path.replace(".enc", ".screens.jpg.enc")
 
-        api.upload_file(
+        target_api.upload_file(
             path_or_fileobj=temp_screen_enc,
             path_in_repo=screens_blob,
             repo_id=repo_id,
@@ -388,7 +558,7 @@ def process_standalone_screens(
         screens_record = {
             "blob_path": screens_blob,
             "repo_id": repo_id,
-            "account": hf_username,
+            "account": target_acc,
             "orig_size": os.path.getsize(str(file_path)),
             "enc_size": enc_size,
             "format": "jpg",
@@ -402,6 +572,12 @@ def process_standalone_screens(
                 cur_manifest["files"][matching_key]["screens"] = screens_record
                 save_manifest(cur_manifest)
 
+        # Sync cloud metadata sidecar
+        try:
+            metadata_helper.sync_item_metadata_to_hf(target_api, repo_id, obfuscated_blob_path, video_record, password)
+        except Exception:
+            pass
+
         safe_print(f"[{time.strftime('%H:%M:%S')}] [Standalone Screens Synced] for {matching_key} -> {screens_blob}")
 
         if os.path.exists(temp_screen_enc):
@@ -409,6 +585,7 @@ def process_standalone_screens(
         if delete_local and os.path.exists(str(file_path)):
             os.remove(str(file_path))
             safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned standalone screens: {file_path.name}")
+            remove_empty_folders(base_dir)
         return True
     except Exception as e:
         if is_rate_limit_error(e):
@@ -444,7 +621,8 @@ def process_file_pipeline(
                 api=api,
                 hf_username=hf_username,
                 password=password,
-                delete_local=delete_local
+                delete_local=delete_local,
+                acc_mgr=acc_mgr
             )
             return
 
@@ -456,7 +634,8 @@ def process_file_pipeline(
                 api=api,
                 hf_username=hf_username,
                 password=password,
-                delete_local=delete_local
+                delete_local=delete_local,
+                acc_mgr=acc_mgr
             )
             return
 
@@ -579,6 +758,7 @@ def process_file_pipeline(
                 except Exception as e:
                     safe_print(f"[!] Warning syncing updated aliases to HF: {e}")
 
+            SKIPPED_UNMATCHED_FILES.clear()
             activity_tracker.tracker.finish_task(full_key, "skipped_duplicate", f"Duplicate found on '{dup_acc}'! Linked to {len(all_aliases)} file names.", 100)
             activity_tracker.tracker.add_event("skip", f"Duplicate Linked: {rel_to_base}", f"Linked to {orig_key} on {dup_acc}. Names: {', '.join(all_aliases)}", account=dup_acc)
             return
@@ -687,51 +867,62 @@ def process_file_pipeline(
         subtitles_record = []
         try:
             video_stem = file_path.stem.lower()
+            video_name = file_path.name.lower()
             parent_dir = file_path.parent
-            for srt_file in parent_dir.iterdir():
-                if not srt_file.is_file() or srt_file.suffix.lower() not in {".srt", ".vtt"}:
+            sub_dirs = [parent_dir]
+            if parent_dir.exists():
+                for s in parent_dir.iterdir():
+                    if s.is_dir() and s.name.lower() in SUB_FOLDER_NAMES:
+                        sub_dirs.append(s)
+
+            for sdir in sub_dirs:
+                if not sdir.exists():
                     continue
-                srt_stem = srt_file.stem.lower()
-                if srt_stem == video_stem or srt_stem.startswith(video_stem + "."):
-                    lang_code, lang_name = companion_helper.detect_subtitle_lang(srt_file.name)
-                    raw_sub = srt_file.read_bytes()
-                    sub_text = companion_helper.decode_subtitle_bytes(raw_sub)
-                    temp_sub_enc = f"{str(srt_file)}.enc"
-                    sub_enc_size = crypto_engine.encrypt_file(str(srt_file), temp_sub_enc, password)
-                    sub_blob = obfuscated_blob_path.replace(".enc", f".sub.{lang_code}.srt.enc")
-                    api.upload_file(
-                        path_or_fileobj=temp_sub_enc,
-                        path_in_repo=sub_blob,
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                        commit_message=commit_helper.get_human_commit_message("upload")
-                    )
-                    sub_info = {
-                        "lang": lang_code,
-                        "label": lang_name,
-                        "blob_path": sub_blob,
-                        "repo_id": repo_id,
-                        "account": hf_username,
-                        "orig_size": len(raw_sub),
-                        "enc_size": sub_enc_size,
-                        "format": "srt",
-                        "verifier": crypto_engine.create_verifier(password)
-                    }
-                    subtitles_record.append(sub_info)
-                    companion_helper.sync_jellyfin_subtitle(library_dir, full_key, sub_text, lang_code)
-                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Companion Subtitle Live] ({lang_name}) -> {sub_blob}")
-                    if os.path.exists(temp_sub_enc):
-                        os.remove(temp_sub_enc)
-                    if delete_local and os.path.exists(str(srt_file)):
-                        os.remove(str(srt_file))
-                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned subtitle from watch folder: {srt_file.name}")
+                for srt_file in sdir.iterdir():
+                    if not srt_file.is_file() or srt_file.suffix.lower() not in {".srt", ".vtt"}:
+                        continue
+                    srt_stem = srt_file.stem.lower()
+                    if srt_stem == video_stem or srt_stem == video_name or srt_stem.startswith(video_stem + ".") or srt_stem.startswith(video_name + "."):
+                        lang_code, lang_name = companion_helper.detect_subtitle_lang(srt_file.name)
+                        raw_sub = srt_file.read_bytes()
+                        sub_text = companion_helper.decode_subtitle_bytes(raw_sub)
+                        temp_sub_enc = f"{str(srt_file)}.enc"
+                        sub_enc_size = crypto_engine.encrypt_file(str(srt_file), temp_sub_enc, password)
+                        sub_blob = obfuscated_blob_path.replace(".enc", f".sub.{lang_code}.srt.enc")
+                        api.upload_file(
+                            path_or_fileobj=temp_sub_enc,
+                            path_in_repo=sub_blob,
+                            repo_id=repo_id,
+                            repo_type="dataset",
+                            commit_message=commit_helper.get_human_commit_message("upload")
+                        )
+                        sub_info = {
+                            "lang": lang_code,
+                            "label": lang_name,
+                            "blob_path": sub_blob,
+                            "repo_id": repo_id,
+                            "account": hf_username,
+                            "orig_size": len(raw_sub),
+                            "enc_size": sub_enc_size,
+                            "format": "srt",
+                            "verifier": crypto_engine.create_verifier(password)
+                        }
+                        subtitles_record.append(sub_info)
+                        companion_helper.sync_jellyfin_subtitle(library_dir, full_key, sub_text, lang_code)
+                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Companion Subtitle Live] ({lang_name}) -> {sub_blob}")
+                        if os.path.exists(temp_sub_enc):
+                            os.remove(temp_sub_enc)
+                        if delete_local and os.path.exists(str(srt_file)):
+                            os.remove(str(srt_file))
+                            safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned subtitle from watch folder: {srt_file.name}")
+                            remove_empty_folders(base_dir)
         except Exception as s_err:
             safe_print(f"[!] Companion subtitle check warning: {s_err}")
 
         # 6b. Detect and Upload Companion Screens / Contact Sheet from Watch Folder
         screens_record = None
         try:
-            matched_screen = screens_helper.find_matching_screens_file(file_path)
+            matched_screen = screens_helper.find_matching_screens_file(file_path, base_dir=base_dir)
             if matched_screen and matched_screen.is_file():
                 safe_id = storyboard_helper.get_safe_id(full_key)
                 screens_helper.process_screens_image(
@@ -766,6 +957,7 @@ def process_file_pipeline(
                 if delete_local and os.path.exists(str(matched_screen)):
                     os.remove(str(matched_screen))
                     safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned screens image: {matched_screen.name}")
+                    remove_empty_folders(base_dir)
         except Exception as sc_err:
             safe_print(f"[!] Companion screens check warning: {sc_err}")
 
@@ -833,6 +1025,7 @@ def process_file_pipeline(
         activity_tracker.tracker.finish_task(full_key, "completed", f"Ready for streaming! ({upload_speed_mbps:.1f} Mbps)", 100)
         activity_tracker.tracker.add_event("success", f"Live on Jellyfin: {rel_to_base}", f"Uploaded to {repo_id} in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", account=hf_username, speed=f"{upload_speed_mbps:.1f} Mbps")
 
+        SKIPPED_UNMATCHED_FILES.clear()
         safe_print(f"[{time.strftime('%H:%M:%S')}] SUCCESS: {full_key} is live and streamable on Jellyfin with NFO & HF Cloud metadata!\n")
 
     except Exception as e:
@@ -967,7 +1160,8 @@ def watch_and_sync(
                     file_path = Path(root) / file
                     if file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
                         if not file.endswith(".tmp.enc") and not file.endswith(".enc"):
-                            candidates.append(file_path)
+                            if str(file_path) not in SKIPPED_UNMATCHED_FILES:
+                                candidates.append(file_path)
 
             if not candidates:
                 activity_tracker.tracker.set_idle()

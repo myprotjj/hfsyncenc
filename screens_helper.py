@@ -24,61 +24,101 @@ def get_safe_id(key: str) -> str:
     return hashlib.sha256(ck.encode("utf-8")).hexdigest()[:24]
 
 
-def find_matching_screens_file(video_path: Path) -> Path:
+SCREEN_FOLDER_NAMES = {"screens", "screen", "thumbs", "thumb", "covers", "cover", "posters", "poster", "artwork", "storyboards"}
+
+
+def find_matching_screens_file(video_path: Path, base_dir: Path = None) -> Path:
     """
-    Finds an accompanying screens / contact sheet or poster image in the same directory.
+    Finds an accompanying screens / contact sheet or poster image.
     Supports patterns like:
+      - Video.mp4.jpg / Video.mp4.png / Video.mp4.webp (same name with mp4.jpg format)
       - Video.screens.jpg / Video.screens.png / Video.screens.webp
       - Video-screens.jpg / Video_screens.jpg / Video screens.jpg
       - Video.jpg / Video.jpeg / Video.png / Video.webp
       - Video_thumb.jpg / Video-thumb.jpg / Video.thumb.jpg
       - Video_poster.jpg / Video-poster.jpg
+      - Video.mp4_screens.jpg / Video.mp4.screens.jpg
+      - In same folder, subfolder (e.g. Screens/, Thumbs/), or ancestor Screens/ folders.
       - screens.jpg / poster.jpg / thumb.jpg (if it's the only video in folder)
     """
-    if not video_path or not video_path.parent.exists():
+    if not video_path:
         return None
 
     parent = video_path.parent
     v_stem = video_path.stem.lower()
+    v_name = video_path.name.lower()
 
-    # 1. Exact stem matches with screens suffixes
+    # Build pattern stems: check both full filename (e.g. video.mp4 -> video.mp4.jpg) and stem (video -> video.jpg)
     screens_patterns = [
-        f"{v_stem}.screens",
-        f"{v_stem}-screens",
-        f"{v_stem}_screens",
-        f"{v_stem} screens",
-        f"{v_stem}.screen",
-        f"{v_stem}_screen",
-        f"{v_stem}-screen",
-        f"{v_stem}_thumb",
-        f"{v_stem}-thumb",
-        f"{v_stem}.thumb",
-        f"{v_stem}_poster",
-        f"{v_stem}-poster",
-        f"{v_stem}.poster",
+        v_name,  # e.g. Video.mp4 -> Video.mp4.jpg
         v_stem,  # e.g. Video.mp4 -> Video.jpg
     ]
 
-    for p in screens_patterns:
-        for ext in IMAGE_EXTS:
-            candidate = parent / f"{p}{ext}"
-            if candidate.is_file():
-                return candidate
-            # Also try matching case-insensitively
-            for f in parent.iterdir():
-                if f.is_file() and f.suffix.lower() == ext and f.stem.lower() == p:
+    suffixes = [
+        ".screens", "-screens", "_screens", " screens",
+        ".screen", "_screen", "-screen",
+        "_thumb", "-thumb", ".thumb",
+        "_poster", "-poster", ".poster",
+        "_cover", "-cover", ".cover",
+        "_preview", "-preview", ".preview"
+    ]
+    for sfx in suffixes:
+        screens_patterns.append(f"{v_stem}{sfx}")
+        screens_patterns.append(f"{v_name}{sfx}")
+
+    # Build list of directories to inspect
+    search_dirs = []
+    if parent.exists():
+        search_dirs.append(parent)
+        for s in parent.iterdir():
+            if s.is_dir() and s.name.lower() in SCREEN_FOLDER_NAMES:
+                search_dirs.append(s)
+
+    # Walk up ancestor directories towards base_dir to find parallel/ancestor screen folders (e.g. Root/Screens/Subdir/video.mp4.jpg)
+    if base_dir and base_dir.exists():
+        cur = parent
+        while cur and cur != base_dir and base_dir in cur.parents:
+            anc = cur.parent
+            for sname in SCREEN_FOLDER_NAMES:
+                sdir = anc / sname
+                if sdir.is_dir():
+                    try:
+                        rel_sub = parent.relative_to(anc)
+                        sub_sdir = sdir / rel_sub
+                        if sub_sdir.is_dir() and sub_sdir not in search_dirs:
+                            search_dirs.append(sub_sdir)
+                    except Exception:
+                        pass
+                    if sdir not in search_dirs:
+                        search_dirs.append(sdir)
+            cur = anc
+
+    # 1. Search candidate directories for pattern matches
+    for sdir in search_dirs:
+        for p in screens_patterns:
+            for ext in IMAGE_EXTS:
+                candidate = sdir / f"{p}{ext}"
+                if candidate.is_file():
+                    return candidate
+            for f in sdir.iterdir():
+                if f.is_file() and f.suffix.lower() in IMAGE_EXTS and f.stem.lower() == p:
                     return f
 
     # 2. Check for generic screens.jpg / poster.jpg if single video in folder
-    video_count = sum(1 for f in parent.iterdir() if f.is_file() and f.suffix.lower() in {
-        ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".flv", ".ts", ".m4v"
-    })
-    if video_count == 1:
-        for generic in ["screens", "poster", "thumb", "cover", "preview"]:
-            for ext in IMAGE_EXTS:
-                candidate = parent / f"{generic}{ext}"
-                if candidate.is_file():
-                    return candidate
+    if parent.exists():
+        video_count = sum(1 for f in parent.iterdir() if f.is_file() and f.suffix.lower() in {
+            ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".flv", ".ts", ".m4v"
+        })
+        if video_count <= 1:
+            for generic in ["screens", "screen", "poster", "thumb", "cover", "preview", "folder"]:
+                for ext in IMAGE_EXTS:
+                    candidate = parent / f"{generic}{ext}"
+                    if candidate.is_file():
+                        return candidate
+                    for sdir in search_dirs:
+                        cand_sub = sdir / f"{generic}{ext}"
+                        if cand_sub.is_file():
+                            return cand_sub
 
     return None
 
