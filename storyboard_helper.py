@@ -362,6 +362,11 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
                 add_timestamps_to_storyboard(jpg_path, duration=dur, cols=cols, rows=rows)
             except Exception:
                 pass
+            try:
+                import activity_tracker
+                activity_tracker.tracker.notify_manifest_updated()
+            except Exception:
+                pass
             return True
         else:
             if os.path.exists(temp_jpg):

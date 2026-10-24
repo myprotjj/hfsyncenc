@@ -2449,6 +2449,115 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp_body)
 
+    def purge_video_entry(self, key_to_delete: str, manifest: dict, force_cloud_delete: bool = False) -> dict:
+        """
+        Exhaustively and permanently purges a video from A to Z across all systems:
+        - Local storyboards cache (jpg, json, thumb, screens, audio)
+        - Local Jellyfin library (.strm, .nfo, subtitles)
+        - Memory cache & manifest entries
+        - All alias, filename, and hash references across the entire manifest
+        - Remote Hugging Face video blob and all sidecars (.meta.enc, .audio.m4a.enc, .storyboard.jpg.enc, .screens.jpg.enc, subtitles)
+        - Remote repository index (vault_index.enc) immediately re-synced
+        - Automatic deletion of empty HF vault datasets
+        - Activity tracker notification and live logging
+        """
+        info = manifest.get("files", {}).get(key_to_delete, {})
+        repo_id = info.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+        blob_path = info.get("blob_path") or info.get("remote_path")
+        media_hash = info.get("media_hash") or info.get("content_hash") or info.get("fingerprint")
+        safe_id = info.get("safe_id") or storyboard_helper.get_safe_id(key_to_delete)
+
+        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+        can_write = self.acc_mgr.can_write_to_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else True
+
+        # 1. Clean local storyboards and audio cache
+        if safe_id:
+            for ext in (".jpg", ".json", "_thumb.jpg", "_screens.jpg"):
+                sp = os.path.join("storyboards", f"{safe_id}{ext}")
+                if os.path.exists(sp):
+                    try:
+                        os.remove(sp)
+                    except Exception:
+                        pass
+            audio_sp = os.path.join("storyboards", "audio", f"{safe_id}.m4a")
+            if os.path.exists(audio_sp):
+                try:
+                    os.remove(audio_sp)
+                except Exception:
+                    pass
+
+        # 2. Clean Jellyfin library files (.strm, .nfo, subs)
+        strm_path = Path("jellyfin_library") / f"{key_to_delete}.strm"
+        if strm_path.exists():
+            try:
+                strm_path.unlink()
+            except Exception:
+                pass
+        metadata_helper.delete_nfo_files("jellyfin_library", key_to_delete)
+
+        # 3. Clean memory cache and manifest file entry
+        FILE_CACHE.pop(key_to_delete, None)
+        manifest.get("files", {}).pop(key_to_delete, None)
+
+        # 4. Clean all references from other file entries (aliases, file_names)
+        base_del = Path(key_to_delete).name
+        for ok, other_rec in manifest.get("files", {}).items():
+            if "file_names" in other_rec and key_to_delete in other_rec["file_names"]:
+                other_rec["file_names"].remove(key_to_delete)
+            if "aliases" in other_rec and base_del in other_rec["aliases"]:
+                other_rec["aliases"].remove(base_del)
+            if "metadata" in other_rec and other_rec["metadata"]:
+                other_rec["metadata"]["file_names"] = other_rec.get("file_names", [])
+                other_rec["metadata"]["aliases"] = other_rec.get("aliases", [])
+
+        # 5. Clean all hash table entries
+        all_hashes = set()
+        if media_hash:
+            all_hashes.add(media_hash)
+        for eh in info.get("extra_media_hashes", []):
+            eh_val = eh.get("hash") if isinstance(eh, dict) else str(eh)
+            if eh_val:
+                all_hashes.add(eh_val)
+
+        for h in all_hashes:
+            for table in ("media_hashes", "content_hashes", "fingerprints"):
+                if table in manifest and h in manifest[table]:
+                    other_owner = [k for k, v in manifest["files"].items() if v.get("media_hash") == h or v.get("content_hash") == h]
+                    if other_owner:
+                        manifest[table][h] = manifest["files"][other_owner[0]]
+                    else:
+                        manifest[table].pop(h, None)
+
+        # 6. Check if any remaining file in manifest still uses this blob_path
+        other_files_using_blob = [
+            k for k, v in manifest.get("files", {}).items()
+            if v.get("blob_path") == blob_path
+        ]
+
+        hf_deleted = False
+        if (force_cloud_delete or not other_files_using_blob) and blob_path and can_write:
+            try:
+                metadata_helper.delete_video_and_sidecars_from_hf(api, repo_id, info)
+                hf_deleted = True
+            except Exception as e:
+                logger.warning("Error deleting blob %s from HF: %s", blob_path, e)
+
+        # 7. Immediately re-sync vault_index.enc on Hugging Face so no ghost index remains
+        if can_write:
+            try:
+                remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
+                metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
+                if not remaining_repo_files and repo_id.split("/")[-1].startswith("vault-"):
+                    rem = [f for f in api.list_repo_files(repo_id=repo_id, repo_type="dataset") if f.endswith(".enc")]
+                    if not rem:
+                        api.delete_repo(repo_id=repo_id, repo_type="dataset")
+                        logger.info("Deleted empty HF vault repository %s", repo_id)
+            except Exception as e:
+                logger.warning("Could not sync repo manifest after delete for %s: %s", repo_id, e)
+
+        return {"success": True, "hf_deleted": hf_deleted, "repo_id": repo_id}
+
+
     def handle_delete_folder(self):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length).decode("utf-8")
@@ -2474,40 +2583,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return
 
         deleted_count = 0
-
-        affected_repos = set()
         for key in matching_keys:
-            info = manifest["files"].get(key, {})
-            repo_id = info.get("repo_id", f"{self.hf_username}/{self.default_repo}")
-            affected_repos.add(repo_id)
-            blob_path = info.get("blob_path") or info.get("remote_path")
-            media_hash = info.get("media_hash") or info.get("content_hash") or info.get("fingerprint")
-            api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
-
-            if blob_path and hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
-                logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
-            elif blob_path:
-                try:
-                    metadata_helper.delete_video_and_sidecars_from_hf(api, repo_id, info)
-                except Exception as e:
-                    print(f"[!] Warning deleting from HF ({blob_path}): {e}")
-
-            strm_path = Path("jellyfin_library") / f"{key}.strm"
-            if strm_path.exists():
-                try:
-                    strm_path.unlink()
-                except Exception:
-                    pass
-
-            metadata_helper.delete_nfo_files("jellyfin_library", key)
-
-            FILE_CACHE.pop(key, None)
-            manifest["files"].pop(key, None)
-            if media_hash:
-                for table in ("media_hashes", "content_hashes", "fingerprints"):
-                    if table in manifest and media_hash in manifest[table]:
-                        manifest[table].pop(media_hash, None)
-
+            self.purge_video_entry(key, manifest, force_cloud_delete=True)
             deleted_count += 1
 
         local_folder_path = Path("jellyfin_library") / folder_prefix
@@ -2520,20 +2597,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         remove_empty_folders("jellyfin_library")
         save_manifest(manifest)
 
-        # Re-sync cloud indexes for affected repos so no ghost indexes remain
-        for rep in affected_repos:
-            try:
-                rep_api = self.acc_mgr.get_api_for_repo(rep) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
-                if hasattr(self, "acc_mgr") and self.acc_mgr and self.acc_mgr.can_write_to_repo(rep):
-                    remaining_rep_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == rep}
-                    metadata_helper.sync_repo_manifest_to_hf(rep_api, rep, remaining_rep_files, self.password)
-                    if not remaining_rep_files and rep.split("/")[-1].startswith("vault-"):
-                        rem = [f for f in rep_api.list_repo_files(repo_id=rep, repo_type="dataset") if f.endswith(".enc")]
-                        if not rem:
-                            rep_api.delete_repo(repo_id=rep, repo_type="dataset")
-                            logger.info("Deleted empty HF vault repository %s", rep)
-            except Exception as e:
-                logger.warning("Could not sync repo manifest after folder delete for %s: %s", rep, e)
+        # Notify activity tracker and broadcast event
+        activity_tracker.tracker.notify_manifest_updated()
+        activity_tracker.tracker.add_event("success", "Folder Deleted", f"Permanently purged folder '{folder_prefix}' ({deleted_count} video(s)) from Hugging Face and library")
 
         resp_body = json.dumps({
             "success": True,
@@ -2569,86 +2635,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Video key not found in manifest")
             return
 
-        info = manifest["files"][key_to_delete]
-        repo_id = info.get("repo_id", f"{self.hf_username}/{self.default_repo}")
-        blob_path = info.get("blob_path") or info.get("remote_path")
-        media_hash = info.get("media_hash") or info.get("content_hash") or info.get("fingerprint")
-
-        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
-
-        # Check if other video entries share this blob_path or media_hash
-        other_files_using_blob = [
-            k for k, v in manifest["files"].items()
-            if k != key_to_delete and (v.get("blob_path") == blob_path or (media_hash and (v.get("media_hash") == media_hash or v.get("content_hash") == media_hash)))
-        ]
-
-        hf_deleted = False
-        if other_files_using_blob:
-            # Multiple names for this video: delete only this filename alias
-            base_del = Path(key_to_delete).name
-            for ok in other_files_using_blob:
-                other_rec = manifest["files"][ok]
-                if "file_names" in other_rec and key_to_delete in other_rec["file_names"]:
-                    other_rec["file_names"].remove(key_to_delete)
-                if "aliases" in other_rec and base_del in other_rec["aliases"]:
-                    other_rec["aliases"].remove(base_del)
-                if "metadata" in other_rec and other_rec["metadata"]:
-                    other_rec["metadata"]["file_names"] = other_rec.get("file_names", [])
-                    other_rec["metadata"]["aliases"] = other_rec.get("aliases", [])
-                metadata_helper.write_nfo_files("jellyfin_library", ok, other_rec.get("metadata", {}))
-
-            if media_hash and "media_hashes" in manifest:
-                manifest["media_hashes"][media_hash] = manifest["files"][other_files_using_blob[0]]
-        else:
-            # Last reference: delete cloud blob and all sidecars on Hugging Face
-            try:
-                if blob_path and hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
-                    logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
-                elif blob_path:
-                    metadata_helper.delete_video_and_sidecars_from_hf(api, repo_id, info)
-                hf_deleted = True
-            except Exception as e:
-                print(f"[!] Warning deleting from HF ({blob_path}): {e}")
-
-            if media_hash:
-                if "media_hashes" in manifest and media_hash in manifest["media_hashes"]:
-                    manifest["media_hashes"].pop(media_hash, None)
-                if "content_hashes" in manifest and media_hash in manifest["content_hashes"]:
-                    manifest["content_hashes"].pop(media_hash, None)
-                if "fingerprints" in manifest and media_hash in manifest["fingerprints"]:
-                    manifest["fingerprints"].pop(media_hash, None)
-
-        metadata_helper.delete_nfo_files("jellyfin_library", key_to_delete)
-        strm_path = Path("jellyfin_library") / f"{key_to_delete}.strm"
-        if strm_path.exists():
-            try:
-                strm_path.unlink()
-                remove_empty_folders("jellyfin_library")
-            except Exception as e:
-                print(f"[!] Warning deleting .strm file: {e}")
-
-        FILE_CACHE.pop(key_to_delete, None)
-        manifest["files"].pop(key_to_delete, None)
-
+        res = self.purge_video_entry(key_to_delete, manifest, force_cloud_delete=True)
+        remove_empty_folders("jellyfin_library")
         save_manifest(manifest)
 
-        # Synchronize remote repository vault_index.enc so cloud never keeps ghost references
-        try:
-            if hasattr(self, "acc_mgr") and self.acc_mgr and self.acc_mgr.can_write_to_repo(repo_id):
-                remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
-                metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
-                if not remaining_repo_files and repo_id.split("/")[-1].startswith("vault-"):
-                    rem = [f for f in api.list_repo_files(repo_id=repo_id, repo_type="dataset") if f.endswith(".enc")]
-                    if not rem:
-                        api.delete_repo(repo_id=repo_id, repo_type="dataset")
-                        logger.info("Deleted empty HF vault repository %s", repo_id)
-        except Exception as e:
-            logger.warning("Could not sync repo manifest after delete for %s: %s", repo_id, e)
+        # Notify activity tracker and broadcast event
+        activity_tracker.tracker.notify_manifest_updated()
+        activity_tracker.tracker.add_event("success", "Video Deleted", f"Permanently purged {key_to_delete} from Hugging Face and library")
 
         resp_body = json.dumps({
             "success": True,
             "key": key_to_delete,
-            "hf_deleted": hf_deleted,
+            "hf_deleted": res.get("hf_deleted", False),
             "message": f"Successfully deleted {key_to_delete} from Hugging Face and Jellyfin library."
         }).encode("utf-8")
 
@@ -2861,8 +2859,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         thumb_path = screens_helper.get_screens_thumb_path(safe_id) if safe_id else None
         if not thumb_path or not os.path.exists(thumb_path):
-            # Check if we can slice or fetch poster thumb from storyboard
             thumb_path = storyboard_helper.get_poster_thumb_path(safe_id) if safe_id else None
+
+        if not thumb_path or not os.path.exists(thumb_path):
+            sb_img = storyboard_helper.get_storyboard_image_path(safe_id) if safe_id else None
+            if sb_img and os.path.exists(sb_img):
+                try:
+                    storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=True)
+                    thumb_path = storyboard_helper.get_poster_thumb_path(safe_id)
+                except Exception:
+                    pass
 
         if not thumb_path or not os.path.exists(thumb_path):
             screens_path = screens_helper.get_screens_path(safe_id) if safe_id else None
@@ -2871,6 +2877,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 thumb_path = screens_helper.get_screens_thumb_path(safe_id)
 
         if not thumb_path or not os.path.exists(thumb_path):
+            if safe_id:
+                manifest = load_manifest()
+                for k, v in manifest.get("files", {}).items():
+                    if storyboard_helper.get_safe_id(k) == safe_id:
+                        port = self.server.server_address[1] if hasattr(self.server, "server_address") else 8080
+                        storyboard_helper.trigger_priority_storyboard(k, duration=0, port=port)
+                        break
             self.send_error(404, "Thumbnail not found")
             return
 
@@ -3098,7 +3111,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         duration_str = format_duration(dur_sec)
 
                 safe_id = storyboard_helper.get_safe_id(key)
-                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+                has_sb_flag = bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key)
+                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id) or has_sb_flag
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
@@ -3118,7 +3132,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 item = {
                     "key": key,
                     "safe_id": safe_id,
-                    "has_storyboard": storyboard_helper.has_storyboard(key),
+                    "has_storyboard": has_sb_flag,
                     "sb_version": sb_v,
                     "has_screens": has_screens_flag,
                     "screens_url": f"/api/screens/image?id={safe_id}&v={sb_v}" if sb_v else f"/api/screens/image?id={safe_id}",
@@ -3226,7 +3240,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         duration_str = format_duration(dur_sec)
 
                 safe_id = storyboard_helper.get_safe_id(key)
-                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+                has_sb_flag = bool(info.get("storyboard")) or storyboard_helper.has_storyboard(key)
+                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id) or has_sb_flag
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
@@ -3246,7 +3261,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 item = {
                     "key": key,
                     "safe_id": safe_id,
-                    "has_storyboard": storyboard_helper.has_storyboard(key),
+                    "has_storyboard": has_sb_flag,
                     "sb_version": sb_v,
                     "has_screens": has_screens_flag,
                     "screens_url": f"/api/screens/image?id={safe_id}&v={sb_v}" if sb_v else f"/api/screens/image?id={safe_id}",
@@ -6730,6 +6745,58 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             box-shadow: 0 0 8px #10b981 !important;
         }}
 
+        /* Blue Active State (Privacy Blur, etc.) */
+        .tool-btn.is-active-blue,
+        .tool-btn.active-blue,
+        .tool-btn-icon.is-active-blue,
+        .tool-btn-icon.active-blue {{
+            background: rgba(59, 130, 246, 0.25) !important;
+            border-color: #3b82f6 !important;
+            color: #60a5fa !important;
+            box-shadow: 0 0 12px rgba(59, 130, 246, 0.5), inset 0 0 6px rgba(59, 130, 246, 0.2) !important;
+        }}
+        .tool-btn-icon.is-active-blue::after,
+        .tool-btn-icon.active-blue::after {{
+            background: #3b82f6 !important;
+            box-shadow: 0 0 8px #3b82f6 !important;
+        }}
+
+        /* Privacy Blur Mode Styles */
+        body.privacy-blur-active .video-card-thumb,
+        body.privacy-blur-active .thumb-canvas,
+        body.privacy-blur-active .video-list-thumb,
+        body.privacy-blur-active .screens-sheet-modal img,
+        body.privacy-blur-active .thumb-screens-overlay {{
+            filter: blur(14px) brightness(0.65) !important;
+            transition: filter 0.2s ease;
+        }}
+        body.privacy-blur-active .video-card:hover .video-card-thumb,
+        body.privacy-blur-active .video-card:hover .thumb-canvas,
+        body.privacy-blur-active .video-card-thumb:hover,
+        body.privacy-blur-active .video-list-row:hover .video-list-thumb {{
+            filter: blur(0px) brightness(1) !important;
+        }}
+
+        body.privacy-blur-active .video-card-title,
+        body.privacy-blur-active .video-card-sub,
+        body.privacy-blur-active .card-overview-snippet,
+        body.privacy-blur-active .video-list-title,
+        body.privacy-blur-active .tree-file-label,
+        body.privacy-blur-active .alias-card-name {{
+            filter: blur(6px) !important;
+            user-select: none !important;
+            transition: filter 0.2s ease;
+        }}
+        body.privacy-blur-active .video-card:hover .video-card-title,
+        body.privacy-blur-active .video-card:hover .video-card-sub,
+        body.privacy-blur-active .video-card:hover .card-overview-snippet,
+        body.privacy-blur-active .video-card-title:hover,
+        body.privacy-blur-active .video-list-row:hover .video-list-title,
+        body.privacy-blur-active .video-card:hover .alias-card-name {{
+            filter: blur(0px) !important;
+            user-select: auto !important;
+        }}
+
         @keyframes pulse-dot {{
             0%, 100% {{ transform: scale(1); opacity: 1; }}
             50% {{ transform: scale(1.35); opacity: 0.75; }}
@@ -7161,6 +7228,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </div>
 
                 <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn tool-btn-icon" title="Toggle Tag Badges (Shown / Hidden)">&#127991;<span id="tagsStateLabel" style="display: none;">Shown</span></button>
+                <button onclick="togglePrivacyBlur()" id="btnToggleBlur" class="tool-btn tool-btn-icon" title="Toggle Privacy Blur: Blur all thumbnails and titles (Persists across reload)">&#128584;</button>
                 <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn tool-btn-icon" title="Merge Marked Duplicate Videos">&#128256;<span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.58rem; padding: 1px 4px; position: absolute; top: -3px; right: -3px;">0</span></button>
                 <button onclick="openSyncFolderInExplorer('', event)" class="tool-btn tool-btn-icon" title="Open root sync folder (videos_to_sync) in Windows Explorer">&#128194;</button>
                 <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn tool-btn-icon" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039;</button>
@@ -9953,6 +10021,35 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}, 260);
         }}
 
+        function applyStoryboardToCard(card, safeId, spriteUrl, vTag) {{
+            if (!card) return;
+            const canvas = card.querySelector('.thumb-canvas');
+            if (canvas) {{
+                const thumbUrl = `/api/screens/thumb?id=${{safeId}}&v=${{vTag || Date.now()}}`;
+                canvas.dataset.staticBg = `url('${{thumbUrl}}')`;
+                const fb = card.querySelector('.thumb-fallback');
+                if (fb) fb.remove();
+            }}
+            if (!card.querySelector('.thumb-screens-btn')) {{
+                const title = card.getAttribute('data-title') || '';
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'thumb-screens-btn';
+                btn.innerHTML = '&#128444;&#65039; Screens';
+                btn.title = 'Hover to view screens on card &bull; Click to open full sheet';
+                btn.onmouseenter = function(e) {{ handleScreensBtnEnter(this, e); }};
+                btn.onmousemove = function(e) {{ e.stopPropagation(); }};
+                btn.onmouseleave = function(e) {{ handleScreensBtnLeave(this, e); }};
+                btn.onclick = function(e) {{ openScreensModal(safeId, title, e); }};
+                const playOverlay = card.querySelector('.thumb-overlay-play');
+                if (playOverlay) {{
+                    playOverlay.after(btn);
+                }} else {{
+                    card.appendChild(btn);
+                }}
+            }}
+        }}
+
         async function handleThumbEnter(card) {{
             activeHoveredThumb = card;
             const key = card.dataset.key;
@@ -9960,12 +10057,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const canvas = card.querySelector('.thumb-canvas');
             if (!canvas) return;
 
-            // Remember initial static poster background for instant revert on mouse leave
-            if (!canvas.dataset.staticBg) {{
-                canvas.dataset.staticBg = canvas.style.backgroundImage || '';
+            // Remember initial static poster background
+            if (!canvas.dataset.staticBg || canvas.dataset.staticBg === 'none' || canvas.dataset.staticBg === '') {{
+                canvas.dataset.staticBg = canvas.style.backgroundImage || `url('/api/screens/thumb?id=${{safeId}}')`;
             }}
 
-            // 1. Instant cache check: activate HD sprite sheet immediately with zero latency
+            // 1. Instant cache check: activate HD sprite sheet immediately
             const sb = storyboardCache[safeId] || storyboardCache[key];
             if (sb && sb.available && sb.sprite_url) {{
                 canvas.style.backgroundImage = `url('${{sb.sprite_url}}')`;
@@ -9983,10 +10080,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 
                 if (data.available && data.sprite_url) {{
                     registerStoryboard(data.safe_id || safeId, key);
+                    applyStoryboardToCard(card, safeId, data.sprite_url);
                     if (activeHoveredThumb === card) {{
                         canvas.style.backgroundImage = `url('${{data.sprite_url}}')`;
-                        const fb = card.querySelector('.thumb-fallback');
-                        if (fb) fb.remove();
                         startThumbAutoCycle(card, 0);
                     }}
                 }} else {{
@@ -10004,10 +10100,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 if (d2.available && d2.sprite_url) {{
                                     clearInterval(poll);
                                     registerStoryboard(d2.safe_id || safeId, key);
+                                    applyStoryboardToCard(card, safeId, d2.sprite_url);
                                     if (activeHoveredThumb === card) {{
                                         canvas.style.backgroundImage = `url('${{d2.sprite_url}}')`;
-                                        const fb = card.querySelector('.thumb-fallback');
-                                        if (fb) fb.remove();
                                         startThumbAutoCycle(card, 0);
                                     }}
                                 }}
@@ -10069,8 +10164,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             delete card.dataset.scrubbing;
             const canvas = card.querySelector('.thumb-canvas');
             if (canvas) {{
-                if (canvas.dataset.staticBg) {{
+                if (canvas.dataset.staticBg && canvas.dataset.staticBg !== 'none' && canvas.dataset.staticBg !== '') {{
                     canvas.style.backgroundImage = canvas.dataset.staticBg;
+                }} else {{
+                    const safeId = card.dataset.safeid;
+                    if (safeId) {{
+                        canvas.style.backgroundImage = `url('/api/screens/thumb?id=${{safeId}}')`;
+                        canvas.dataset.staticBg = canvas.style.backgroundImage;
+                    }}
                 }}
                 canvas.style.backgroundSize = 'cover';
                 canvas.style.backgroundPosition = 'center';
@@ -13170,13 +13271,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     populateFilterDropdowns();
                     updateStats();
 
-                    if (oldKeys !== newKeys) {{
-                        const curScrollY = window.scrollY;
-                        refreshTreeDisplay();
-                        window.scrollTo({{ top: curScrollY, behavior: 'instant' }});
-                    }} else {{
-                        filterTree();
-                    }}
+                    const curScrollY = window.scrollY;
+                    refreshTreeDisplay();
+                    window.scrollTo({{ top: curScrollY, behavior: 'instant' }});
                 }}
             }} catch (err) {{}}
         }}
@@ -13422,6 +13519,39 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         restoreUserPosition();
         applyHideTagsState();
         updateSystemStatusIndicators(true, 'idle');
+
+        /* Privacy Blur Mode Controller */
+        function isPrivacyBlurActive() {{
+            return localStorage.getItem('hfsync_privacy_blur') === '1';
+        }}
+
+        function applyPrivacyBlur(active) {{
+            const btn = document.getElementById('btnToggleBlur');
+            if (active) {{
+                document.body.classList.add('privacy-blur-active');
+                if (btn) {{
+                    btn.classList.add('is-active', 'is-active-blue');
+                    btn.title = 'Privacy Blur: ON (Click to unblur thumbnails & titles)';
+                }}
+            }} else {{
+                document.body.classList.remove('privacy-blur-active');
+                if (btn) {{
+                    btn.classList.remove('is-active', 'is-active-blue');
+                    btn.title = 'Privacy Blur: OFF (Click to blur thumbnails & titles)';
+                }}
+            }}
+        }}
+
+        function togglePrivacyBlur() {{
+            const cur = isPrivacyBlurActive();
+            const next = !cur;
+            localStorage.setItem('hfsync_privacy_blur', next ? '1' : '0');
+            applyPrivacyBlur(next);
+            showToast(next ? '🔒 Privacy Blur enabled (Thumbnails & titles blurred)' : '👁️ Privacy Blur disabled');
+        }}
+
+        // Init Privacy Blur state
+        applyPrivacyBlur(isPrivacyBlurActive());
     </script>
     <!-- Android-style A-Z Fast Scroller Rail & Magnifier Bubble -->
     <div id="azScrollerRail" class="az-scroller-rail" aria-label="Alphabet Jump Index" style="display: none;">
