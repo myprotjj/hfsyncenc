@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import io
 import json
 import time
 import hashlib
@@ -10,17 +11,135 @@ from urllib.parse import quote, unquote
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import imageio_ffmpeg
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import crypto_engine
 
 STORYBOARD_DIR = "storyboards"
 THUMBS_DIR = os.path.join(STORYBOARD_DIR, "thumbs")
 GENERATING_LOCK = threading.Lock()
 ACTIVE_GENERATIONS = set()
 
+# Deterministic 32-byte salt for sub-millisecond key derivation caching
+STORYBOARD_MAGIC = b"HFMETA01"
+STORYBOARD_SALT = b"HFSYNC_SB_SALT_v1_00000000000000"
+_KEY_CACHE = {}
+
 # Priority pool for the currently watched video (takes immediate priority)
 PRIORITY_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="PriorityStoryboard")
 
 os.makedirs(STORYBOARD_DIR, exist_ok=True)
 os.makedirs(THUMBS_DIR, exist_ok=True)
+
+
+def get_default_password() -> str:
+    """Retrieves vault master password from env.txt or system environment."""
+    try:
+        import account_manager
+        cfg = account_manager.load_env_config()
+        pwd = cfg.get("ENCRYPTION_PASSWORD", "")
+        if pwd:
+            return pwd
+    except Exception:
+        pass
+    return os.environ.get("ENCRYPTION_PASSWORD", "")
+
+
+def get_sb_aesgcm(password: str = None) -> AESGCM:
+    """Returns cached AESGCM instance for ultra-fast in-memory operations."""
+    pwd = password or get_default_password()
+    if not pwd:
+        return None
+    if pwd not in _KEY_CACHE:
+        key = crypto_engine.derive_key(pwd, STORYBOARD_SALT)
+        _KEY_CACHE[pwd] = AESGCM(key)
+    return _KEY_CACHE[pwd]
+
+
+def encrypt_bytes_sb(data: bytes, password: str = None) -> bytes:
+    """Encrypts arbitrary byte payload using AES-256-GCM in HFMETA01 format."""
+    pwd = password or get_default_password()
+    if not pwd:
+        return data
+    aesgcm = get_sb_aesgcm(pwd)
+    if not aesgcm:
+        return data
+    nonce = os.urandom(12)
+    ct = aesgcm.encrypt(nonce, data, None)
+    return STORYBOARD_MAGIC + STORYBOARD_SALT + nonce + ct
+
+
+def decrypt_bytes_sb(payload: bytes, password: str = None) -> bytes:
+    """Decrypts HFMETA01 payload in-memory with sub-millisecond cached AESGCM."""
+    if not payload or len(payload) < 68 or not payload.startswith(STORYBOARD_MAGIC):
+        return payload
+    pwd = password or get_default_password()
+    if not pwd:
+        return payload
+    salt = payload[8:40]
+    nonce = payload[40:52]
+    ciphertext = payload[52:]
+    if salt == STORYBOARD_SALT:
+        aesgcm = get_sb_aesgcm(pwd)
+        if aesgcm:
+            return aesgcm.decrypt(nonce, ciphertext, None)
+    return crypto_engine.decrypt_bytes(payload, pwd)
+
+
+def read_decrypted_bytes(file_path: str, password: str = None) -> bytes:
+    """Transparently reads file and decrypts if encrypted with HFMETA01."""
+    if not file_path or not os.path.exists(file_path):
+        return b""
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
+        if data.startswith(STORYBOARD_MAGIC):
+            return decrypt_bytes_sb(data, password)
+        return data
+    except Exception as e:
+        sys.stderr.write(f"[!] Error reading/decrypting {file_path}: {e}\n")
+        return b""
+
+
+def write_encrypted_bytes(file_path: str, data: bytes, password: str = None):
+    """Encrypts and atomically writes data to file on disk."""
+    pwd = password or get_default_password()
+    enc_data = encrypt_bytes_sb(data, pwd) if pwd else data
+    temp_path = f"{file_path}.tmp_enc"
+    with open(temp_path, "wb") as f:
+        f.write(enc_data)
+    os.replace(temp_path, file_path)
+
+
+def migrate_encrypt_all_storyboards(password: str = None) -> int:
+    """
+    Scans STORYBOARD_DIR (including thumbs and screens) and encrypts any
+    unencrypted .jpg and .json files in-place using AES-256-GCM.
+    Returns the count of newly encrypted files.
+    """
+    pwd = password or get_default_password()
+    if not pwd:
+        return 0
+    migrated_count = 0
+    for root, dirs, files in os.walk(STORYBOARD_DIR):
+        for f in files:
+            if f.endswith(".tmp.jpg") or f.endswith(".tmp") or f.endswith(".tmp_enc"):
+                continue
+            if f.endswith(".jpg") or f.endswith(".json"):
+                full_path = os.path.join(root, f)
+                try:
+                    with open(full_path, "rb") as fp:
+                        header = fp.read(8)
+                    if header != STORYBOARD_MAGIC:
+                        with open(full_path, "rb") as fp:
+                            raw_data = fp.read()
+                        if raw_data:
+                            write_encrypted_bytes(full_path, raw_data, pwd)
+                            migrated_count += 1
+                except Exception as e:
+                    sys.stderr.write(f"[!] Migration error on {full_path}: {e}\n")
+    if migrated_count > 0:
+        sys.stderr.write(f"[*] Zero-knowledge migration complete: encrypted {migrated_count} storyboard/thumb files on disk.\n")
+    return migrated_count
 
 
 def clean_key(key: str) -> str:
@@ -39,7 +158,7 @@ def get_safe_id(key: str) -> str:
     return hashlib.sha256(ck.encode("utf-8")).hexdigest()[:24]
 
 
-def update_storyboard_duration(key: str, real_duration: float) -> bool:
+def update_storyboard_duration(key: str, real_duration: float, password: str = None) -> bool:
     """Updates existing storyboard metadata JSON with the true probed duration."""
     if not real_duration or real_duration <= 0:
         return False
@@ -48,20 +167,19 @@ def update_storyboard_duration(key: str, real_duration: float) -> bool:
     json_path = os.path.join(STORYBOARD_DIR, f"{safe_id}.json")
     if os.path.exists(json_path):
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            raw = read_decrypted_bytes(json_path, password)
+            data = json.loads(raw.decode("utf-8"))
             data["duration"] = round(real_duration, 2)
             if data.get("total_frames"):
                 data["interval"] = round(real_duration / data["total_frames"], 3)
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            write_encrypted_bytes(json_path, json.dumps(data, indent=2).encode("utf-8"), password)
             return True
         except Exception:
             pass
     return False
 
 
-def get_storyboard_meta(key: str) -> dict:
+def get_storyboard_meta(key: str, password: str = None) -> dict:
     ck = clean_key(key)
     safe_id = get_safe_id(ck)
     jpg_path = os.path.join(STORYBOARD_DIR, f"{safe_id}.jpg")
@@ -69,8 +187,8 @@ def get_storyboard_meta(key: str) -> dict:
 
     if os.path.exists(jpg_path) and os.path.exists(json_path):
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            raw = read_decrypted_bytes(json_path, password)
+            data = json.loads(raw.decode("utf-8"))
             data["available"] = True
             mtime = int(os.path.getmtime(jpg_path)) if os.path.exists(jpg_path) else int(time.time())
             data["sprite_url"] = f"/api/storyboard/image?id={safe_id}&v={mtime}"
@@ -115,25 +233,72 @@ def get_storyboard_version(safe_id_or_key: str) -> int:
     return 0
 
 
-def get_poster_thumb_path(safe_id: str) -> str:
+def get_poster_thumb_path(safe_id: str, password: str = None) -> str:
     clean_id = clean_key(safe_id)
     thumb_path = os.path.join(THUMBS_DIR, f"{clean_id}.jpg")
-    if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 1000:
+    if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100:
         return thumb_path
-    return slice_poster_thumbnail(clean_id)
+    return slice_poster_thumbnail(clean_id, password=password)
 
 
-def slice_poster_thumbnail(safe_id: str, overwrite: bool = False) -> str:
+def _slice_thumb_from_image(img, safe_id: str, overwrite: bool = False, password: str = None) -> str:
+    """Internal helper to slice a 480x270 thumbnail from a PIL Image and save encrypted."""
+    clean_id = clean_key(safe_id)
+    out_thumb = os.path.join(THUMBS_DIR, f"{clean_id}.jpg")
+    if not overwrite and os.path.exists(out_thumb) and os.path.getsize(out_thumb) > 100:
+        return out_thumb
+
+    try:
+        from PIL import Image, ImageStat
+        w, h = img.size
+        cols, rows = 10, 10
+        tw = w // cols
+        th = h // rows
+
+        candidate_frames = [2, 3, 4, 5, 6, 8, 10, 12, 15]
+        best_frame = 3
+        best_score = -1.0
+
+        for f_idx in candidate_frames:
+            c = f_idx % cols
+            r = f_idx // cols
+            tile_box = (c * tw, r * th, (c + 1) * tw, (r + 1) * th)
+            crop_sample = img.crop(tile_box)
+            stat = ImageStat.Stat(crop_sample)
+            mean_b = sum(stat.mean) / len(stat.mean)
+            var_b = sum(stat.var) / len(stat.var) if stat.var else 0.0
+
+            if mean_b < 20 or mean_b > 245:
+                score = 0.0
+            else:
+                score = var_b * (1.0 - abs(mean_b - 128.0) / 128.0)
+
+            if score > best_score:
+                best_score = score
+                best_frame = f_idx
+
+        best_c = best_frame % cols
+        best_r = best_frame // cols
+        crop = img.crop((best_c * tw, best_r * th, (best_c + 1) * tw, (best_r + 1) * th))
+        thumb = crop.resize((480, 270), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        thumb.save(buf, "JPEG", quality=92, optimize=True)
+        write_encrypted_bytes(out_thumb, buf.getvalue(), password)
+        return out_thumb
+    except Exception as e:
+        sys.stderr.write(f"[!] Error slicing poster thumbnail for {clean_id}: {e}\n")
+        return None
+
+
+def slice_poster_thumbnail(safe_id: str, overwrite: bool = False, password: str = None) -> str:
     """
     Slices a razor-sharp, pixel-perfect 16:9 poster thumbnail (480x270)
-    from the 100-frame storyboard. Analyzes early candidate frames (2..12)
-    to select a high-contrast, vivid scene rather than an intro fade or black screen.
-    Never overwrites a thumbnail if a companion screens.jpg already provided one.
+    from the 100-frame storyboard. Reads encrypted storyboard and saves encrypted thumbnail.
     """
     clean_id = clean_key(safe_id)
     out_thumb = os.path.join(THUMBS_DIR, f"{clean_id}.jpg")
 
-    if not overwrite and os.path.exists(out_thumb) and os.path.getsize(out_thumb) > 1000:
+    if not overwrite and os.path.exists(out_thumb) and os.path.getsize(out_thumb) > 100:
         return out_thumb
 
     sb_jpg = os.path.join(STORYBOARD_DIR, f"{clean_id}.jpg")
@@ -141,53 +306,22 @@ def slice_poster_thumbnail(safe_id: str, overwrite: bool = False) -> str:
         return None
 
     try:
-        from PIL import Image, ImageStat
-        with Image.open(sb_jpg) as img:
-            w, h = img.size
-            cols, rows = 10, 10
-            tw = w // cols
-            th = h // rows
-
-            # Candidate frame indices: avoid frame 0-1 (often dark/intro), check 2..15
-            candidate_frames = [2, 3, 4, 5, 6, 8, 10, 12, 15]
-            best_frame = 3
-            best_score = -1.0
-
-            for f_idx in candidate_frames:
-                c = f_idx % cols
-                r = f_idx // cols
-                tile_box = (c * tw, r * th, (c + 1) * tw, (r + 1) * th)
-                crop_sample = img.crop(tile_box)
-                stat = ImageStat.Stat(crop_sample)
-                mean_b = sum(stat.mean) / len(stat.mean)
-                var_b = sum(stat.var) / len(stat.var) if stat.var else 0.0
-
-                if mean_b < 20 or mean_b > 245:
-                    score = 0.0
-                else:
-                    # Prefer frames with good variance and mid-range brightness
-                    score = var_b * (1.0 - abs(mean_b - 128.0) / 128.0)
-
-                if score > best_score:
-                    best_score = score
-                    best_frame = f_idx
-
-            best_c = best_frame % cols
-            best_r = best_frame // cols
-            crop = img.crop((best_c * tw, best_r * th, (best_c + 1) * tw, (best_r + 1) * th))
-            # Resize with highest quality Lanczos filter to 480x270
-            thumb = crop.resize((480, 270), Image.Resampling.LANCZOS)
-            thumb.save(out_thumb, "JPEG", quality=92, optimize=True)
-            return out_thumb
+        from PIL import Image
+        raw_sb = read_decrypted_bytes(sb_jpg, password)
+        if not raw_sb:
+            return None
+        with Image.open(io.BytesIO(raw_sb)) as img:
+            return _slice_thumb_from_image(img, clean_id, overwrite=overwrite, password=password)
     except Exception as e:
         sys.stderr.write(f"[!] Error slicing poster thumbnail for {clean_id}: {e}\n")
         return None
 
 
-def add_timestamps_to_storyboard(jpg_path: str, duration: float, cols: int = 10, rows: int = 10) -> bool:
+def add_timestamps_to_storyboard(jpg_path: str, duration: float, cols: int = 10, rows: int = 10, password: str = None) -> bool:
     """
     Overlays professional translucent timestamp badges (e.g. 00:05:24) in the bottom-right
-    corner of each tile in the 100-frame storyboard, matching movie contact sheet screenshots.
+    corner of each tile in the 100-frame storyboard. Supports both plain temporary files
+    and encrypted files on disk.
     """
     if not os.path.exists(jpg_path):
         return False
@@ -197,7 +331,21 @@ def add_timestamps_to_storyboard(jpg_path: str, duration: float, cols: int = 10,
         dur = float(duration) if duration and duration > 0 else 180.0
         total_frames = cols * rows
 
-        with Image.open(jpg_path) as base_im:
+        is_plain = False
+        with open(jpg_path, "rb") as f_check:
+            magic = f_check.read(8)
+        if magic != STORYBOARD_MAGIC:
+            is_plain = True
+
+        if is_plain:
+            base_im = Image.open(jpg_path)
+        else:
+            raw_bytes = read_decrypted_bytes(jpg_path, password)
+            if not raw_bytes:
+                return False
+            base_im = Image.open(io.BytesIO(raw_bytes))
+
+        with base_im:
             im = base_im.convert("RGBA")
             overlay = Image.new("RGBA", im.size, (255, 255, 255, 0))
             draw = ImageDraw.Draw(overlay)
@@ -251,7 +399,12 @@ def add_timestamps_to_storyboard(jpg_path: str, duration: float, cols: int = 10,
                 draw.text((bx1 + pad_x, by1 + pad_y - 1), time_str, fill=(255, 255, 255, 245), font=font)
 
             out = Image.alpha_composite(im, overlay).convert("RGB")
-            out.save(jpg_path, "JPEG", quality=92, optimize=True)
+            if is_plain and jpg_path.endswith(".tmp.jpg"):
+                out.save(jpg_path, "JPEG", quality=92, optimize=True)
+            else:
+                out_buf = io.BytesIO()
+                out.save(out_buf, "JPEG", quality=92, optimize=True)
+                write_encrypted_bytes(jpg_path, out_buf.getvalue(), password)
             return True
     except Exception as e:
         sys.stderr.write(f"[!] Warning overlaying timestamps on {jpg_path}: {e}\n")
@@ -282,7 +435,7 @@ def probe_duration(input_source: str) -> float:
     return 0.0
 
 
-def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_path: str = None, overwrite: bool = False) -> bool:
+def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_path: str = None, overwrite: bool = False, password: str = None) -> bool:
     ck = clean_key(key)
     safe_id = get_safe_id(ck)
 
@@ -343,7 +496,32 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
 
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
         if res.returncode == 0 and os.path.exists(temp_jpg) and os.path.getsize(temp_jpg) > 1000:
-            os.replace(temp_jpg, jpg_path)
+            # 1. Overlay timestamps directly on the plain temp_jpg before encrypting
+            try:
+                add_timestamps_to_storyboard(temp_jpg, duration=dur, cols=cols, rows=rows, password=password)
+            except Exception:
+                pass
+
+            # 2. Slice thumbnail from the plain temp_jpg directly into out_thumb (encrypted)
+            try:
+                from PIL import Image
+                with Image.open(temp_jpg) as temp_im:
+                    _slice_thumb_from_image(temp_im, safe_id, overwrite=True, password=password)
+            except Exception:
+                pass
+
+            # 3. Read final temp_jpg, encrypt and save to jpg_path
+            with open(temp_jpg, "rb") as f_tmp:
+                final_sb_bytes = f_tmp.read()
+            write_encrypted_bytes(jpg_path, final_sb_bytes, password)
+
+            # 4. Remove plain temporary file immediately
+            try:
+                os.remove(temp_jpg)
+            except Exception:
+                pass
+
+            # 5. Encrypt and write metadata JSON
             meta = {
                 "key": ck,
                 "safe_id": safe_id,
@@ -355,16 +533,8 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
                 "duration": dur,
                 "interval": round(dur / total_frames, 2)
             }
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
-            try:
-                slice_poster_thumbnail(safe_id, overwrite=True)
-            except Exception:
-                pass
-            try:
-                add_timestamps_to_storyboard(jpg_path, duration=dur, cols=cols, rows=rows)
-            except Exception:
-                pass
+            write_encrypted_bytes(json_path, json.dumps(meta, indent=2).encode("utf-8"), password)
+
             try:
                 import activity_tracker
                 activity_tracker.tracker.notify_manifest_updated()
@@ -427,3 +597,10 @@ def prewarm_all_storyboards(manifest_path="upload_manifest.json", port: int = 80
             pass
 
     threading.Thread(target=_worker, daemon=True).start()
+
+
+# Automatically ensure all existing storyboards, thumbs, and screens on disk are encrypted with AES-256-GCM
+try:
+    migrate_encrypt_all_storyboards()
+except Exception:
+    pass

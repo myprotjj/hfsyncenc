@@ -2,7 +2,9 @@ import os
 import re
 import hashlib
 from pathlib import Path
+import io
 from PIL import Image
+import storyboard_helper
 
 SCREENS_DIR = os.path.join("storyboards", "screens")
 THUMBS_DIR = os.path.join("storyboards", "thumbs")
@@ -127,7 +129,8 @@ def process_screens_image(
     screen_path: Path,
     safe_id: str,
     library_dir: str = "jellyfin_library",
-    video_rel_path: str = ""
+    video_rel_path: str = "",
+    password: str = None
 ) -> dict:
     """
     Processes a discovered screens/contact sheet image:
@@ -150,18 +153,21 @@ def process_screens_image(
 
             orig_w, orig_h = img.size
 
-            # 1. Save full contact sheet image
-            # Preserve 100% exact original file bytes and SHA-256 hash when under 2560px
+            # 1. Save full contact sheet image (encrypted with AES-256-GCM)
+            screen_buf = io.BytesIO()
             if orig_w > 2560:
                 scale_factor = 2560.0 / orig_w
                 new_h = int(orig_h * scale_factor)
                 save_img = img.resize((2560, new_h), Image.Resampling.LANCZOS)
-                save_img.save(out_screens_jpg, "JPEG", quality=92, optimize=True)
+                save_img.save(screen_buf, "JPEG", quality=92, optimize=True)
+                screen_bytes = screen_buf.getvalue()
             elif Path(screen_path).suffix.lower() in [".jpg", ".jpeg"] and img.mode == "RGB":
-                import shutil
-                shutil.copyfile(str(screen_path), out_screens_jpg)
+                with open(str(screen_path), "rb") as f_in:
+                    screen_bytes = f_in.read()
             else:
-                img.save(out_screens_jpg, "JPEG", quality=92, optimize=True)
+                img.save(screen_buf, "JPEG", quality=92, optimize=True)
+                screen_bytes = screen_buf.getvalue()
+            storyboard_helper.write_encrypted_bytes(out_screens_jpg, screen_bytes, password)
 
             # 2. Crop or fit a crisp 16:9 thumbnail for the video card & Jellyfin
             sname = Path(screen_path).name.lower()
@@ -209,7 +215,6 @@ def process_screens_image(
                     thumb_img = tile_crop.resize((480, 270), Image.Resampling.LANCZOS)
                 else:
                     thumb_img = img.resize((480, 270), Image.Resampling.LANCZOS)
-                thumb_img.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
             else:
                 # Single cover, poster, or landscape screenshot:
                 # Center crop & scale preserving full image composition!
@@ -232,18 +237,21 @@ def process_screens_image(
                     cover_crop = img
 
                 thumb_img = cover_crop.resize((480, 270), Image.Resampling.LANCZOS)
-                thumb_img.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
 
-            # 3. Copy thumb to Jellyfin library if available
+            thumb_buf = io.BytesIO()
+            thumb_img.save(thumb_buf, "JPEG", quality=92, optimize=True)
+            thumb_bytes = thumb_buf.getvalue()
+            storyboard_helper.write_encrypted_bytes(out_thumb_jpg, thumb_bytes, password)
+
+            # 3. Copy thumb to Jellyfin library if available (plain JPEG for Jellyfin)
             if library_dir and video_rel_path:
                 try:
                     jf_parent = Path(library_dir) / Path(video_rel_path).parent
                     jf_stem = Path(video_rel_path).stem
                     jf_parent.mkdir(parents=True, exist_ok=True)
                     jf_thumb = jf_parent / f"{jf_stem}-thumb.jpg"
-                    if os.path.exists(out_thumb_jpg):
-                        import shutil
-                        shutil.copyfile(out_thumb_jpg, str(jf_thumb))
+                    with open(jf_thumb, "wb") as f_jf:
+                        f_jf.write(thumb_bytes)
                 except Exception:
                     pass
 

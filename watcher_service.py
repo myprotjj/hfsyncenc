@@ -540,7 +540,8 @@ def process_standalone_screens(
             screen_path=file_path,
             safe_id=safe_id,
             library_dir=library_dir,
-            video_rel_path=matching_key
+            video_rel_path=matching_key,
+            password=password
         )
 
         temp_screen_enc = f"{str(file_path)}.enc"
@@ -808,12 +809,24 @@ def process_file_pipeline(
         # Pre-generate 100-screen HD storyboard sprite sheet for live hover and seekbar scrubbing
         storyboard_record = None
         try:
-            if storyboard_helper.generate_storyboard(full_key, duration=0, local_path=str_path):
+            if storyboard_helper.generate_storyboard(full_key, duration=0, local_path=str_path, password=password):
                 safe_id = storyboard_helper.get_safe_id(full_key)
                 sb_jpg = os.path.join(storyboard_helper.STORYBOARD_DIR, f"{safe_id}.jpg")
                 if os.path.exists(sb_jpg):
                     temp_sb_enc = f"{sb_jpg}.enc"
-                    sb_enc_size = crypto_engine.encrypt_file(sb_jpg, temp_sb_enc, password)
+                    # Decrypt in-memory to temporary plain file before chunked encryption for HF cloud
+                    raw_sb = storyboard_helper.read_decrypted_bytes(sb_jpg, password)
+                    temp_plain_sb = f"{sb_jpg}.tmp_plain.jpg"
+                    with open(temp_plain_sb, "wb") as f_tmp:
+                        f_tmp.write(raw_sb)
+                    sb_orig_size = len(raw_sb)
+                    sb_enc_size = crypto_engine.encrypt_file(temp_plain_sb, temp_sb_enc, password)
+                    if os.path.exists(temp_plain_sb):
+                        try:
+                            os.remove(temp_plain_sb)
+                        except Exception:
+                            pass
+
                     sb_blob = obfuscated_blob_path.replace(".enc", ".storyboard.jpg.enc")
                     api.upload_file(
                         path_or_fileobj=temp_sb_enc,
@@ -826,7 +839,7 @@ def process_file_pipeline(
                         "blob_path": sb_blob,
                         "repo_id": repo_id,
                         "account": hf_username,
-                        "orig_size": os.path.getsize(sb_jpg),
+                        "orig_size": sb_orig_size,
                         "enc_size": sb_enc_size,
                         "format": "jpg",
                         "safe_id": safe_id,
@@ -834,10 +847,10 @@ def process_file_pipeline(
                         "verifier": crypto_engine.create_verifier(password)
                     }
                     try:
-                        storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=True)
+                        storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=True, password=password)
                     except Exception:
                         pass
-                    safe_print(f"[{time.strftime('%H:%M:%S')}] [100-Screen Storyboard Live] -> {sb_blob} ({os.path.getsize(sb_jpg)/(1024*1024):.2f} MB)")
+                    safe_print(f"[{time.strftime('%H:%M:%S')}] [100-Screen Storyboard Live] -> {sb_blob} ({sb_orig_size/(1024*1024):.2f} MB)")
                     if os.path.exists(temp_sb_enc):
                         os.remove(temp_sb_enc)
         except Exception as sb_err:

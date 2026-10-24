@@ -2974,7 +2974,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return
 
         safe_id = storyboard_helper.get_safe_id(key)
-        meta = storyboard_helper.get_storyboard_meta(key)
+        meta = storyboard_helper.get_storyboard_meta(key, password=self.password)
         if not meta.get("available"):
             port = self.server.server_address[1] if hasattr(self.server, "server_address") else 8080
             storyboard_helper.trigger_priority_storyboard(key, duration=duration, port=port)
@@ -3011,11 +3011,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        with open(img_path, "rb") as f:
-            data = f.read()
+        data = storyboard_helper.read_decrypted_bytes(img_path, self.password)
+        if not data:
+            self.send_error(500, "Failed to decrypt image")
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Disposition", "inline")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache, must-revalidate")
@@ -3062,7 +3065,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     local_downloaded = api.hf_hub_download(repo_id=repo_id, filename=blob_path, repo_type="dataset")
                     temp_plain = os.path.join(screens_helper.SCREENS_DIR, f"{safe_id}.jpg")
                     crypto_engine.decrypt_file(local_downloaded, temp_plain, self.password)
-                    screens_helper.process_screens_image(Path(temp_plain), safe_id)
+                    screens_helper.process_screens_image(Path(temp_plain), safe_id, password=self.password)
                     img_path = screens_helper.get_screens_path(safe_id)
                 except Exception as e:
                     logger.warning("Could not restore cloud screens for image %s: %s", safe_id, e)
@@ -3081,11 +3084,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        with open(img_path, "rb") as f:
-            data = f.read()
+        data = storyboard_helper.read_decrypted_bytes(img_path, self.password)
+        if not data:
+            self.send_error(500, "Failed to decrypt image")
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Disposition", "inline")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache, must-revalidate")
@@ -3107,8 +3113,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             sb_img = storyboard_helper.get_storyboard_image_path(safe_id) if safe_id else None
             if sb_img and os.path.exists(sb_img):
                 try:
-                    storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=False)
-                    thumb_path = storyboard_helper.get_poster_thumb_path(safe_id)
+                    storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=False, password=self.password)
+                    thumb_path = storyboard_helper.get_poster_thumb_path(safe_id, password=self.password)
                 except Exception:
                     pass
 
@@ -3120,8 +3126,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             sb_img = storyboard_helper.get_storyboard_image_path(safe_id) if safe_id else None
             if sb_img and os.path.exists(sb_img):
                 try:
-                    storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=False)
-                    thumb_path = storyboard_helper.get_poster_thumb_path(safe_id)
+                    storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=False, password=self.password)
+                    thumb_path = storyboard_helper.get_poster_thumb_path(safe_id, password=self.password)
                 except Exception:
                     pass
 
@@ -3146,11 +3152,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        with open(thumb_path, "rb") as f:
-            data = f.read()
+        data = storyboard_helper.read_decrypted_bytes(thumb_path, self.password)
+        if not data:
+            self.send_error(500, "Failed to decrypt thumbnail")
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Disposition", "inline")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache, must-revalidate")
@@ -8297,7 +8306,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <h3 id="screensModalTitle" style="margin: 0; font-size: 1rem; color: #f3f4f6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 800px;">Contact Sheet Preview</h3>
                 </div>
                 <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
-                    <a id="screensModalDownloadBtn" href="#" target="_blank" download class="btn btn-secondary btn-xs" title="Open full resolution image in new tab">&#8599; Full Size</a>
+                    <a id="screensModalRawBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs" title="Open raw high-resolution image in new browser tab">&#8599; View Raw</a>
+                    <a id="screensModalDownloadBtn" href="#" download class="btn btn-secondary btn-xs" title="Download image to your computer">&#128229; Download</a>
                     <button type="button" class="btn btn-secondary btn-xs" onclick="closeScreensModal()">✕ Close</button>
                 </div>
             </div>
@@ -8591,6 +8601,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const modal = document.getElementById('screensModal');
             const img = document.getElementById('screensModalImg');
             const titleEl = document.getElementById('screensModalTitle');
+            const rawBtn = document.getElementById('screensModalRawBtn');
             const dlBtn = document.getElementById('screensModalDownloadBtn');
             if (!modal || !img) return;
 
@@ -8608,7 +8619,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             img.src = url;
             if (titleEl) titleEl.textContent = title ? '🖼️ ' + title : '100-Screen Contact Sheet Preview';
-            if (dlBtn) dlBtn.href = url;
+            if (rawBtn) rawBtn.href = url;
+            if (dlBtn) {{
+                dlBtn.href = url;
+                const cleanName = (title || safeId).replace(/[^a-zA-Z0-9_-]/g, '_');
+                dlBtn.download = cleanName + '_screens.jpg';
+            }}
             modal.style.display = 'flex';
         }}
 
