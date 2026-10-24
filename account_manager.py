@@ -45,9 +45,9 @@ def save_env_config(updates: dict, env_path=ENV_FILE):
                         lines.append(f"{k}={updates[k]}\n")
                         keys_written.add(k)
                     else:
-                        lines.append(line)
+                        lines.append(f"{line.rstrip()}\n")
                 else:
-                    lines.append(line)
+                    lines.append(f"{line.rstrip()}\n")
 
     for k, v in updates.items():
         if k not in keys_written:
