@@ -2563,12 +2563,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         if sync_repo_index and can_write:
             try:
                 remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
-                metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
                 if not remaining_repo_files and repo_id.split("/")[-1].startswith("vault-"):
-                    rem = [f for f in api.list_repo_files(repo_id=repo_id, repo_type="dataset") if f.endswith(".enc")]
-                    if not rem:
-                        api.delete_repo(repo_id=repo_id, repo_type="dataset")
-                        logger.info("Deleted empty HF vault repository %s", repo_id)
+                    api.delete_repo(repo_id=repo_id, repo_type="dataset")
+                    logger.info("Deleted empty HF vault repository %s", repo_id)
+                else:
+                    metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
             except Exception as e:
                 logger.warning("Could not sync repo manifest after delete for %s: %s", repo_id, e)
 
@@ -2671,12 +2670,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if can_write:
                     try:
                         remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
-                        metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
                         if not remaining_repo_files and repo_id.split("/")[-1].startswith("vault-"):
-                            rem = [f for f in api.list_repo_files(repo_id=repo_id, repo_type="dataset") if f.endswith(".enc")]
-                            if not rem:
-                                api.delete_repo(repo_id=repo_id, repo_type="dataset")
-                                logger.info("Deleted empty HF vault repository %s", repo_id)
+                            api.delete_repo(repo_id=repo_id, repo_type="dataset")
+                            logger.info("Deleted empty HF vault repository %s", repo_id)
+                        else:
+                            metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
                     except Exception as e:
                         logger.warning("Could not sync repo manifest after batch delete for %s: %s", repo_id, e)
 

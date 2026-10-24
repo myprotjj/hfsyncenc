@@ -635,17 +635,40 @@ def delete_video_and_sidecars_from_hf(api: HfApi, repo_id: str, info: dict) -> l
 
     unique_targets = list(dict.fromkeys(targets))
 
-    for target in unique_targets:
-        try:
-            api.delete_file(
-                path_in_repo=target,
-                repo_id=repo_id,
-                repo_type="dataset",
-                commit_message=commit_helper.get_human_commit_message("delete")
-            )
-            deleted_paths.append(target)
-        except Exception:
-            pass
+    # Fast 0.2s check: find which targets actually exist in the repo
+    try:
+        existing_files = set(api.list_repo_files(repo_id=repo_id, repo_type="dataset"))
+        actual_targets = [t for t in unique_targets if t in existing_files]
+    except Exception:
+        actual_targets = unique_targets
+
+    if not actual_targets:
+        return deleted_paths
+
+    # Batch delete ALL targets in ONE single git commit (~1.5s instead of multiple minutes)
+    try:
+        from huggingface_hub import CommitOperationDelete
+        operations = [CommitOperationDelete(path_in_repo=t) for t in actual_targets]
+        api.create_commit(
+            repo_id=repo_id,
+            repo_type="dataset",
+            operations=operations,
+            commit_message=commit_helper.get_human_commit_message("delete")
+        )
+        deleted_paths.extend(actual_targets)
+    except Exception:
+        # Fallback to sequential deletion if batch commit fails
+        for target in actual_targets:
+            try:
+                api.delete_file(
+                    path_in_repo=target,
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    commit_message=commit_helper.get_human_commit_message("delete")
+                )
+                deleted_paths.append(target)
+            except Exception:
+                pass
 
     return deleted_paths
 
