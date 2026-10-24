@@ -229,7 +229,7 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
         temp_jpg = f"{jpg_path}.tmp.jpg"
         filter_str = (
             f"fps={fps_val:.4f},"
-            f"scale={thumb_width}:{thumb_height}:force_original_aspect_ratio=decrease,"
+            f"scale={thumb_width}:{thumb_height}:flags=lanczos:force_original_aspect_ratio=decrease,"
             f"pad={thumb_width}:{thumb_height}:(ow-iw)/2:(oh-ih)/2:black,"
             f"tile={cols}x{rows}"
         )

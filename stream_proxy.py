@@ -2188,11 +2188,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             transition: opacity 0.1s ease;
         }}
         .yt-thumb-preview {{
-            width: 160px;
-            height: 90px;
+            width: 200px;
+            height: 112px;
             background-color: #000;
             background-repeat: no-repeat;
             display: block;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: high-quality;
         }}
         .yt-tooltip-time {{
             padding: 4px 8px;
@@ -2850,6 +2852,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             display: flex;
             align-items: center;
             justify-content: center;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: high-quality;
         }}
         .thumb-fallback {{
             display: flex;
@@ -5620,12 +5624,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const canvas = card.querySelector('.thumb-canvas');
             if (!canvas) return;
             
+            const w = Math.round(canvas.clientWidth || card.clientWidth || 120);
+            const h = Math.round(canvas.clientHeight || card.clientHeight || 68);
+
             const col = frameIndex % 10;
             const row = Math.floor(frameIndex / 10);
-            const posX = (col / 9) * 100;
-            const posY = (row / 9) * 100;
             
-            canvas.style.backgroundPosition = `${{posX}}% ${{posY}}%`;
+            canvas.style.backgroundSize = `${{10 * w}}px ${{10 * h}}px`;
+            canvas.style.backgroundPosition = `-${{col * w}}px -${{row * h}}px`;
             
             const fill = card.querySelector('.thumb-scrub-fill');
             if (fill) {{
@@ -6216,8 +6222,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (player.duration && scrubTooltip) {{
                     scrubTooltip.style.display = 'block';
 
-                    // Clamp horizontally so 160px preview thumbnail stays strictly within player bounds
-                    const tooltipHalfWidth = 84;
+                    // Clamp horizontally so 200px preview thumbnail stays strictly within player bounds
+                    const tooltipHalfWidth = 104;
                     const mouseX = e.clientX - rect.left;
                     const clampedX = Math.max(tooltipHalfWidth, Math.min(rect.width - tooltipHalfWidth, mouseX));
                     scrubTooltip.style.left = `${{clampedX}}px`;
@@ -6229,19 +6235,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     const thumbElem = document.getElementById('ytThumbPreview');
                     if (activeStoryboard && thumbElem) {{
                         thumbElem.style.display = 'block';
-                        const totalFrames = activeStoryboard.total_frames || 50;
+                        const totalFrames = activeStoryboard.total_frames || 100;
                         const cols = activeStoryboard.cols || 10;
-                        const rows = activeStoryboard.rows || 5;
-                        const w = activeStoryboard.thumb_width || 160;
-                        const h = activeStoryboard.thumb_height || 90;
+                        const rows = activeStoryboard.rows || 10;
+                        const boxW = 200;
+                        const boxH = 112;
 
                         const frameIdx = Math.min(totalFrames - 1, Math.max(0, Math.floor((hoverTime / player.duration) * totalFrames)));
                         const col = frameIdx % cols;
                         const row = Math.floor(frameIdx / cols);
 
                         thumbElem.style.backgroundImage = `url('${{activeStoryboard.sprite_url}}')`;
-                        thumbElem.style.backgroundSize = `${{cols * w}}px ${{rows * h}}px`;
-                        thumbElem.style.backgroundPosition = `-${{col * w}}px -${{row * h}}px`;
+                        thumbElem.style.backgroundSize = `${{cols * boxW}}px ${{rows * boxH}}px`;
+                        thumbElem.style.backgroundPosition = `-${{col * boxW}}px -${{row * boxH}}px`;
                     }} else if (thumbElem) {{
                         thumbElem.style.display = 'none';
                     }}
