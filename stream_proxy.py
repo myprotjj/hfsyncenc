@@ -7973,20 +7973,26 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (event) event.stopPropagation();
             const card = btn.closest('.video-card, .file-row');
             if (!card) return;
-            const actionsBar = card.querySelector('.video-card-actions, .file-row-actions');
-            const arrowBtn = card.querySelector('.card-action-arrow-btn') || btn;
-            if (!actionsBar) return;
+            const grid = card.closest('.folder-cards-grid, .folder-list-rows');
+            const targetCards = grid ? Array.from(grid.querySelectorAll('.video-card, .file-row')) : [card];
 
-            const isOpen = actionsBar.classList.contains('is-open');
-            if (isOpen) {{
-                actionsBar.classList.remove('is-open');
-                card.classList.remove('is-expanded');
-                arrowBtn.classList.remove('is-active');
-            }} else {{
-                actionsBar.classList.add('is-open');
-                card.classList.add('is-expanded');
-                arrowBtn.classList.add('is-active');
-            }}
+            const actionsBar = card.querySelector('.video-card-actions, .file-row-actions');
+            const isOpen = card.classList.contains('is-expanded') || (actionsBar && actionsBar.classList.contains('is-open'));
+            const willOpen = !isOpen;
+
+            targetCards.forEach(c => {{
+                const aBar = c.querySelector('.video-card-actions, .file-row-actions');
+                const aBtn = c.querySelector('.card-action-arrow-btn');
+                if (willOpen) {{
+                    c.classList.add('is-expanded');
+                    if (aBar) aBar.classList.add('is-open');
+                    if (aBtn) aBtn.classList.add('is-active');
+                }} else {{
+                    c.classList.remove('is-expanded');
+                    if (aBar) aBar.classList.remove('is-open');
+                    if (aBtn) aBtn.classList.remove('is-active');
+                }}
+            }});
         }}
 
         /* Video Card Quick-Add Tag & Category Engine */
@@ -8642,7 +8648,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <a href="${{escapeHtml(f.hf_url)}}" target="_blank" class="card-icon-btn btn-card-hf" title="Open dataset on Hugging Face">&#129303;</a>
                     </div>
                     <div class="card-action-group-right">
-                        <button onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" class="card-icon-btn btn-card-merge ${{isMarked ? 'active' : ''}}" title="${{isMarked ? 'Unmark from merge' : 'Mark for duplicate merge'}}" style="color: #c084fc;">&#128256;</button>
                         <button onclick="promptEditMetadata('${{escapeHtml(f.key)}}')" class="card-icon-btn btn-card-edit" title="Edit Tags, Categories &amp; Metadata">&#127991;</button>
                         <button onclick="promptDeleteFile('${{escapeHtml(f.key)}}')" class="card-icon-btn btn-card-delete" title="Delete Video Permanently">&#128465;</button>
                     </div>
