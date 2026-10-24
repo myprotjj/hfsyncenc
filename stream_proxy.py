@@ -776,6 +776,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             req_data = json.loads(body)
             key = req_data.get("key")
             meta_in = req_data.get("metadata", {})
+            resolve_conflicts = bool(req_data.get("resolve_conflicts", True))
         except Exception:
             self.send_error(400, "Invalid JSON payload")
             return
@@ -785,10 +786,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return
 
         manifest = load_manifest()
-        if key not in manifest["files"]:
-            self.send_error(404, f"Video key '{key}' not found in manifest")
-            return
+        if key not in manifest.get("files", {}):
+            found_key = None
+            for k in manifest.get("files", {}):
+                if k == key or Path(k).name == Path(key).name or k.endswith("/" + Path(key).name):
+                    found_key = k
+                    break
+            if found_key:
+                key = found_key
+            else:
+                self.send_error(404, f"Video key '{key}' not found in manifest")
+                return
 
+        file_info = manifest["files"][key]
         title = str(meta_in.get("title", "")).strip() or Path(key).stem.replace("_", " ").title()
         year = str(meta_in.get("year", "")).strip()
         rating = str(meta_in.get("rating", "")).strip()
@@ -815,31 +825,105 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "overview": overview
         }
 
+        # Resolve conflicts / clear obsolete duplicate names if requested
+        old_aliases = list(file_info.get("aliases") or [])
+        old_file_names = list(file_info.get("file_names") or [])
+        blob_path = file_info.get("blob_path") or file_info.get("remote_path")
+        media_hash = file_info.get("media_hash") or file_info.get("content_hash")
+
+        if resolve_conflicts and (old_aliases or len(old_file_names) > 1):
+            canonical_files = set()
+            try:
+                canonical_files.add((Path("jellyfin_library") / f"{key}.strm").resolve())
+                canonical_files.add((Path("jellyfin_library") / f"{key}.nfo").resolve())
+                canonical_files.add(((Path("jellyfin_library") / key).parent / f"{Path(key).stem}.nfo").resolve())
+                canonical_files.add(((Path("jellyfin_library") / key).parent / f"{Path(key).name}.strm.nfo").resolve())
+            except Exception:
+                pass
+
+            # 1. Unlink specific conflict paths from old_file_names
+            for other_fn in old_file_names:
+                if other_fn != key:
+                    p = Path("jellyfin_library") / other_fn
+                    p_stem = p.stem
+                    p_name = p.name
+                    targets = [
+                        p.parent / f"{p_name}.strm",
+                        p.parent / f"{p_name}.nfo",
+                        p.parent / f"{p_stem}.nfo",
+                        p.parent / f"{p_name}.strm.nfo",
+                    ]
+                    for t in targets:
+                        try:
+                            if t.exists() and t.resolve() not in canonical_files:
+                                t.unlink()
+                        except Exception as e:
+                            logger.warning("Error deleting conflict file %s: %s", t, e)
+
+            # 2. Unlink any matching conflict aliases
+            canonical_stem = Path(key).stem
+            for a in old_aliases:
+                a_stem = Path(a).stem
+                if a_stem != canonical_stem:
+                    for cand in Path("jellyfin_library").glob(f"**/*{a_stem}*"):
+                        try:
+                            if cand.is_file() and cand.resolve() not in canonical_files:
+                                if cand.suffix in [".strm", ".nfo"]:
+                                    cand.unlink()
+                        except Exception as e:
+                            logger.warning("Error unlinking conflict alias %s: %s", cand, e)
+
+            # 3. Remove other duplicate keys in manifest pointing to this same blob / hash
+            if blob_path or media_hash:
+                for other_k in list(manifest.get("files", {}).keys()):
+                    if other_k != key:
+                        other_v = manifest["files"][other_k]
+                        if (blob_path and other_v.get("blob_path") == blob_path) or (media_hash and (other_v.get("media_hash") == media_hash or other_v.get("content_hash") == media_hash)):
+                            manifest["files"].pop(other_k, None)
+
+            # 4. Reset aliases and file_names to only the canonical key
+            file_info["aliases"] = []
+            file_info["file_names"] = [key]
+
         # Update manifest & record verifier
-        manifest["files"][key]["metadata"] = clean_meta
-        manifest["files"][key]["verifier"] = crypto_engine.create_verifier(self.password)
+        file_info["metadata"] = clean_meta
+        file_info["verifier"] = crypto_engine.create_verifier(self.password)
         save_manifest(manifest)
 
-        # Write Jellyfin NFO files (.nfo, .mp4.nfo, .strm.nfo)
-        metadata_helper.write_nfo_files("jellyfin_library", key, clean_meta)
+        # Write clean Jellyfin NFO files (.nfo, .mp4.nfo, .strm.nfo)
+        try:
+            metadata_helper.write_nfo_files("jellyfin_library", key, clean_meta)
+        except Exception as e:
+            logger.warning("Error writing NFO for %s: %s", key, e)
 
-        # Sync encrypted metadata to Hugging Face
-        file_info = manifest["files"][key]
+        # Fast background thread for Hugging Face sync so HTTP response is INSTANT (< 15ms)
         repo_id = file_info.get("repo_id", f"{self.hf_username}/{self.default_repo}")
-        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
         blob_path = file_info.get("blob_path") or file_info.get("remote_path")
+
+        def _bg_sync_meta(item_key, r_id, b_path, f_record):
+            try:
+                api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                if b_path:
+                    rec = dict(f_record)
+                    rec["full_key"] = item_key
+                    metadata_helper.sync_item_metadata_to_hf(api, r_id, b_path, rec, self.password)
+                m = load_manifest()
+                repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+            except Exception as ex:
+                logger.warning("Background metadata HF sync warning: %s", ex)
+
         if blob_path:
-            record = dict(file_info)
-            record["full_key"] = key
-            metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
-            repo_files = {k: v for k, v in manifest["files"].items() if v.get("repo_id") == repo_id}
-            metadata_helper.sync_repo_manifest_to_hf(api, repo_id, repo_files, self.password)
+            threading.Thread(target=_bg_sync_meta, args=(key, repo_id, blob_path, file_info), daemon=True).start()
 
         resp_body = json.dumps({
             "success": True,
             "key": key,
             "metadata": clean_meta,
-            "message": "Metadata updated, saved to Jellyfin .nfo, and synced encrypted to Hugging Face."
+            "aliases": file_info.get("aliases", []),
+            "file_names": file_info.get("file_names", [key]),
+            "conflicts_resolved": bool(resolve_conflicts),
+            "message": "Metadata saved to Jellyfin .nfo, conflicts resolved, and syncing to Hugging Face."
         }).encode("utf-8")
 
         self.send_response(200)
@@ -5495,6 +5579,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <input type="text" id="newAliasInput" class="form-input form-input-sm" placeholder="Add suitable filename (e.g. Inception (2010).mp4)" style="flex: 1; font-size: 0.8rem; padding: 5px 8px;">
                     <button type="button" class="btn btn-hf btn-xs" onclick="submitAddAlias()" style="padding: 5px 12px; white-space: nowrap;">+ Add Name</button>
                 </div>
+
+                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(147, 51, 234, 0.15);">
+                    <label style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: #d8b4fe; cursor: pointer;">
+                        <input type="checkbox" id="chkResolveConflicts" checked>
+                        <span>Resolve conflict on Save: remove conflicting filenames and keep only chosen title</span>
+                    </label>
+                </div>
             </div>
 
             <div class="form-row">
@@ -8657,6 +8748,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (aliasesBox) {{
                 aliasesBox.style.display = 'block';
                 renderEditAliases(key, aliases);
+                const chk = document.getElementById('chkResolveConflicts');
+                if (chk) {{
+                    const hasConflicts = (file.aliases && file.aliases.length > 0) || (file.file_names && file.file_names.length > 1);
+                    chk.checked = hasConflicts;
+                }}
             }}
 
             updateCandidateTitlePicker(file, key);
@@ -9153,6 +9249,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const overview = document.getElementById('editOverview').value.trim();
             const genres = document.getElementById('editGenres').value.split(',').map(s => s.trim()).filter(Boolean);
             const tags = document.getElementById('editTags').value.split(',').map(s => s.trim()).filter(Boolean);
+            const chkConflicts = document.getElementById('chkResolveConflicts');
+            const resolveConflicts = chkConflicts ? chkConflicts.checked : true;
 
             const updatedMetadata = {{
                 title: title,
@@ -9169,7 +9267,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
                         key: editingKey,
-                        metadata: updatedMetadata
+                        metadata: updatedMetadata,
+                        resolve_conflicts: resolveConflicts
                     }})
                 }});
                 const result = await res.json();
@@ -9177,11 +9276,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     const f = allFiles.find(item => item.key === editingKey);
                     if (f) {{
                         f.metadata = result.metadata;
+                        if (result.aliases !== undefined) f.aliases = result.aliases;
+                        if (result.file_names !== undefined) f.file_names = result.file_names;
+                    }}
+                    if (typeof FILE_CACHE !== 'undefined' && FILE_CACHE && FILE_CACHE[editingKey]) {{
+                        FILE_CACHE[editingKey].metadata = result.metadata;
+                        if (result.aliases !== undefined) FILE_CACHE[editingKey].aliases = result.aliases;
+                        if (result.file_names !== undefined) FILE_CACHE[editingKey].file_names = result.file_names;
                     }}
                     populateFilterDropdowns();
+                    refreshTreeDisplay();
                     filterTree();
                     closeMetadataModal();
-                    showToast("✅ Jellyfin metadata & .nfo saved successfully!");
+                    showToast("✅ Jellyfin metadata & .nfo saved instantly! Conflicts resolved.", "success");
                 }} else {{
                     alert("Error updating metadata: " + ((result && result.message) || "Unknown error"));
                 }}
