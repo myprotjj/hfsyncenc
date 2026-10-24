@@ -223,13 +223,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if hdr_bytes and len(hdr_bytes) == crypto_engine.HEADER_SIZE:
                 try:
                     hdr = crypto_engine.read_header(hdr_bytes)
-                    repo_pw = self.acc_mgr.get_password_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
-                    key = crypto_engine.derive_key(repo_pw, hdr["salt"])
+                    candidate_keys = self.acc_mgr.get_candidate_keys_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else [self.password]
+                    verifier = file_info.get("verifier") if file_info else None
+                    working_pw = crypto_engine.find_working_key_for_verifier(candidate_keys, verifier) if verifier else None
+                    if not working_pw:
+                        working_pw = candidate_keys[0] if candidate_keys else self.password
+                    key = crypto_engine.derive_key(working_pw, hdr["salt"])
                     aesgcm = AESGCM(key)
                     metadata = {
                         "header": hdr,
                         "key": key,
                         "aesgcm": aesgcm,
+                        "password": working_pw,
                         "url": hf_url,
                         "repo_id": repo_id,
                         "repo_token": repo_token,
@@ -269,8 +274,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         try:
             hdr = crypto_engine.read_header(resp.content)
-            repo_pw = self.acc_mgr.get_password_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
-            key = crypto_engine.derive_key(repo_pw, hdr["salt"])
+            candidate_keys = self.acc_mgr.get_candidate_keys_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else [self.password]
+            verifier = file_info.get("verifier") if file_info else None
+            working_pw = crypto_engine.find_working_key_for_verifier(candidate_keys, verifier) if verifier else None
+            if not working_pw:
+                working_pw = candidate_keys[0] if candidate_keys else self.password
+            key = crypto_engine.derive_key(working_pw, hdr["salt"])
             aesgcm = AESGCM(key)
             stream_cache.write_header_bytes(cache_id, resp.content, hdr["total_size"], hdr["chunk_size"])
         except Exception as e:
@@ -281,6 +290,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "header": hdr,
             "key": key,
             "aesgcm": aesgcm,
+            "password": working_pw,
             "url": hf_url,
             "repo_id": repo_id,
             "repo_token": repo_token,
@@ -3791,8 +3801,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     continue
 
                 verifier = info.get("verifier")
-                acc_pw = self.acc_mgr.get_password_for_repo(repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
-                can_decrypt = crypto_engine.verify_password(verifier, acc_pw) if verifier else True
+                cand_keys = self.acc_mgr.get_candidate_keys_for_repo(repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else [self.password]
+                can_decrypt = bool(crypto_engine.find_working_key_for_verifier(cand_keys, verifier)) if verifier else True
                 if not can_decrypt:
                     continue
 
@@ -3935,8 +3945,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     metadata["overview"] = ""
 
                 verifier = info.get("verifier")
-                acc_pw = self.acc_mgr.get_password_for_repo(repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
-                can_decrypt = crypto_engine.verify_password(verifier, acc_pw) if verifier else True
+                cand_keys = self.acc_mgr.get_candidate_keys_for_repo(repo) if (hasattr(self, "acc_mgr") and self.acc_mgr) else [self.password]
+                can_decrypt = bool(crypto_engine.find_working_key_for_verifier(cand_keys, verifier)) if verifier else True
                 if not can_decrypt:
                     continue
 
@@ -8774,25 +8784,28 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
     <!-- Edit Account Encryption Key Modal -->
     <div id="editKeyModal" class="modal-overlay" style="z-index: 1200; display: none;">
-        <div class="modal" style="max-width: 520px; width: 92vw; background: #0b1120; border: 1px solid #1e293b; box-shadow: 0 20px 60px rgba(0,0,0,0.85); padding: 22px; border-radius: 12px;">
+        <div class="modal" style="max-width: 540px; width: 92vw; background: #0b1120; border: 1px solid #1e293b; box-shadow: 0 20px 60px rgba(0,0,0,0.85); padding: 22px; border-radius: 12px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
                 <h3 style="color: #38bdf8; margin: 0; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;">
-                    🔑 Account Encryption Key
+                    🔑 Account Encryption Keyring
                 </h3>
                 <button onclick="closeEditKeyModal()" class="tool-btn btn-xs" style="font-size: 1.1rem; padding: 2px 8px;">&times;</button>
             </div>
             <p style="font-size: 0.84rem; color: var(--text-muted); line-height: 1.5; margin-top: 0; margin-bottom: 14px;">
-                Configure a dedicated encryption key for <b id="lblEditKeyUsername" style="color: #fff;"></b>. The key is verified instantly against existing repositories. Any files that cannot be decrypted using this key will be discarded from the index.
+                Configure encryption keys for <b id="lblEditKeyUsername" style="color: #fff;"></b>. You can provide multiple keys (one per line or comma-separated). The <b>1st key</b> encrypts all new uploads; remaining keys stay in the keyring to decrypt older videos.
             </p>
             <div class="form-group" style="margin-bottom: 12px;">
-                <label class="form-label">Encryption Key (Password)</label>
-                <input type="password" id="inputEditKeyPassword" class="form-input" placeholder="Enter key (leave empty to reset to Master Password)" autocomplete="off">
+                <label class="form-label" style="display: flex; justify-content: space-between;">
+                    <span>Encryption Key(s) / Keyring</span>
+                    <span style="font-weight: normal; color: var(--text-muted); font-size: 0.78rem;">One per line or comma-separated</span>
+                </label>
+                <textarea id="inputEditKeyPassword" class="form-input" rows="3" placeholder="Enter key(s) (leave empty to reset to Master Password)" autocomplete="off" style="resize: vertical; font-family: monospace; font-size: 0.85rem; line-height: 1.4;"></textarea>
             </div>
             <div id="editKeyStatusMsg" style="font-size: 0.82rem; margin-bottom: 14px; min-height: 20px;"></div>
             <div style="display: flex; justify-content: flex-end; gap: 10px;">
                 <button onclick="closeEditKeyModal()" class="tool-btn">Cancel</button>
                 <button id="btnSaveAccountKey" onclick="submitEditAccountKey()" class="btn btn-play" style="padding: 8px 18px;">
-                    Verify &amp; Save Key
+                    Verify &amp; Save Keyring
                 </button>
             </div>
         </div>
@@ -15481,7 +15494,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 ${{isPrimary ? '<span class="account-pill is-primary" style="font-size: 0.68rem;">👑 Primary Uploader</span>' : ''}}
                                 ${{isEnabled ? '<span class="meta-pill genre-pill" style="font-size: 0.68rem;">Active</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: #374151; color: #9ca3af;">Disabled</span>'}}
                                 ${{acc.can_write ? '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3);">&#9997;&#65039; Write</span>' : `<span class="meta-pill" style="font-size: 0.68rem; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3);" title="${{escapeHtml(acc.role_desc || 'Read-Only')}}">&#128274; Read-Only (Write Disabled)</span>`}}
-                                ${{acc.has_custom_key ? '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">🔑 Custom Key</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25);">🔑 Master Key</span>'}}
+                                ${{acc.has_custom_key ? `<span class="meta-pill" style="font-size: 0.68rem; background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">🔑 ${{escapeHtml(acc.key_status || 'Custom Key')}}</span>` : '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25);">🔑 Master Key</span>'}}
                             </div>
                             <div class="acc-token">
                                 Token: ${{escapeHtml(acc.token_masked)}} &bull; Hosted: ${{acc.video_count || 0}} videos (${{acc.size_str || '0 MB'}})
@@ -15489,8 +15502,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         </div>
                     </div>
                     <div class="acc-actions">
-                        <button onclick="openEditKeyModal('${{escapeHtml(acc.username)}}', ${{Boolean(acc.has_custom_key)}})" class="btn btn-link btn-xs" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" title="Configure dedicated encryption key for this account">
-                            🔑 Key
+                        <button onclick="openEditKeyModal('${{escapeHtml(acc.username)}}', ${{Boolean(acc.has_custom_key)}}, ${{Number(acc.key_count || 1)}}, '${{escapeHtml(acc.key_status || '')}}')" class="btn btn-link btn-xs" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" title="Configure encryption keyring for this account">
+                            🔑 Keyring
                         </button>
                         ${{!isPrimary ? `
                             <button onclick="setPrimaryAccount('${{escapeHtml(acc.username)}}')" class="btn btn-link btn-xs" title="Make this account the primary uploader">
@@ -15511,15 +15524,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         let activeEditKeyUser = '';
-        function openEditKeyModal(username, hasCustom) {{
+        function openEditKeyModal(username, hasCustom, keyCount, keyStatus) {{
             activeEditKeyUser = username;
             const modal = document.getElementById('editKeyModal');
             document.getElementById('lblEditKeyUsername').innerText = username;
             const input = document.getElementById('inputEditKeyPassword');
             input.value = '';
-            input.placeholder = hasCustom ? 'Enter new key (or leave empty to reset to Master Key)' : 'Leave empty to keep Master Key';
+            input.placeholder = hasCustom ? 'Enter key(s) (one per line or comma-separated). Leave empty to reset to Master Key.' : 'Enter key(s) (leave empty to keep Master Key)';
             const statusMsg = document.getElementById('editKeyStatusMsg');
-            statusMsg.innerHTML = hasCustom ? '<span style="color: #c084fc;">This account is currently using a <b>Dedicated Custom Encryption Key</b>.</span>' : '<span style="color: #38bdf8;">This account is currently using the shared <b>Master Password</b>.</span>';
+            if (hasCustom) {{
+                statusMsg.innerHTML = `<span style="color: #c084fc;">This account has <b>${{escapeHtml(keyStatus || 'Custom Key')}}</b> active. Multiple keys are checked in order.</span>`;
+            }} else {{
+                statusMsg.innerHTML = '<span style="color: #38bdf8;">This account currently uses the global <b>Master Password</b>.</span>';
+            }}
             modal.style.display = 'flex';
         }}
 
@@ -15536,8 +15553,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const newPassword = input.value;
 
             btn.disabled = true;
-            btn.innerHTML = '<span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> Verifying key...';
-            statusMsg.innerHTML = '<span style="color: #38bdf8;">⚡ Instant Verification: Testing key against cloud repository files...</span>';
+            btn.innerHTML = '<span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> Verifying keyring...';
+            statusMsg.innerHTML = '<span style="color: #38bdf8;">⚡ Instant Verification: Testing keyring against cloud repository files...</span>';
 
             try {{
                 const res = await fetch('/api/accounts/update-key', {{
@@ -15818,8 +15835,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 return
 
             enc_bytes = resp.content
-            sub_pw = self.acc_mgr.get_password_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.password
-            dec_bytes = crypto_engine.decrypt_bytes(enc_bytes, sub_pw)
+            cand_keys = self.acc_mgr.get_candidate_keys_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else [self.password]
+            matched_pw, dec_bytes = crypto_engine.find_working_key_for_bytes(cand_keys, enc_bytes)
+            if not dec_bytes:
+                raise ValueError("Unable to decrypt subtitle with any candidate key")
             sub_text = companion_helper.decode_subtitle_bytes(dec_bytes)
             vtt_text = companion_helper.srt_to_webvtt(sub_text)
             body = vtt_text.encode("utf-8")

@@ -2,6 +2,7 @@ import os
 import struct
 import hashlib
 import hmac
+import functools
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -15,6 +16,7 @@ PBKDF2_ITERATIONS = 200_000  # High work factor for maximum security
 SAMPLE_SIZE = 1024 * 1024  # 1 MB boundary sample
 
 
+@functools.lru_cache(maxsize=4096)
 def derive_key(password: str, salt: bytes) -> bytes:
     """Derive a 256-bit AES key from password and salt using PBKDF2-HMAC-SHA256."""
     kdf = PBKDF2HMAC(
@@ -221,7 +223,7 @@ def verify_password(verifier_hex: str, password: str) -> bool:
     Fast offline verification: checks whether a password can decrypt the verifier token.
     Returns: True if valid, False on InvalidTag or error.
     """
-    if not verifier_hex:
+    if not verifier_hex or not password:
         return False
     try:
         raw = bytes.fromhex(verifier_hex)
@@ -229,5 +231,44 @@ def verify_password(verifier_hex: str, password: str) -> bool:
         return decrypted == b"HFSYNC_VERIFY_TOKEN"
     except Exception:
         return False
+
+
+def get_key_fingerprint(password: str) -> str:
+    """Returns a compact 8-character hex fingerprint of the key for fast diagnostics/matching."""
+    if not password:
+        return ""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()[:8]
+
+
+def find_working_key_for_verifier(candidate_keys: list, verifier_hex: str) -> str:
+    """
+    Given a list of candidate keys, tests each key in order against the verifier token.
+    Returns the first matching password, or None if no candidate matches.
+    """
+    if not verifier_hex or not candidate_keys:
+        return None
+    for pw in candidate_keys:
+        if pw and verify_password(verifier_hex, pw):
+            return pw
+    return None
+
+
+def find_working_key_for_bytes(candidate_keys: list, payload: bytes) -> tuple:
+    """
+    Given candidate keys and an encrypted byte payload (such as .meta.enc or vault_index.enc),
+    tries decrypting in priority order. Returns (working_password, decrypted_bytes) or (None, None).
+    """
+    if not payload or not candidate_keys:
+        return None, None
+    for pw in candidate_keys:
+        if not pw:
+            continue
+        try:
+            dec = decrypt_bytes(payload, pw)
+            return pw, dec
+        except Exception:
+            continue
+    return None, None
+
 
 

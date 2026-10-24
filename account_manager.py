@@ -87,6 +87,23 @@ def set_jellyfin_sync_enabled(enabled: bool, env_path=ENV_FILE):
     save_env_config({"ENABLE_JELLYFIN_SYNC": "1" if enabled else "0"}, env_path)
 
 
+def parse_key_list(raw) -> list:
+    """Parses a comma, semicolon, or newline separated string of encryption keys into a clean, deduplicated list."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        keys = [str(k).strip() for k in raw if str(k).strip()]
+    else:
+        keys = [k.strip() for k in re.split(r"[,;\n\r]+", str(raw)) if k.strip()]
+    seen = set()
+    deduped = []
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            deduped.append(k)
+    return deduped
+
+
 def save_env_config(updates: dict, env_path=ENV_FILE):
     """
     Safely updates keys in env.txt while preserving comments, ordering,
@@ -176,13 +193,17 @@ class AccountManager:
                 can_write, role_desc = check_token_write_permission(api, upload_token)
                 self.primary_username = user
                 self.upload_token = upload_token
-                acc_pw = self._get_account_password_from_config(user)
-                has_custom = bool(acc_pw and acc_pw != self.password)
-                effective_pw = acc_pw if acc_pw else self.password
+                raw_pw = self._get_account_password_from_config(user)
+                custom_keys = parse_key_list(raw_pw)
+                has_custom = bool(custom_keys and (len(custom_keys) > 1 or custom_keys[0] != self.password))
+                effective_keys = custom_keys if custom_keys else ([self.password] if self.password else [])
+                effective_pw = effective_keys[0] if effective_keys else self.password
                 self.accounts[user] = {
                     "username": user,
                     "token": upload_token,
                     "password": effective_pw,
+                    "passwords": effective_keys,
+                    "custom_keys": custom_keys,
                     "has_custom_key": has_custom,
                     "api": api,
                     "is_upload": True,
@@ -206,13 +227,17 @@ class AccountManager:
                     continue
                 is_enabled = (user not in self.disabled_users)
                 can_write, role_desc = check_token_write_permission(api, tok)
-                acc_pw = self._get_account_password_from_config(user)
-                has_custom = bool(acc_pw and acc_pw != self.password)
-                effective_pw = acc_pw if acc_pw else self.password
+                raw_pw = self._get_account_password_from_config(user)
+                custom_keys = parse_key_list(raw_pw)
+                has_custom = bool(custom_keys and (len(custom_keys) > 1 or custom_keys[0] != self.password))
+                effective_keys = custom_keys if custom_keys else ([self.password] if self.password else [])
+                effective_pw = effective_keys[0] if effective_keys else self.password
                 self.accounts[user] = {
                     "username": user,
                     "token": tok,
                     "password": effective_pw,
+                    "passwords": effective_keys,
+                    "custom_keys": custom_keys,
                     "has_custom_key": has_custom,
                     "api": api,
                     "is_upload": False,
@@ -238,22 +263,33 @@ class AccountManager:
                 return v.strip()
         return ""
 
-    def get_password_for_account(self, username: str) -> str:
+    def get_passwords_for_account(self, username: str) -> list:
         """
-        Returns the encryption password designated for a specific account.
-        Falls back to master self.password if the account has no custom key.
+        Returns all encryption keys designated for an account (active + historical keyring).
+        Falls back to [self.password] if the account has no custom keys configured.
         """
         if not username:
-            return self.password
-        if username in self.accounts and self.accounts[username].get("password"):
-            return self.accounts[username]["password"]
-        custom = self._get_account_password_from_config(username)
-        return custom if custom else self.password
+            return [self.password] if self.password else []
+        if username in self.accounts and self.accounts[username].get("passwords"):
+            return self.accounts[username]["passwords"]
+        raw = self._get_account_password_from_config(username)
+        keys = parse_key_list(raw)
+        if keys:
+            return keys
+        return [self.password] if self.password else []
+
+    def get_password_for_account(self, username: str) -> str:
+        """
+        Returns the primary encryption password designated for new uploads to a specific account.
+        Falls back to master self.password if the account has no custom key.
+        """
+        keys = self.get_passwords_for_account(username)
+        return keys[0] if keys else self.password
 
     def get_password_for_repo(self, repo_id: str) -> str:
         """
-        Returns the encryption password for a repository by extracting the owner username.
-        e.g., 'HFSYNC/vault-xxxx' -> returns password for 'HFSYNC'.
+        Returns the primary encryption password for a repository by extracting the owner username.
+        Used for new uploads / writes to this repository.
         """
         if not repo_id:
             return self.password
@@ -262,6 +298,41 @@ class AccountManager:
             owner = parts[0]
             return self.get_password_for_account(owner)
         return self.password
+
+    def get_candidate_keys_for_repo(self, repo_id: str) -> list:
+        """
+        Hierarchical key resolution for reading/decrypting files in repo_id:
+        1. Owner account's keys (highest priority, tried first)
+        2. Master password
+        3. Fallback keys from other accounts (in case cross-account encryption occurred)
+        Deduplicated in priority order.
+        """
+        candidates = []
+        seen = set()
+
+        def _add_key(k):
+            if k and k not in seen:
+                seen.add(k)
+                candidates.append(k)
+
+        owner = repo_id.split("/", 1)[0] if (repo_id and "/" in repo_id) else self.primary_username
+
+        # 1. Owner's keys (Highest priority)
+        if owner:
+            for k in self.get_passwords_for_account(owner):
+                _add_key(k)
+
+        # 2. Global master password
+        if self.password:
+            _add_key(self.password)
+
+        # 3. Fallback: keys from all other configured accounts
+        for u, acc in self.accounts.items():
+            if u != owner:
+                for k in acc.get("passwords", []):
+                    _add_key(k)
+
+        return candidates
 
     def get_upload_account(self):
         """Returns designated account for uploading all new content (must have write permission)."""
@@ -351,22 +422,24 @@ class AccountManager:
 
             t_dec = time.time()
             count = 0
-            pw = self.get_password_for_repo(repo_id)
+            candidate_keys = self.get_candidate_keys_for_repo(repo_id)
             for root, _, files in os.walk(temp_dir):
                 for f in files:
                     if f.endswith(".meta.enc"):
                         fp = os.path.join(root, f)
                         try:
                             with open(fp, "rb") as ef:
-                                dec = crypto_engine.decrypt_bytes(ef.read(), pw)
-                                item = json.loads(dec.decode("utf-8"))
-                                k = item.get("full_key")
-                                if k:
-                                    verifier = item.get("verifier")
-                                    if verifier and not crypto_engine.verify_password(verifier, pw):
-                                        continue  # Discard undecryptable with this account's key!
-                                    records[k] = item
-                                    count += 1
+                                enc_bytes = ef.read()
+                                matched_pw, dec = crypto_engine.find_working_key_for_bytes(candidate_keys, enc_bytes)
+                                if dec:
+                                    item = json.loads(dec.decode("utf-8"))
+                                    k = item.get("full_key")
+                                    if k:
+                                        verifier = item.get("verifier")
+                                        if verifier and not crypto_engine.verify_password(verifier, matched_pw):
+                                            continue  # Discard if verifier fails working password
+                                        records[k] = item
+                                        count += 1
                         except Exception:
                             pass
             stats["decrypt_time"] = round(time.time() - t_dec, 2)
@@ -398,7 +471,7 @@ class AccountManager:
 
         def _fetch_worker(target, worker_num):
             repo_id, token, user = target
-            pw = self.get_password_for_account(user) if user else self.get_password_for_repo(repo_id)
+            candidate_keys = self.get_candidate_keys_for_repo(repo_id)
             if progress_callback:
                 progress_callback("worker_start", {
                     "repo_id": repo_id,
@@ -408,43 +481,44 @@ class AccountManager:
             t0 = time.time()
             try:
                 # 1. Quick check: does repo have a local vault_index.enc?
-                if pw and token:
+                if candidate_keys and token:
                     try:
                         url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
                         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=8)
                         if resp.status_code == 200:
-                            dec = crypto_engine.decrypt_bytes(resp.content, pw)
-                            try:
-                                import zlib
-                                recs = json.loads(zlib.decompress(dec).decode("utf-8"))
-                            except Exception:
-                                recs = json.loads(dec.decode("utf-8"))
-                            if recs:
-                                valid_recs = {}
-                                for rk, rv in recs.items():
-                                    ver = rv.get("verifier")
-                                    if not ver or crypto_engine.verify_password(ver, pw):
-                                        valid_recs[rk] = rv
-                                if valid_recs:
-                                    st = {
-                                        "success": True,
-                                        "clone_time": 0.0,
-                                        "checkout_time": 0.0,
-                                        "decrypt_time": 0.0,
-                                        "sidecars_count": len(valid_recs),
-                                        "error": None,
-                                        "elapsed": round(time.time() - t0, 2),
-                                        "source": "vault_index"
-                                    }
-                                    if progress_callback:
-                                        progress_callback("worker_success", {
-                                            "repo_id": repo_id,
-                                            "user": user,
-                                            "worker_id": worker_num,
-                                            "count": len(valid_recs),
-                                            "stats": st
-                                        })
-                                    return repo_id, valid_recs, None, st
+                            matched_pw, dec = crypto_engine.find_working_key_for_bytes(candidate_keys, resp.content)
+                            if dec:
+                                try:
+                                    import zlib
+                                    recs = json.loads(zlib.decompress(dec).decode("utf-8"))
+                                except Exception:
+                                    recs = json.loads(dec.decode("utf-8"))
+                                if recs:
+                                    valid_recs = {}
+                                    for rk, rv in recs.items():
+                                        ver = rv.get("verifier")
+                                        if not ver or crypto_engine.find_working_key_for_verifier(candidate_keys, ver):
+                                            valid_recs[rk] = rv
+                                    if valid_recs:
+                                        st = {
+                                            "success": True,
+                                            "clone_time": 0.0,
+                                            "checkout_time": 0.0,
+                                            "decrypt_time": 0.0,
+                                            "sidecars_count": len(valid_recs),
+                                            "error": None,
+                                            "elapsed": round(time.time() - t0, 2),
+                                            "source": "vault_index"
+                                        }
+                                        if progress_callback:
+                                            progress_callback("worker_success", {
+                                                "repo_id": repo_id,
+                                                "user": user,
+                                                "worker_id": worker_num,
+                                                "count": len(valid_recs),
+                                                "stats": st
+                                            })
+                                        return repo_id, valid_recs, None, st
                     except Exception:
                         pass
 
@@ -993,15 +1067,17 @@ class AccountManager:
                     errors.append(f"Error squashing {ds.id}: {res.get('error')}")
         return {"success": len(errors) == 0, "squashed": results, "errors": errors}
 
-    def verify_account_encryption_key(self, username: str, token: str, test_password: str) -> dict:
+    def verify_account_encryption_key(self, username: str, token: str, test_password) -> dict:
         """
-        Instant verification: Checks if test_password can decrypt files in username's Hugging Face repositories.
+        Instant verification: Checks if any key in test_password can decrypt files in username's Hugging Face repositories.
+        test_password can be a string, comma/newline-separated string, or list of keys.
         Returns:
-            {"valid": True/False, "tested_repo": str, "message": str, "error": str}
+            {"valid": True/False, "tested_repo": str, "message": str, "error": str, "matched_key_fp": str}
         """
-        if not test_password:
-            test_password = self.password
-        if not test_password:
+        keys = parse_key_list(test_password)
+        if not keys and self.password:
+            keys = [self.password]
+        if not keys:
             return {"valid": False, "error": "No encryption password provided and no master password exists."}
 
         try:
@@ -1017,10 +1093,11 @@ class AccountManager:
             return {
                 "valid": True,
                 "tested_repo": None,
-                "message": f"Account '{username}' has no existing vault repositories. New uploads will use this encryption key."
+                "message": f"Account '{username}' has no existing vault repositories. New uploads will use key [{keys[0][:4]}***]."
             }
 
         # 1. Search for repositories containing .meta.enc sidecars (ground truth of encrypted media)
+        tested_any = False
         for ds in vault_datasets:
             repo_id = ds.id
             try:
@@ -1031,19 +1108,21 @@ class AccountManager:
                     url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{sample_file}"
                     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=8)
                     if resp.status_code == 200 and resp.content:
-                        try:
-                            dec = crypto_engine.decrypt_bytes(resp.content, test_password)
-                            item = json.loads(dec.decode("utf-8"))
+                        tested_any = True
+                        matched_pw, dec = crypto_engine.find_working_key_for_bytes(keys, resp.content)
+                        if matched_pw and dec:
+                            fp = crypto_engine.get_key_fingerprint(matched_pw)
                             return {
                                 "valid": True,
                                 "tested_repo": repo_id,
-                                "message": f"Encryption key verified! Decrypted media metadata in '{repo_id}'."
+                                "matched_key_fp": fp,
+                                "message": f"Keyring verified! Key [{matched_pw[:4]}***] successfully decrypted media in '{repo_id}'."
                             }
-                        except Exception:
+                        else:
                             return {
                                 "valid": False,
                                 "tested_repo": repo_id,
-                                "error": f"Invalid encryption key: Unable to decrypt metadata sidecar '{sample_file}' in repository '{repo_id}'."
+                                "error": f"Invalid encryption key(s): None of the {len(keys)} provided key(s) could decrypt metadata sidecar '{sample_file}' in repository '{repo_id}'."
                             }
             except Exception:
                 pass
@@ -1055,21 +1134,16 @@ class AccountManager:
                 url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
                 resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=8)
                 if resp.status_code == 200 and resp.content:
-                    try:
-                        dec = crypto_engine.decrypt_bytes(resp.content, test_password)
-                        import zlib
-                        try:
-                            recs = json.loads(zlib.decompress(dec).decode("utf-8"))
-                        except Exception:
-                            recs = json.loads(dec.decode("utf-8"))
-                        if isinstance(recs, dict) and recs:
-                            return {
-                                "valid": True,
-                                "tested_repo": repo_id,
-                                "message": f"Encryption key verified! Decrypted index in '{repo_id}'."
-                            }
-                    except Exception:
-                        pass
+                    tested_any = True
+                    matched_pw, dec = crypto_engine.find_working_key_for_bytes(keys, resp.content)
+                    if matched_pw and dec:
+                        fp = crypto_engine.get_key_fingerprint(matched_pw)
+                        return {
+                            "valid": True,
+                            "tested_repo": repo_id,
+                            "matched_key_fp": fp,
+                            "message": f"Keyring verified! Key [{matched_pw[:4]}***] successfully decrypted index in '{repo_id}'."
+                        }
             except Exception:
                 pass
 
@@ -1077,7 +1151,7 @@ class AccountManager:
             return {
                 "valid": True,
                 "tested_repo": None,
-                "message": f"No encrypted media found in existing repositories for '{username}'. Key accepted."
+                "message": f"No encrypted media found in existing repositories for '{username}'. Keyring accepted."
             }
 
         return {
@@ -1088,7 +1162,7 @@ class AccountManager:
 
     def add_account(self, token: str, is_upload: bool = False, password: str = None) -> dict:
         """
-        Validates token with Hugging Face, instantly verifies encryption key against cloud files,
+        Validates token with Hugging Face, instantly verifies encryption key(s) against cloud files,
         saves to env.txt, and connects.
         """
         token = token.strip()
@@ -1102,9 +1176,10 @@ class AccountManager:
         except Exception as e:
             raise ValueError(f"Hugging Face authorization failed: {e}")
 
-        # Instant verification of encryption key
-        effective_pw = password.strip() if (password and password.strip()) else self.password
-        verify_res = self.verify_account_encryption_key(username, token, effective_pw)
+        # Instant verification of encryption key(s)
+        keys = parse_key_list(password)
+        effective_keys = keys if keys else ([self.password] if self.password else [])
+        verify_res = self.verify_account_encryption_key(username, token, effective_keys)
         if not verify_res.get("valid"):
             raise ValueError(verify_res.get("error", "Encryption key verification failed."))
 
@@ -1128,10 +1203,10 @@ class AccountManager:
                 extra_tokens.append(token)
             updates["HF_EXTRA_TOKENS"] = ", ".join(extra_tokens)
 
-        # Save account-specific password if provided and distinct from master
+        # Save account-specific password(s) if provided and distinct from master
         key_name = f"HF_PASSWORD_{username}"
-        if password and password.strip() and password.strip() != self.password:
-            updates[key_name] = password.strip()
+        if keys:
+            updates[key_name] = ", ".join(keys)
 
         # Un-disable if it was previously disabled
         if username in self.disabled_users:
@@ -1145,37 +1220,40 @@ class AccountManager:
             "username": username,
             "is_upload": is_upload,
             "enabled": True,
-            "has_custom_key": bool(password and password.strip() and password.strip() != self.password),
+            "key_count": len(keys),
+            "has_custom_key": bool(keys and (len(keys) > 1 or keys[0] != self.password)),
             "verification": verify_res,
             "message": f"Successfully connected Hugging Face account '{username}'. {verify_res.get('message', '')}"
         }
 
     def update_account_password(self, username: str, new_password: str) -> dict:
         """
-        Updates the encryption key for an account after verifying it against cloud repositories.
-        Discards any files in the local manifest that cannot be decrypted with the new key.
+        Updates the encryption keyring for an account after verifying it against cloud repositories.
+        Discards any files in the local manifest that cannot be decrypted with any candidate key.
         """
         if username not in self.accounts:
             raise ValueError(f"Account '{username}' is not configured.")
 
         token = self.accounts[username]["token"]
-        new_password = (new_password or "").strip()
-        effective_pw = new_password if new_password else self.password
+        keys = parse_key_list(new_password)
+        effective_keys = keys if keys else ([self.password] if self.password else [])
 
         # Instant verification against existing repositories on Hugging Face
-        verify_res = self.verify_account_encryption_key(username, token, effective_pw)
+        verify_res = self.verify_account_encryption_key(username, token, effective_keys)
         if not verify_res.get("valid"):
             raise ValueError(verify_res.get("error", "Failed to verify encryption key against cloud repositories."))
 
         # Update env config
         key_name = f"HF_PASSWORD_{username}"
-        updates = {key_name: new_password}
+        updates = {key_name: ", ".join(keys) if keys else ""}
         save_env_config(updates, self.env_path)
         self.reload()
 
-        # Prune / discard any files in local manifest for this account that cannot decrypt with the key
+        # Prune / discard any files in local manifest for this account that cannot decrypt with ANY candidate key
+        candidate_keys = self.get_candidate_keys_for_repo(f"{username}/vault")
         manifest_path = "upload_manifest.json"
         discarded_count = 0
+        kept_count = 0
         if os.path.exists(manifest_path):
             try:
                 with open(manifest_path, "r", encoding="utf-8") as f:
@@ -1186,8 +1264,11 @@ class AccountManager:
                     owner = v.get("account") or (v.get("repo_id", "").split("/")[0] if "/" in v.get("repo_id", "") else None)
                     if owner == username:
                         verifier = v.get("verifier")
-                        if verifier and not crypto_engine.verify_password(verifier, effective_pw):
+                        working_pw = crypto_engine.find_working_key_for_verifier(candidate_keys, verifier) if verifier else None
+                        if verifier and not working_pw:
                             keys_to_discard.append(k)
+                        else:
+                            kept_count += 1
 
                 for k in keys_to_discard:
                     files.pop(k, None)
@@ -1208,10 +1289,12 @@ class AccountManager:
         return {
             "success": True,
             "username": username,
-            "has_custom_key": bool(new_password and new_password != self.password),
+            "key_count": len(keys),
+            "has_custom_key": bool(keys and (len(keys) > 1 or keys[0] != self.password)),
+            "kept_count": kept_count,
             "discarded_count": discarded_count,
             "verification": verify_res,
-            "message": f"Successfully updated encryption key for '{username}'. {verify_res.get('message', '')} ({discarded_count} undecryptable file(s) discarded)."
+            "message": f"Successfully updated encryption keyring for '{username}' ({len(keys)} key(s) active). {kept_count} files retained, {discarded_count} discarded."
         }
 
     def toggle_account(self, username: str, enabled: bool = None) -> dict:
@@ -1349,6 +1432,14 @@ class AccountManager:
             size_mb = bytes_tot / (1024 * 1024)
             size_str = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
             has_custom = acc.get("has_custom_key", False)
+            keys = self.get_passwords_for_account(user)
+            key_count = len(keys)
+            if not has_custom:
+                key_status = "Master Key"
+            elif key_count == 1:
+                key_status = "Custom Key (1)"
+            else:
+                key_status = f"Keyring ({key_count} Keys)"
 
             summary.append({
                 "username": user,
@@ -1357,7 +1448,8 @@ class AccountManager:
                 "can_write": acc.get("can_write", True),
                 "role_desc": acc.get("role_desc", "Write Access"),
                 "has_custom_key": has_custom,
-                "key_status": "Custom Key" if has_custom else "Master Key",
+                "key_count": key_count,
+                "key_status": key_status,
                 "token_masked": masked,
                 "video_count": v_count,
                 "total_bytes": bytes_tot,
