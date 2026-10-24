@@ -4601,6 +4601,33 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         let deleteTarget = {{ type: null, key: null, folder: null, count: 0 }};
         let editingKey = null;
 
+        const storyboardCache = {{}};
+        function registerStoryboard(safeId, key) {{
+            if (!safeId) return;
+            const entry = {{
+                available: true,
+                safe_id: safeId,
+                key: key || '',
+                cols: 10,
+                rows: 10,
+                thumb_width: 384,
+                thumb_height: 216,
+                total_frames: 100,
+                sprite_url: `/api/storyboard/image?id=${{safeId}}`
+            }};
+            storyboardCache[safeId] = entry;
+            if (key) storyboardCache[key] = entry;
+        }}
+
+        function syncStoryboardCache(filesList) {{
+            (filesList || []).forEach(f => {{
+                if ((f.has_storyboard || f.has_screens) && f.safe_id) {{
+                    registerStoryboard(f.safe_id, f.key);
+                }}
+            }});
+        }}
+        syncStoryboardCache(allFiles);
+
         function buildTree(files) {{
             const root = {{ name: "root", type: "folder", children: {{}} }};
 
@@ -5666,28 +5693,35 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 canvas.dataset.staticBg = canvas.style.backgroundImage || '';
             }}
 
+            // 1. Instant cache check: activate HD sprite sheet immediately with zero latency
+            const sb = storyboardCache[safeId] || storyboardCache[key];
+            if (sb && sb.available && sb.sprite_url) {{
+                canvas.style.backgroundImage = `url('${{sb.sprite_url}}')`;
+                const fb = card.querySelector('.thumb-fallback');
+                if (fb) fb.remove();
+                startThumbAutoCycle(card, 0);
+                return;
+            }}
+
+            // 2. Fallback: on-demand generation and polling
             try {{
                 const res = await fetch(`/api/storyboard?key=${{encodeURIComponent(key)}}`);
                 if (!res.ok) return;
                 const data = await res.json();
                 
                 if (data.available && data.sprite_url) {{
-                    const img = new Image();
-                    img.src = data.sprite_url;
-                    img.onload = () => {{
-                        if (activeHoveredThumb === card) {{
-                            canvas.style.backgroundImage = `url('${{data.sprite_url}}')`;
-                            canvas.style.backgroundSize = '1000% 1000%';
-                            const fb = card.querySelector('.thumb-fallback');
-                            if (fb) fb.remove();
-                            startThumbAutoCycle(card, 0);
-                        }}
-                    }};
+                    registerStoryboard(data.safe_id || safeId, key);
+                    if (activeHoveredThumb === card) {{
+                        canvas.style.backgroundImage = `url('${{data.sprite_url}}')`;
+                        const fb = card.querySelector('.thumb-fallback');
+                        if (fb) fb.remove();
+                        startThumbAutoCycle(card, 0);
+                    }}
                 }} else {{
                     let pollCount = 0;
                     const poll = setInterval(async () => {{
                         pollCount++;
-                        if (pollCount > 15 || activeHoveredThumb !== card) {{
+                        if (pollCount > 25 || activeHoveredThumb !== card) {{
                             clearInterval(poll);
                             return;
                         }}
@@ -5697,17 +5731,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 const d2 = await r2.json();
                                 if (d2.available && d2.sprite_url) {{
                                     clearInterval(poll);
-                                    const img = new Image();
-                                    img.src = d2.sprite_url;
-                                    img.onload = () => {{
-                                        if (activeHoveredThumb === card) {{
-                                            canvas.style.backgroundImage = `url('${{d2.sprite_url}}')`;
-                                            canvas.style.backgroundSize = '1000% 1000%';
-                                            const fb = card.querySelector('.thumb-fallback');
-                                            if (fb) fb.remove();
-                                            startThumbAutoCycle(card, 0);
-                                        }}
-                                    }};
+                                    registerStoryboard(d2.safe_id || safeId, key);
+                                    if (activeHoveredThumb === card) {{
+                                        canvas.style.backgroundImage = `url('${{d2.sprite_url}}')`;
+                                        const fb = card.querySelector('.thumb-fallback');
+                                        if (fb) fb.remove();
+                                        startThumbAutoCycle(card, 0);
+                                    }}
                                 }}
                             }}
                         }} catch (e) {{}}
@@ -5721,11 +5751,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const canvas = card.querySelector('.thumb-canvas');
             if (!canvas) return;
 
-            // Ensure 100-frame sprite is active during scrubbing
             const safeId = card.dataset.safeid;
-            if (safeId && (!canvas.style.backgroundSize || !canvas.style.backgroundSize.includes('1000%'))) {{
-                canvas.style.backgroundImage = `url('/api/storyboard/image?id=${{safeId}}')`;
-                canvas.style.backgroundSize = '1000% 1000%';
+            const key = card.dataset.key;
+            const sb = storyboardCache[safeId] || storyboardCache[key];
+            const spriteUrl = (sb && sb.sprite_url) ? sb.sprite_url : `/api/storyboard/image?id=${{safeId}}`;
+
+            if (safeId && (!canvas.style.backgroundImage || !canvas.style.backgroundImage.includes('/api/storyboard/image'))) {{
+                canvas.style.backgroundImage = `url('${{spriteUrl}}')`;
             }}
 
             clearInterval(thumbCycleInterval);
@@ -5781,10 +5813,31 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const raw = streamUrl.replace(/.*\/stream\//, '');
             const key = decodeURIComponent(raw);
             currentStoryboardKey = key;
-            activeStoryboard = null;
             const thumbElem = document.getElementById('ytThumbPreview');
+
+            // 1. Instant lookup from frontend cache or allFiles
+            const fileObj = (allFiles || []).find(f => f.key === key || (f.file_names && f.file_names.includes(key)));
+            const safeId = fileObj ? fileObj.safe_id : (storyboardCache[key] ? storyboardCache[key].safe_id : null);
+
+            if (safeId && storyboardCache[safeId]) {{
+                activeStoryboard = storyboardCache[safeId];
+                if (thumbElem) {{
+                    thumbElem.style.backgroundImage = `url('${{activeStoryboard.sprite_url}}')`;
+                }}
+                return; // INSTANT! Zero network latency
+            }} else if (fileObj && fileObj.has_storyboard && safeId) {{
+                registerStoryboard(safeId, key);
+                activeStoryboard = storyboardCache[safeId];
+                if (thumbElem) {{
+                    thumbElem.style.backgroundImage = `url('${{activeStoryboard.sprite_url}}')`;
+                }}
+                return; // INSTANT!
+            }}
+
+            activeStoryboard = null;
             if (thumbElem) thumbElem.style.display = 'none';
 
+            // 2. Fallback to API if not pre-cached
             try {{
                 const durParam = (duration && duration > 0) ? `&duration=${{Math.round(duration)}}` : '';
                 const res = await fetch(`/api/storyboard?key=${{encodeURIComponent(key)}}${{durParam}}`);
@@ -5793,22 +5846,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (currentStoryboardKey !== key) return;
 
                 if (data.available && data.sprite_url) {{
-                    const img = new Image();
-                    img.src = data.sprite_url;
-                    img.onload = () => {{
-                        if (currentStoryboardKey === key) {{
-                            activeStoryboard = data;
-                            if (thumbElem) {{
-                                thumbElem.style.backgroundImage = `url('${{data.sprite_url}}')`;
-                            }}
-                        }}
-                    }};
+                    registerStoryboard(data.safe_id || safeId, key);
+                    activeStoryboard = data;
+                    if (thumbElem) {{
+                        thumbElem.style.backgroundImage = `url('${{data.sprite_url}}')`;
+                    }}
                 }} else {{
-                    // Watching priority poll: check every 1s for up to 6 times
                     let attempts = 0;
                     const pollInterval = setInterval(async () => {{
                         attempts++;
-                        if (currentStoryboardKey !== key || activeStoryboard || attempts > 6) {{
+                        if (currentStoryboardKey !== key || activeStoryboard || attempts > 20) {{
                             clearInterval(pollInterval);
                             return;
                         }}
@@ -5818,16 +5865,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 const d2 = await r2.json();
                                 if (d2.available && d2.sprite_url && currentStoryboardKey === key) {{
                                     clearInterval(pollInterval);
-                                    const img = new Image();
-                                    img.src = d2.sprite_url;
-                                    img.onload = () => {{
-                                        if (currentStoryboardKey === key) {{
-                                            activeStoryboard = d2;
-                                            if (thumbElem) {{
-                                                thumbElem.style.backgroundImage = `url('${{d2.sprite_url}}')`;
-                                            }}
-                                        }}
-                                    }};
+                                    registerStoryboard(d2.safe_id || safeId, key);
+                                    activeStoryboard = d2;
+                                    if (thumbElem) {{
+                                        thumbElem.style.backgroundImage = `url('${{d2.sprite_url}}')`;
+                                    }}
                                 }}
                             }}
                         }} catch (e) {{}}
@@ -7360,6 +7402,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     const newKeys = newFiles.map(f => f.key).sort().join('|');
 
                     allFiles = newFiles;
+                    syncStoryboardCache(newFiles);
                     skippedFiles = data.skipped || [];
                     primaryAccount = data.primary_account || primaryAccount;
                     populateFilterDropdowns();
