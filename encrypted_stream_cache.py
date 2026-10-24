@@ -232,11 +232,11 @@ class EncryptedStreamCache:
         safe_name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in cache_id)
         return os.path.join(self.cache_dir, f"{safe_name}.idx")
 
-    def get_or_load_index(self, cache_id: str, total_size: int, chunk_size: int) -> VideoChunkIndex:
+    def get_or_load_index(self, cache_id: str, total_size: int = 0, chunk_size: int = 0) -> VideoChunkIndex:
         with self._get_lock(cache_id):
             if cache_id in self._indices:
                 idx = self._indices[cache_id]
-                if idx.total_size == total_size and idx.chunk_size == chunk_size:
+                if (total_size <= 0 or idx.total_size == total_size) and (chunk_size <= 0 or idx.chunk_size == chunk_size):
                     idx.touch()
                     return idx
 
@@ -245,7 +245,7 @@ class EncryptedStreamCache:
                 try:
                     with open(idx_path, "rb") as f:
                         loaded = VideoChunkIndex.deserialize(cache_id, f.read())
-                    if loaded and loaded.total_size == total_size and loaded.chunk_size == chunk_size:
+                    if loaded and (total_size <= 0 or loaded.total_size == total_size or loaded.total_chunks > 0) and (chunk_size <= 0 or loaded.chunk_size == chunk_size or loaded.chunk_size > 0):
                         loaded.touch()
                         self._indices[cache_id] = loaded
                         return loaded
@@ -383,19 +383,7 @@ class EncryptedStreamCache:
 
     def set_pinned_offline(self, cache_id: str, pinned: bool, total_size: int = 0, chunk_size: int = 0):
         """Toggle pinned offline status for a video."""
-        if cache_id in self._indices:
-            idx = self._indices[cache_id]
-        elif total_size > 0 and chunk_size > 0:
-            idx = self.get_or_load_index(cache_id, total_size, chunk_size)
-        else:
-            idx_path = self._get_idx_path(cache_id)
-            idx = None
-            if os.path.exists(idx_path):
-                try:
-                    with open(idx_path, "rb") as f:
-                        idx = VideoChunkIndex.deserialize(cache_id, f.read())
-                except Exception:
-                    pass
+        idx = self.get_or_load_index(cache_id, total_size, chunk_size)
         if idx:
             idx.set_pinned_offline(pinned)
             self._indices[cache_id] = idx

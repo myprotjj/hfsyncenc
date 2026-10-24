@@ -3417,6 +3417,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 if can_decrypt:
                     seen_blobs[dedup_id] = len(files_data)
+                    c_info = stream_cache.get_cache_info(safe_id, total_size=size_bytes, chunk_size=crypto_engine.DEFAULT_CHUNK_SIZE)
+                    item["cache_pct"] = c_info["percentage"]
+                    item["cached_bytes"] = c_info["cached_bytes"]
+                    item["cached_size_str"] = c_info["cached_size_str"]
+                    item["is_cached"] = c_info["cached"]
+                    item["pinned_offline"] = c_info["pinned_offline"]
+                    item["is_downloading"] = c_info["is_downloading"]
                     files_data.append(item)
                 else:
                     item["reason"] = "Cannot decrypt with current master password (encrypted with an older or different key)"
@@ -5783,29 +5790,58 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             border: none !important;
             border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
         }}
-        .card-size-badge {{
+        .card-top-badges {{
             position: absolute;
             top: 6px;
             left: 6px;
-            background: rgba(0, 0, 0, 0.85);
-            backdrop-filter: blur(4px);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+            z-index: 10;
+            max-width: calc(100% - 90px);
+            pointer-events: none;
+        }}
+        .card-size-badge {{
+            position: relative;
+            top: auto;
+            left: auto;
+            background: rgba(10, 15, 30, 0.88);
+            backdrop-filter: blur(6px);
             color: #93c5fd;
-            font-size: 0.65rem;
+            font-size: 0.64rem;
             font-weight: 600;
-            font-family: monospace;
-            padding: 2px 7px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            padding: 2.5px 7px;
             border-radius: 4px;
             pointer-events: none;
             border: 1px solid rgba(255, 255, 255, 0.18);
-            z-index: 3;
             display: inline-flex;
             align-items: center;
-            gap: 4px;
+            gap: 5px;
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
             transition: opacity 0.15s ease;
+            white-space: nowrap;
+            line-height: 1.25;
+        }}
+        .card-size-badge .badge-vsize {{
+            color: #93c5fd;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }}
+        .card-size-badge .badge-sep {{
+            color: rgba(255, 255, 255, 0.35);
+            font-size: 0.6rem;
+            user-select: none;
         }}
         .card-size-badge .badge-asize {{
-            color: #a7f3d0;
+            color: #6ee7b7;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
         }}
         .card-resume-bar {{
             position: absolute;
@@ -6399,36 +6435,39 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             font-weight: 600;
         }}
         .card-cache-pill {{
-            position: absolute;
-            top: 8px;
-            left: 8px;
-            z-index: 10;
-            font-size: 0.7rem;
+            position: relative;
+            top: auto;
+            left: auto;
+            font-size: 0.64rem;
             font-weight: 600;
-            padding: 2px 7px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            padding: 2px 8px;
             border-radius: 12px;
             display: inline-flex;
             align-items: center;
-            gap: 4px;
+            gap: 4.5px;
             backdrop-filter: blur(8px);
             pointer-events: none;
             transition: all 0.2s ease;
+            white-space: nowrap;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
+            line-height: 1.25;
         }}
         .card-cache-pill.is-pinned {{
-            background: rgba(34, 197, 94, 0.22);
-            color: #4ade80;
-            border: 1px solid rgba(34, 197, 94, 0.5);
-            box-shadow: 0 0 10px rgba(34, 197, 94, 0.25);
+            background: rgba(16, 185, 129, 0.22);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.55);
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.25);
         }}
         .card-cache-pill.is-cached {{
-            background: rgba(56, 189, 248, 0.2);
+            background: rgba(14, 165, 233, 0.22);
             color: #38bdf8;
-            border: 1px solid rgba(56, 189, 248, 0.4);
+            border: 1px solid rgba(14, 165, 233, 0.5);
         }}
         .card-cache-pill.is-cloud {{
-            background: rgba(15, 23, 42, 0.75);
+            background: rgba(15, 23, 42, 0.85);
             color: #94a3b8;
-            border: 1px solid rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.15);
         }}
         .thumb-cache-track {{
             position: absolute;
@@ -9513,11 +9552,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
                     ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmousemove="event.stopPropagation()" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens on card &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
-                    <div class="card-size-badge" title="Video size: ${{escapeHtml(f.size_str)}}, Audio: ${{escapeHtml(audioSizeStr)}}">
-                        <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
-                        <span class="badge-asize"> • 🎵 ${{escapeHtml(audioSizeStr)}}</span>
+                    <div class="card-top-badges">
+                        ${{cachePillHtml}}
+                        <div class="card-size-badge" title="Video size: ${{escapeHtml(f.size_str)}} | Audio size: ${{escapeHtml(audioSizeStr)}}">
+                            <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
+                            <span class="badge-sep">•</span>
+                            <span class="badge-asize">🎵 ${{escapeHtml(audioSizeStr)}}</span>
+                        </div>
                     </div>
-                    ${{cachePillHtml}}
                     ${{cacheTrackHtml}}
                     ${{resumePillHtml}}
                     ${{durationHtml}}
@@ -11198,7 +11240,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const pill = document.getElementById(`cachePill_${{safeId}}`);
             if (pill) {{
                 pill.className = `card-cache-pill ${{isPinned ? 'is-pinned' : (pct > 0 ? 'is-cached' : 'is-cloud')}}`;
-                pill.innerHTML = `<span class="cache-pill-icon">${{isPinned ? '📌' : (pct > 0 ? '💾' : '☁️')}}</span><span class="cache-pill-text">${{isPinned ? 'Offline Ready' : (pct > 0 ? Math.round(pct) + '%' : 'Cloud')}}</span>${{pct > 0 ? `<span class="cache-pill-size">(${{sizeStr}})</span>` : ''}}`;
+                pill.innerHTML = `<span class="cache-pill-icon">${{isPinned ? '📌' : (pct > 0 ? '💾' : '☁️')}}</span><span class="cache-pill-text">${{isPinned ? 'Offline Ready' : (pct > 0 ? Math.round(pct) + '%' : 'Cloud Stream')}}</span>${{pct > 0 ? `<span class="cache-pill-size">(${{sizeStr}})</span>` : ''}}`;
                 pill.title = isPinned ? `📌 Offline Available: 100% saved locally forever (${{sizeStr}})` : (pct > 0 ? `💾 Local Encrypted Cache: ${{Math.round(pct)}}% (${{sizeStr}}) • Expires 24h after last play` : '☁️ Cloud Stream: 0% cached locally');
             }}
 
@@ -14526,6 +14568,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         applyHideTagsState();
         updateSystemStatusIndicators(true, 'idle');
         updateQuickResumeUI();
+        (allFiles || []).forEach(f => {{
+            if (f.is_downloading && f.safe_id) {{
+                pollOfflineDownloadProgress(f.safe_id);
+            }}
+        }});
 
         /* Privacy Blur Mode Controller */
         function isPrivacyBlurActive() {{
