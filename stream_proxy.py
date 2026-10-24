@@ -1845,10 +1845,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 audio_entry = info.get("audio")
                 audio_sz = (audio_entry.get("orig_size") or audio_entry.get("size_bytes")) if audio_entry else None
+                if not audio_sz:
+                    cached_p = os.path.join("storyboards", "audio", f"{safe_id}.m4a")
+                    if os.path.exists(cached_p):
+                        audio_sz = os.path.getsize(cached_p)
                 if audio_sz and audio_sz > 0:
                     audio_size_str = f"{audio_sz / (1024 * 1024):.1f} MB"
                 elif dur_sec and dur_sec > 0:
-                    audio_size_str = f"~{(dur_sec * 16 * 1024) / (1024 * 1024):.1f} MB"
+                    audio_size_str = f"~{(dur_sec * 16.3 * 1024) / (1024 * 1024):.1f} MB"
                 else:
                     audio_size_str = "Audio"
                 audio_codec = (media_info.get("audio_codec") if media_info else None) or "AAC"
@@ -1969,10 +1973,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 audio_entry = info.get("audio")
                 audio_sz = (audio_entry.get("orig_size") or audio_entry.get("size_bytes")) if audio_entry else None
+                if not audio_sz:
+                    cached_p = os.path.join("storyboards", "audio", f"{safe_id}.m4a")
+                    if os.path.exists(cached_p):
+                        audio_sz = os.path.getsize(cached_p)
                 if audio_sz and audio_sz > 0:
                     audio_size_str = f"{audio_sz / (1024 * 1024):.1f} MB"
                 elif dur_sec and dur_sec > 0:
-                    audio_size_str = f"~{(dur_sec * 16 * 1024) / (1024 * 1024):.1f} MB"
+                    audio_size_str = f"~{(dur_sec * 16.3 * 1024) / (1024 * 1024):.1f} MB"
                 else:
                     audio_size_str = "Audio"
                 audio_codec = (media_info.get("audio_codec") if media_info else None) or "AAC"
@@ -2287,6 +2295,107 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             padding-top: 6px;
             border-top: 1px dashed rgba(255, 255, 255, 0.1);
             margin-top: 6px;
+        }}
+
+        /* Per-tag hide system (Hide any tag from all cards, visible on expand, filterable) */
+        .video-card:not(.is-expanded) .is-hidden-tag,
+        .file-row:not(.is-expanded) .is-hidden-tag {{
+            display: none !important;
+        }}
+        .video-card.is-expanded .is-hidden-tag,
+        .file-row.is-expanded .is-hidden-tag {{
+            display: inline-flex !important;
+            opacity: 0.72;
+            border: 1px dashed rgba(245, 158, 11, 0.5) !important;
+            background: rgba(245, 158, 11, 0.08) !important;
+        }}
+        .pill-hide-trigger {{
+            font-size: 0.65rem;
+            margin-left: 3px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s, transform 0.15s;
+            padding: 0 2px;
+            border-radius: 2px;
+        }}
+        .meta-pill:hover .pill-hide-trigger,
+        .is-hidden-tag .pill-hide-trigger {{
+            opacity: 0.9;
+        }}
+        .pill-hide-trigger:hover {{
+            opacity: 1;
+            transform: scale(1.25);
+        }}
+        .btn-tag-hide-toggle {{
+            font-size: 0.68rem;
+            padding: 2px 7px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: rgba(255, 255, 255, 0.06);
+            color: #9ca3af;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }}
+        .btn-tag-hide-toggle:hover {{
+            border-color: rgba(56, 189, 248, 0.5);
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.15);
+        }}
+        .btn-tag-hide-toggle.is-hidden {{
+            border-color: rgba(245, 158, 11, 0.5);
+            color: #fbbf24;
+            background: rgba(245, 158, 11, 0.15);
+        }}
+        .popover-item {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            padding: 3px 6px;
+            border-radius: 4px;
+        }}
+        .popover-item-left {{
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            cursor: pointer;
+            flex: 1;
+            min-width: 0;
+        }}
+        .popover-item.is-tag-hidden {{
+            background: rgba(245, 158, 11, 0.05);
+        }}
+        .popover-hidden-badge {{
+            font-size: 0.72rem;
+            padding: 2px 8px;
+            background: rgba(245, 158, 11, 0.18);
+            border: 1px solid rgba(245, 158, 11, 0.4);
+            color: #fbbf24;
+            border-radius: 4px;
+            cursor: pointer;
+            white-space: nowrap;
+        }}
+        .popover-hidden-badge:hover {{
+            background: rgba(245, 158, 11, 0.3);
+            color: #fff;
+        }}
+
+        /* Dedicated Screens Hover Overlay (Zero conflict with storyboard scrubbing!) */
+        .thumb-screens-overlay {{
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #0b0f19;
+            background-size: contain;
+            background-position: center;
+            background-repeat: no-repeat;
+            z-index: 4;
+            display: none;
+            pointer-events: none;
+            border-radius: 6px;
         }}
         .sticky-status-cluster {{
             display: inline-flex;
@@ -4821,7 +4930,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         </button>
                         <div class="filter-popover" id="tagPopover" style="display: none;">
                             <div class="popover-header">
-                                <input type="text" class="popover-search" placeholder="Filter tags..." oninput="filterPopoverList('tagPopover', this.value)">
+                                <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                                    <input type="text" class="popover-search" placeholder="Filter tags..." oninput="filterPopoverList('tagPopover', this.value)" style="margin-bottom: 0;">
+                                    <span id="popoverHiddenTagsCount" class="popover-hidden-badge" style="display: none;" onclick="unhideAllTags(event)" title="Click to unhide all hidden tags"></span>
+                                </div>
                                 <div class="popover-actions">
                                     <button type="button" onclick="selectAllFilter('tag')">Select All</button>
                                     <button type="button" onclick="clearFilter('tag')">Clear</button>
@@ -5174,46 +5286,76 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (modal) modal.style.display = 'none';
         }}
 
+        let hiddenTagsSet = new Set(JSON.parse(localStorage.getItem('hfsync_hidden_tags') || '[]'));
+
+        function isTagHidden(tag) {{
+            return hiddenTagsSet.has(tag);
+        }}
+
+        function toggleHideTag(tag, event) {{
+            if (event) event.stopPropagation();
+            const cleanTag = String(tag).trim();
+            if (hiddenTagsSet.has(cleanTag)) {{
+                hiddenTagsSet.delete(cleanTag);
+                flashCenterFeedback(`👁️ Unhidden: "${{cleanTag}}" is now visible on cards`);
+            }} else {{
+                hiddenTagsSet.add(cleanTag);
+                flashCenterFeedback(`🙈 Hidden: "${{cleanTag}}" is now hidden on card faces`);
+            }}
+            try {{
+                localStorage.setItem('hfsync_hidden_tags', JSON.stringify(Array.from(hiddenTagsSet)));
+            }} catch(e) {{}}
+            populateFilterDropdowns();
+            refreshTreeDisplay();
+        }}
+
+        function unhideAllTags(event) {{
+            if (event) event.stopPropagation();
+            hiddenTagsSet.clear();
+            try {{ localStorage.setItem('hfsync_hidden_tags', '[]'); }} catch(e) {{}}
+            populateFilterDropdowns();
+            refreshTreeDisplay();
+            flashCenterFeedback('👁️ All tags are now visible on cards');
+        }}
+
         function handleScreensBtnEnter(btn, event) {{
             if (event) event.stopPropagation();
             const wrap = btn.closest('.card-thumb-wrap, .video-thumb-card, .list-thumb-wrap');
             if (!wrap) return;
-            const canvas = wrap.querySelector('.thumb-canvas');
-            if (!canvas) return;
             const safeId = wrap.dataset.safeid;
             if (!safeId) return;
 
+            wrap.dataset.screensHover = '1';
             clearInterval(thumbCycleInterval);
-            if (canvas.dataset.originalBg === undefined) {{
-                canvas.dataset.originalBg = canvas.style.backgroundImage || '';
-                canvas.dataset.originalSize = canvas.style.backgroundSize || 'cover';
-                canvas.dataset.originalPos = canvas.style.backgroundPosition || 'center';
+            clearTimeout(thumbManualScrubTimeout);
+
+            const overlay = wrap.querySelector('.thumb-screens-overlay');
+            if (!overlay) return;
+
+            const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
+            const sb = storyboardCache[safeId];
+            let screensUrl = '';
+            if (sb && sb.sprite_url) {{
+                screensUrl = sb.sprite_url;
+            }} else if (fileObj && fileObj.has_storyboard) {{
+                const v = fileObj.sb_version || Date.now();
+                screensUrl = `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{v}}`;
+            }} else {{
+                screensUrl = `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }}
 
-            const screensUrl = `/api/screens/image?id=${{encodeURIComponent(safeId)}}`;
-            canvas.style.backgroundImage = `url('${{screensUrl}}')`;
-            canvas.style.backgroundSize = 'contain';
-            canvas.style.backgroundPosition = 'center';
-            canvas.style.backgroundRepeat = 'no-repeat';
-            canvas.style.backgroundColor = '#0b0f19';
+            overlay.style.backgroundImage = `url('${{screensUrl}}')`;
+            overlay.style.display = 'block';
         }}
 
         function handleScreensBtnLeave(btn, event) {{
             if (event) event.stopPropagation();
             const wrap = btn.closest('.card-thumb-wrap, .video-thumb-card, .list-thumb-wrap');
             if (!wrap) return;
-            const canvas = wrap.querySelector('.thumb-canvas');
-            if (!canvas) return;
-
-            if (canvas.dataset.originalBg !== undefined) {{
-                canvas.style.backgroundImage = canvas.dataset.originalBg;
-                canvas.style.backgroundSize = canvas.dataset.originalSize || 'cover';
-                canvas.style.backgroundPosition = canvas.dataset.originalPos || 'center';
-                canvas.style.backgroundRepeat = '';
-                canvas.style.backgroundColor = '';
-                delete canvas.dataset.originalBg;
-                delete canvas.dataset.originalSize;
-                delete canvas.dataset.originalPos;
+            wrap.dataset.screensHover = '';
+            const overlay = wrap.querySelector('.thumb-screens-overlay');
+            if (overlay) {{
+                overlay.style.display = 'none';
             }}
         }}
 
@@ -5514,7 +5656,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl === 'gameplay') {{ cls = 'gameplay-pill'; icon = '&#128377;'; }}
                 else if (tl === 'music video') {{ cls = 'music-pill'; icon = '&#127925;'; }}
                 else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
-                badgesHtml += `<span class="meta-pill ${{cls}}" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')" title="Click to filter by tag: ${{escapeHtml(t)}}">${{icon}} ${{escapeHtml(t)}}</span>`;
+                const isHidden = hiddenTagsSet.has(t);
+                badgesHtml += `
+                <span class="meta-pill ${{cls}} ${{isHidden ? 'is-hidden-tag' : ''}}" title="${{isHidden ? `Hidden tag: ${{escapeHtml(t)}} (Click 👁️ to unhide)` : `Tag: ${{escapeHtml(t)}} (Click to filter, or click 🙈 to hide)`}}">
+                    <span class="pill-label-txt" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')">${{icon}} ${{escapeHtml(t)}}</span>
+                    <span class="pill-hide-trigger" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Unhide this tag on all cards' : 'Hide this tag across all cards'}}">${{isHidden ? '&#128065;&#65039;' : '&#128584;'}}</span>
+                </span>`;
             }});
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
@@ -5589,13 +5736,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-canvas" id="thumb-canvas-${{safeId}}" style="${{thumbBgStyle}}">
                         ${{fallbackHtml}}
                     </div>
+                    <div class="thumb-screens-overlay" id="screens-overlay-${{safeId}}"></div>
                     <div class="thumb-scrub-bar">
                         <div class="thumb-scrub-fill"></div>
                     </div>
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens on card &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
+                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmousemove="event.stopPropagation()" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens on card &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
                     <div class="card-size-badge" title="Video size: ${{escapeHtml(f.size_str)}}, Audio: ${{escapeHtml(audioSizeStr)}}">
                         <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
                         <span class="badge-asize"> • 🎵 ${{escapeHtml(audioSizeStr)}}</span>
@@ -5672,7 +5820,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl === 'gameplay') {{ cls = 'gameplay-pill'; icon = '&#128377;'; }}
                 else if (tl === 'music video') {{ cls = 'music-pill'; icon = '&#127925;'; }}
                 else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
-                badgesHtml += `<span class="meta-pill ${{cls}}" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')" title="Click to filter by tag: ${{escapeHtml(t)}}">${{icon}} ${{escapeHtml(t)}}</span>`;
+                const isHidden = hiddenTagsSet.has(t);
+                badgesHtml += `
+                <span class="meta-pill ${{cls}} ${{isHidden ? 'is-hidden-tag' : ''}}" title="${{isHidden ? `Hidden tag: ${{escapeHtml(t)}} (Click 👁️ to unhide)` : `Tag: ${{escapeHtml(t)}} (Click to filter, or click 🙈 to hide)`}}">
+                    <span class="pill-label-txt" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')">${{icon}} ${{escapeHtml(t)}}</span>
+                    <span class="pill-hide-trigger" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Unhide this tag on all cards' : 'Hide this tag across all cards'}}">${{isHidden ? '&#128065;&#65039;' : '&#128584;'}}</span>
+                </span>`;
             }});
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
@@ -5747,13 +5900,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-canvas" id="thumb-canvas-${{safeId}}" style="${{thumbBgStyle}}">
                         ${{fallbackHtml}}
                     </div>
+                    <div class="thumb-screens-overlay" id="screens-overlay-list-${{safeId}}"></div>
                     <div class="thumb-scrub-bar">
                         <div class="thumb-scrub-fill"></div>
                     </div>
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
+                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmousemove="event.stopPropagation()" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
                     ${{resumePillHtml}}
                     ${{durationHtml}}
                     ${{resumeBarHtml}}
@@ -6085,13 +6239,29 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (tagList) {{
                 tagList.innerHTML = Object.keys(tagCounts).sort((a, b) => a.localeCompare(b)).map(t => {{
                     const isChecked = selectedTags.has(t);
+                    const isHidden = hiddenTagsSet.has(t);
                     return `
-                    <label class="popover-item" data-val="${{escapeHtml(t)}}">
-                        <input type="checkbox" ${{isChecked ? 'checked' : ''}} onchange="toggleFilterSelection('tag', '${{escapeHtml(t)}}')">
-                        <span>${{escapeHtml(t)}}</span>
-                        <span class="popover-item-count">(${{tagCounts[t]}})</span>
-                    </label>`;
+                    <div class="popover-item ${{isHidden ? 'is-tag-hidden' : ''}}" data-val="${{escapeHtml(t)}}">
+                        <label class="popover-item-left">
+                            <input type="checkbox" ${{isChecked ? 'checked' : ''}} onchange="toggleFilterSelection('tag', '${{escapeHtml(t)}}')">
+                            <span style="${{isHidden ? 'color: #9ca3af; text-decoration: line-through;' : ''}}">${{escapeHtml(t)}}</span>
+                            <span class="popover-item-count">(${{tagCounts[t]}})</span>
+                        </label>
+                        <button type="button" class="btn-tag-hide-toggle ${{isHidden ? 'is-hidden' : ''}}" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Tag is hidden on cards. Click to show on all cards' : 'Hide this tag across all video cards'}}">
+                            ${{isHidden ? '&#128584; Hidden' : '&#128065;&#65039; Hide'}}
+                        </button>
+                    </div>`;
                 }}).join('') || '<div style="color: #6b7280; font-size: 0.78rem; padding: 6px;">No tags found</div>';
+            }}
+
+            const hiddenBadge = document.getElementById('popoverHiddenTagsCount');
+            if (hiddenBadge) {{
+                if (hiddenTagsSet.size > 0) {{
+                    hiddenBadge.style.display = 'inline-block';
+                    hiddenBadge.textContent = `&#128584; ${{hiddenTagsSet.size}} Hidden (Unhide All)`;
+                }} else {{
+                    hiddenBadge.style.display = 'none';
+                }}
             }}
 
             // Populate Categories
@@ -6635,6 +6805,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         function handleThumbMove(card, event) {{
             if (!card) return;
+            if (card.dataset.screensHover === '1') return;
             const canvas = card.querySelector('.thumb-canvas');
             if (!canvas) return;
 
@@ -9073,16 +9244,85 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return
 
         audio_info = file_info.get("audio")
-        if not audio_info or not audio_info.get("blob_path"):
-            audio_info = self.extract_and_upload_companion_audio(clean_key, file_info)
-
         if audio_info and audio_info.get("blob_path"):
             a_blob = audio_info["blob_path"]
             a_repo = audio_info.get("repo_id") or file_info.get("repo_id")
             self.handle_stream(path_after_stream=clean_key, custom_content_type="audio/mp4", repo_id=a_repo, blob_path=a_blob)
             return
 
-        self.handle_stream(path_after_stream=clean_key, custom_content_type="audio/mp4")
+        # Check local cache first for instant streaming / download without network lag
+        safe_id = storyboard_helper.get_safe_id(clean_key)
+        local_dir = os.path.join("storyboards", "audio")
+        os.makedirs(local_dir, exist_ok=True)
+        local_m4a = os.path.join(local_dir, f"{safe_id}.m4a")
+
+        if not os.path.exists(local_m4a) or os.path.getsize(local_m4a) < 1000:
+            import imageio_ffmpeg
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            port = self.server.server_port if hasattr(self.server, "server_port") else 8080
+            stream_url = f"http://127.0.0.1:{port}/stream/{quote(clean_key)}?full=1"
+            cmd = [ffmpeg, "-y", "-i", stream_url, "-vn", "-c:a", "copy", local_m4a]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
+            if not os.path.exists(local_m4a) or os.path.getsize(local_m4a) < 1000:
+                cmd = [ffmpeg, "-y", "-i", stream_url, "-vn", "-c:a", "aac", "-b:a", "192k", local_m4a]
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+
+        if os.path.exists(local_m4a) and os.path.getsize(local_m4a) >= 1000:
+            sz = os.path.getsize(local_m4a)
+            fname = f"{Path(clean_key).stem}.m4a"
+
+            range_header = self.headers.get("Range")
+            if range_header:
+                match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+                if match:
+                    start = int(match.group(1))
+                    end = int(match.group(2)) if match.group(2) else sz - 1
+                    end = min(sz - 1, end)
+                    length = end - start + 1
+                    self.send_response(206)
+                    self.send_header("Content-Type", "audio/mp4")
+                    self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{sz}")
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    with open(local_m4a, "rb") as f_in:
+                        f_in.seek(start)
+                        rem = length
+                        while rem > 0:
+                            chunk = f_in.read(min(rem, 256 * 1024))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            rem -= len(chunk)
+                    return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mp4")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", str(sz))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            with open(local_m4a, "rb") as f_in:
+                while True:
+                    chunk = f_in.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            self.wfile.flush()
+
+            # Schedule background HF upload
+            def _bg_upload_audio(ck, fi):
+                try:
+                    self.extract_and_upload_companion_audio(ck, fi)
+                except Exception as e:
+                    logger.warning("Background audio upload error: %s", e)
+            threading.Thread(target=_bg_upload_audio, args=(clean_key, file_info), daemon=True).start()
+            return
+
+        self.send_error(500, "Failed to stream companion audio")
 
     def handle_stream(self, path_after_stream: str, custom_content_type: str = None, repo_id: str = None, blob_path: str = None):
         clean_key = path_after_stream.strip("/").replace("\\", "/")
@@ -9157,7 +9397,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 self.send_response(206)
                 self.send_header("Content-Type", content_type)
                 if custom_content_type and "audio" in custom_content_type:
-                    self.send_header("Content-Disposition", f'inline; filename="{Path(clean_key).stem}.m4a"')
+                    self.send_header("Content-Disposition", f'attachment; filename="{Path(clean_key).stem}.m4a"')
                 else:
                     self.send_header("Content-Disposition", "inline")
                 self.send_header("X-Content-Type-Options", "nosniff")
@@ -9212,7 +9452,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             if custom_content_type and "audio" in custom_content_type:
-                self.send_header("Content-Disposition", f'inline; filename="{Path(clean_key).stem}.m4a"')
+                self.send_header("Content-Disposition", f'attachment; filename="{Path(clean_key).stem}.m4a"')
             else:
                 self.send_header("Content-Disposition", "inline")
             self.send_header("X-Content-Type-Options", "nosniff")
