@@ -1,3 +1,13 @@
+---
+title: HfSync Media Vault
+emoji: 🎬
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # HFSYNC: High-Speed Encrypted Cloud Media Vault & Jellyfin Streaming Bridge
 
 An automated system to sync hundreds of gigabytes or terabytes of video content to **public Hugging Face Datasets** with **military-grade authenticated encryption (AES-256-GCM)**, auto-deleting local files one-by-one to save local disk space, while remaining **100% streamable and seekable on Jellyfin** via on-the-fly chunk decryption.

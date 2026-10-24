@@ -20,6 +20,10 @@ def load_env_config(env_path=ENV_FILE):
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
                     config[k.strip()] = v.strip()
+    # Cloud & container fallback: pull secrets and config from system environment (e.g. HF Spaces)
+    for k, v in os.environ.items():
+        if k not in config and v:
+            config[k] = v
     return config
 
 

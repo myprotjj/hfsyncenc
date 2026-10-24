@@ -1,0 +1,31 @@
+# Credentials and Secrets
+env.txt
+.env
+.env.*
+*.key
+*.token
+*.pem
+
+# Manifest and runtime dynamic state
+upload_manifest.json
+live_activity.json
+
+# Local Media and cache directories
+videos_to_sync/
+test_videos/
+jellyfin_library/
+archive/
+storyboards/
+*.mp4
+*.m4a
+*.enc
+*.strm
+
+# Git and Python artifacts
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+Thumbs.db

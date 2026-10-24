@@ -6762,6 +6762,14 @@ def run_server(port=8080, password=None):
     def _prewarm_daemon():
         try:
             m = load_manifest()
+            if not m.get("files") and acc_mgr:
+                print("[*] Empty manifest detected. Auto-syncing from connected Hugging Face account(s)...")
+                try:
+                    res = acc_mgr.scan_and_merge_all_accounts(m, library_dir="jellyfin_library", proxy_host=f"127.0.0.1:{port}")
+                    save_manifest(m)
+                    print(f"[*] Cloud restore completed: {res.get('discovered_count', 0)} files restored into manifest.")
+                except Exception as ex:
+                    print(f"[!] Note: Automatic cloud scan error: {ex}")
             f_items = list(m.get("files", {}).items())
             def _pw(item):
                 k, info = item
@@ -6821,8 +6829,9 @@ def run_server(port=8080, password=None):
 
 if __name__ == "__main__":
     import argparse
+    default_port = int(os.environ.get("PORT", 8080))
     parser = argparse.ArgumentParser(description="Interactive Tree View Jellyfin Streaming Proxy")
-    parser.add_argument("--port", "-p", type=int, default=8080, help="Port to listen on (default: 8080)")
+    parser.add_argument("--port", "-p", type=int, default=default_port, help=f"Port to listen on (default: {default_port})")
     parser.add_argument("--password", help="Master encryption password")
     args = parser.parse_args()
 
