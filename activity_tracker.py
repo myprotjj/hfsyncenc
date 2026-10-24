@@ -71,7 +71,7 @@ class ActivityTracker:
                     state["batch_total"] = total_files
                     state["batch_completed"] = 0
                 else:
-                    state["batch_total"] = max(cur_total, cur_done + total_files)
+                    state["batch_total"] = cur_total + total_files
                 state["watcher_status"] = "processing"
                 _save_activity_raw(state)
 
@@ -215,6 +215,9 @@ class ActivityTracker:
                     to_del.append(tid)
         for tid in to_del:
             del state["active_tasks"][tid]
+        if not state.get("active_tasks") and state.get("watcher_status") == "idle":
+            state["batch_total"] = 0
+            state["batch_completed"] = 0
 
     def get_state(self):
         with self._lock:

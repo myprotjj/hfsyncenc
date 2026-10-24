@@ -13413,7 +13413,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (errorTasks.length > 0) {{
                 updateSystemStatusIndicators(true, 'attention', `Watcher Alert (${{errorTasks.length}} Error)`);
             }} else if (isProcessing) {{
-                const countMsg = batchTotal > 0 ? `${{batchDone}}/${{batchTotal}} Syncing` : `${{inFlightTasks.length}} Syncing`;
+                let countMsg = 'Syncing...';
+                if (batchTotal <= 1) {{
+                    const count = inFlightTasks.length || 1;
+                    countMsg = `${{count}} Syncing`;
+                }} else {{
+                    if (inFlightTasks.length > 1) {{
+                        countMsg = `${{inFlightTasks.length}} Syncing (${{batchDone}}/${{batchTotal}} Done)`;
+                    }} else if (inFlightTasks.length === 1) {{
+                        const currentNum = Math.min(batchTotal, batchDone + 1);
+                        countMsg = `${{currentNum}}/${{batchTotal}} Syncing`;
+                    }} else {{
+                        countMsg = `${{batchDone}}/${{batchTotal}} Done`;
+                    }}
+                }}
                 updateSystemStatusIndicators(true, 'active', countMsg);
             }} else {{
                 updateSystemStatusIndicators(true, 'idle');
@@ -13423,9 +13436,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (box) box.classList.add('is-active');
                 if (pulse) {{ pulse.className = 'status-pulse-dot pulse-active'; }}
                 if (title) {{
-                    if (batchTotal > 0) {{
+                    if (batchTotal > 1) {{
                         const pct = Math.round((batchDone / batchTotal) * 100);
                         title.innerHTML = `⚡ Processing Batch: ${{batchDone}} of ${{batchTotal}} videos completed (${{pct}}%) &bull; ${{inFlightTasks.length}} in flight`;
+                    }} else if (batchTotal === 1) {{
+                        title.innerHTML = `⚡ Syncing video to cloud vault &amp; Jellyfin...`;
                     }} else {{
                         title.innerHTML = `⚡ Processing ${{inFlightTasks.length}} video(s)...`;
                     }}
@@ -13433,14 +13448,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (sub) sub.textContent = inFlightTasks.map(t => t.filename).join(', ') || 'Syncing to cloud vault & Jellyfin...';
                 if (badge) {{
                     badge.style.display = 'inline-block';
-                    badge.textContent = batchTotal > 0 ? `${{batchDone}}/${{batchTotal}} Done` : `${{inFlightTasks.length}} In Progress`;
+                    if (batchTotal <= 1) {{
+                        badge.textContent = `${{inFlightTasks.length || 1}} In Progress`;
+                    }} else {{
+                        badge.textContent = `${{batchDone}}/${{batchTotal}} Done`;
+                    }}
                 }}
             }} else {{
                 if (box) box.classList.remove('is-active');
                 if (pulse) {{ pulse.className = 'status-pulse-dot pulse-idle'; }}
                 if (title) {{
                     if (batchTotal > 0 && batchDone >= batchTotal) {{
-                        title.innerHTML = `✅ Batch Complete: All ${{batchTotal}} videos processed &amp; live on Jellyfin!`;
+                        title.innerHTML = `✅ Batch Complete: All ${{batchTotal}} video(s) processed &amp; live on Jellyfin!`;
                     }} else {{
                         title.innerHTML = 'Watcher Service Active &bull; Idle';
                     }}

@@ -1170,9 +1170,15 @@ def watch_and_sync(
             if not candidates:
                 activity_tracker.tracker.set_idle()
             else:
-                unprocessed = [f for f in candidates if str(f) not in IN_PROGRESS_FILES]
-                if unprocessed:
-                    activity_tracker.tracker.start_batch(len(unprocessed))
+                unprocessed_videos = [
+                    f for f in candidates
+                    if f.suffix.lower() in VIDEO_EXTENSIONS and str(f) not in IN_PROGRESS_FILES
+                ]
+                if unprocessed_videos:
+                    activity_tracker.tracker.start_batch(len(unprocessed_videos))
+
+            # Prioritize video files so worker threads begin primary video sync before sidecars
+            candidates.sort(key=lambda p: (0 if p.suffix.lower() in VIDEO_EXTENSIONS else 1))
 
             for file_path in candidates:
                 str_path = str(file_path)
