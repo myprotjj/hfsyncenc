@@ -6,7 +6,7 @@ import mimetypes
 import re
 import requests
 import threading
-from urllib.parse import urlparse, unquote, parse_qs
+from urllib.parse import urlparse, unquote, parse_qs, quote
 import storyboard_helper
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -284,8 +284,70 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_subtitles_delete()
         elif path == "/api/purge-history":
             self.handle_purge_history()
+        elif path == "/api/scan-tech-tags":
+            self.handle_scan_tech_tags()
         else:
             self.send_error(404, "Not Found")
+
+    def handle_scan_tech_tags(self):
+        port = self.server.server_port if hasattr(self.server, "server_port") else 8080
+        def _bg_scan_tags():
+            try:
+                manifest = load_manifest()
+                files = manifest.get("files", {})
+                updated_count = 0
+                activity_tracker.tracker.add_event(
+                    "info",
+                    "Tech Specs Scan Started",
+                    f"Analyzing resolution, codecs & tags for {len(files)} video(s)..."
+                )
+                for k, rec in list(files.items()):
+                    meta = rec.get("metadata", {})
+                    tags = meta.get("tags", [])
+                    has_res = any(t in tags for t in ["4K", "2160p", "1440p", "1080p", "Full HD", "720p", "HD Ready", "480p", "SD"])
+                    if not has_res or not rec.get("media_info"):
+                        url = f"http://127.0.0.1:{port}/stream/{quote(k)}"
+                        try:
+                            mi = metadata_helper.probe_media_file(url, timeout=12)
+                            if mi and mi.get("resolution_label"):
+                                rec["media_info"] = mi
+                                if "metadata" not in rec or not rec["metadata"]:
+                                    rec["metadata"] = {}
+                                cur_tags = rec["metadata"].get("tags", [])
+                                for t in mi.get("tags", []):
+                                    if t not in cur_tags:
+                                        cur_tags.append(t)
+                                rec["metadata"]["tags"] = cur_tags
+                                rec["metadata"]["resolution"] = mi.get("resolution_label", "")
+                                rec["metadata"]["duration"] = mi.get("duration_str", "")
+
+                                metadata_helper.write_nfo_files("jellyfin_library", k, rec["metadata"], media_info=mi)
+                                updated_count += 1
+                                activity_tracker.tracker.add_event(
+                                    "info",
+                                    f"Tagged Specs: {Path(k).name}",
+                                    f"{mi.get('resolution_label')} ({mi.get('width')}x{mi.get('height')}) | {mi.get('video_codec', 'Video')} | {mi.get('audio_channels', 'Audio')} | {', '.join(mi.get('tags', []))}"
+                                )
+                        except Exception:
+                            pass
+                if updated_count > 0:
+                    save_manifest(manifest)
+                activity_tracker.tracker.add_event(
+                    "success",
+                    "Tech Specs Scan Complete",
+                    f"Finished! Tagged {updated_count} video(s) with technical resolutions & specs."
+                )
+            except Exception as e:
+                print(f"[!] Error in scan_tech_tags: {e}")
+
+        threading.Thread(target=_bg_scan_tags, daemon=True).start()
+        resp_body = json.dumps({"success": True, "message": "Technical specs extraction started in background."}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
 
     def handle_purge_history(self):
         try:
@@ -2814,6 +2876,48 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             color: #fbbf24;
             border: 1px solid rgba(245, 158, 11, 0.28);
         }}
+        .res-4k-pill {{
+            background: rgba(168, 85, 247, 0.22);
+            color: #f0abfc;
+            border: 1px solid rgba(216, 70, 239, 0.55);
+            font-weight: 700;
+            box-shadow: 0 0 6px rgba(216, 70, 239, 0.25);
+        }}
+        .res-1080p-pill {{
+            background: rgba(59, 130, 246, 0.22);
+            color: #93c5fd;
+            border: 1px solid rgba(59, 130, 246, 0.55);
+            font-weight: 600;
+        }}
+        .res-720p-pill {{
+            background: rgba(14, 165, 233, 0.2);
+            color: #7dd3fc;
+            border: 1px solid rgba(14, 165, 233, 0.5);
+            font-weight: 600;
+        }}
+        .res-sd-pill {{
+            background: rgba(107, 114, 128, 0.2);
+            color: #cbd5e1;
+            border: 1px solid rgba(107, 114, 128, 0.45);
+        }}
+        .hdr-pill {{
+            background: rgba(245, 158, 11, 0.22);
+            color: #fde68a;
+            border: 1px solid rgba(245, 158, 11, 0.55);
+            font-weight: 700;
+        }}
+        .surround-pill {{
+            background: rgba(20, 184, 166, 0.2);
+            color: #5eead4;
+            border: 1px solid rgba(20, 184, 166, 0.5);
+            font-weight: 600;
+        }}
+        .codec-pill {{
+            background: rgba(99, 102, 241, 0.18);
+            color: #a5b4fc;
+            border: 1px solid rgba(99, 102, 241, 0.45);
+            font-weight: 500;
+        }}
         .alias-pill {{
             font-size: 0.74rem;
             font-weight: 500;
@@ -3399,6 +3503,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         <header>
             <h1>&#128274; HFSYNC Encrypted Media Vault</h1>
             <div style="display: flex; align-items: center; gap: 12px;">
+                <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Extract resolution (4K, 1080p, 720p, SD), audio, and video codecs for all existing videos">
+                    &#127916; Scan Tech Specs
+                </button>
                 <button onclick="openAccountsModal()" class="tool-btn" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.12);">
                     &#128101; Accounts (<span id="headerAccCount">{total_accounts}</span>)
                 </button>
@@ -3974,7 +4081,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 badgesHtml += `<span class="meta-pill genre-pill">&#127916; ${{escapeHtml(g)}}</span>`;
             }});
             tags.forEach(t => {{
-                badgesHtml += `<span class="meta-pill tag-pill">&#127991; ${{escapeHtml(t)}}</span>`;
+                const tl = String(t).trim().toLowerCase();
+                let cls = 'tag-pill';
+                let icon = '&#127991;';
+                if (tl === '4k' || tl === '2160p' || tl === 'uhd') {{ cls = 'res-4k-pill'; icon = '&#10024;'; }}
+                else if (tl === '1440p' || tl === '2k' || tl === 'qhd') {{ cls = 'res-1080p-pill'; icon = '&#128250;'; }}
+                else if (tl === '1080p' || tl === 'full hd' || tl === 'fhd') {{ cls = 'res-1080p-pill'; icon = '&#128250;'; }}
+                else if (tl === '720p' || tl === 'hd ready' || tl === 'hd') {{ cls = 'res-720p-pill'; icon = '&#128250;'; }}
+                else if (tl === '480p' || tl === 'sd') {{ cls = 'res-sd-pill'; icon = '&#128249;'; }}
+                else if (tl === 'hdr' || tl === 'hdr10' || tl === 'dolby vision' || tl === 'hlg') {{ cls = 'hdr-pill'; icon = '&#127775;'; }}
+                else if (tl === '5.1' || tl === '5.1 surround' || tl === '7.1' || tl === '7.1 surround' || tl === 'atmos') {{ cls = 'surround-pill'; icon = '&#128266;'; }}
+                else if (['h.264', 'h.265', 'av1', 'vp9', 'hevc', 'mpeg-4'].includes(tl)) {{ cls = 'codec-pill'; icon = '&#127916;'; }}
+                badgesHtml += `<span class="meta-pill ${{cls}}">${{icon}} ${{escapeHtml(t)}}</span>`;
             }});
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
@@ -4091,7 +4209,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 badgesHtml += `<span class="meta-pill genre-pill">&#127916; ${{escapeHtml(g)}}</span>`;
             }});
             tags.forEach(t => {{
-                badgesHtml += `<span class="meta-pill tag-pill">&#127991; ${{escapeHtml(t)}}</span>`;
+                const tl = String(t).trim().toLowerCase();
+                let cls = 'tag-pill';
+                let icon = '&#127991;';
+                if (tl === '4k' || tl === '2160p' || tl === 'uhd') {{ cls = 'res-4k-pill'; icon = '&#10024;'; }}
+                else if (tl === '1440p' || tl === '2k' || tl === 'qhd') {{ cls = 'res-1080p-pill'; icon = '&#128250;'; }}
+                else if (tl === '1080p' || tl === 'full hd' || tl === 'fhd') {{ cls = 'res-1080p-pill'; icon = '&#128250;'; }}
+                else if (tl === '720p' || tl === 'hd ready' || tl === 'hd') {{ cls = 'res-720p-pill'; icon = '&#128250;'; }}
+                else if (tl === '480p' || tl === 'sd') {{ cls = 'res-sd-pill'; icon = '&#128249;'; }}
+                else if (tl === 'hdr' || tl === 'hdr10' || tl === 'dolby vision' || tl === 'hlg') {{ cls = 'hdr-pill'; icon = '&#127775;'; }}
+                else if (tl === '5.1' || tl === '5.1 surround' || tl === '7.1' || tl === '7.1 surround' || tl === 'atmos') {{ cls = 'surround-pill'; icon = '&#128266;'; }}
+                else if (['h.264', 'h.265', 'av1', 'vp9', 'hevc', 'mpeg-4'].includes(tl)) {{ cls = 'codec-pill'; icon = '&#127916;'; }}
+                badgesHtml += `<span class="meta-pill ${{cls}}">${{icon}} ${{escapeHtml(t)}}</span>`;
             }});
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
@@ -6166,6 +6295,35 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     updateStats();
                 }}
             }} catch (err) {{}}
+        }}
+
+        /* Technical Metadata & Tag Extraction */
+        async function scanAllTechTags() {{
+            const btn = document.getElementById('btnScanTech');
+            const orig = btn ? btn.innerHTML : '';
+            if (btn) {{
+                btn.innerHTML = '&#9203; Scanning Specs...';
+                btn.disabled = true;
+            }}
+            showToast('&#127916; Technical specs & resolution extraction started in background...');
+            try {{
+                const res = await fetch('/api/scan-tech-tags', {{ method: 'POST' }});
+                const data = await res.json();
+                if (data.success) {{
+                    showToast('&#9989; Technical scan active! Watch live activity log below.');
+                }} else {{
+                    alert('Scan error: ' + (data.message || 'Failed'));
+                }}
+            }} catch (err) {{
+                alert('Connection error: ' + err);
+            }} finally {{
+                setTimeout(() => {{
+                    if (btn) {{
+                        btn.innerHTML = orig;
+                        btn.disabled = false;
+                    }}
+                }}, 4000);
+            }}
         }}
 
         /* Accounts Management UI */

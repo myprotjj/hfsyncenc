@@ -2,22 +2,217 @@ import os
 import io
 import json
 import re
+import subprocess
 import requests
 import xml.sax.saxutils as saxutils
 from pathlib import Path
 from huggingface_hub import HfApi
+import imageio_ffmpeg
 import crypto_engine
 import commit_helper
 
 
-def extract_default_metadata(key_path: str) -> dict:
+def probe_media_file(source_path: str, timeout: int = 15) -> dict:
     """
-    Extracts sensible initial metadata from key path and folder structure.
-    Example: Action-Collection/2024/TopGun/flight.mp4
-      -> Title: Flight
-      -> Year: 2024
-      -> Genre: Action
-      -> Tags: ['Streamable']
+    Extracts comprehensive technical media metadata using ffmpeg.
+    Extracts: resolution, dimensions, aspect ratio, resolution category (4K, 1080p, 720p, SD),
+    video/audio codecs, audio channels/layout (Stereo, 5.1, 7.1), HDR/SDR dynamic range,
+    color depth (10-bit, 8-bit), FPS, duration, bitrate, and a standardized list of tags.
+    Works seamlessly on both local unencrypted video files and streaming URLs.
+    """
+    info = {
+        "width": None,
+        "height": None,
+        "resolution_label": "SD",
+        "aspect_ratio": None,
+        "duration_sec": 0.0,
+        "duration_str": "",
+        "video_codec": None,
+        "video_profile": None,
+        "fps": None,
+        "pix_fmt": None,
+        "color_depth": "8-bit",
+        "dynamic_range": "SDR",
+        "audio_codec": None,
+        "audio_channels": None,
+        "audio_layout": None,
+        "bitrate_kbps": None,
+        "tags": []
+    }
+
+    try:
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        cmd = [ffmpeg_exe, "-hide_banner", "-i", str(source_path)]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore", timeout=timeout)
+        out = res.stderr or ""
+
+        # 1. Duration
+        dur_m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", out)
+        if dur_m:
+            h, m, s = int(dur_m.group(1)), int(dur_m.group(2)), float(dur_m.group(3))
+            sec = h * 3600 + m * 60 + s
+            info["duration_sec"] = round(sec, 2)
+            info["duration_str"] = f"{h}:{m:02d}:{int(s):02d}" if h > 0 else f"{m}:{int(s):02d}"
+            if sec >= 3600:
+                info["tags"].append("Feature Film")
+            elif sec >= 900:
+                info["tags"].append("Short Film")
+            elif sec > 0:
+                info["tags"].append("Clip")
+
+        # 2. Overall Bitrate
+        br_m = re.search(r"bitrate:\s*(\d+)\s*kb/s", out)
+        if br_m:
+            info["bitrate_kbps"] = int(br_m.group(1))
+
+        # 3. Video Stream
+        v_m = re.search(r"Stream #\d+:\d+.*?: Video:\s*([^\n\r]+)", out)
+        if v_m:
+            v_line = v_m.group(1)
+            v_lower = v_line.lower()
+
+            # Resolution & Aspect Ratio
+            res_m = re.search(r"\b(\d{3,5})x(\d{3,5})\b", v_line)
+            if res_m:
+                w, h = int(res_m.group(1)), int(res_m.group(2))
+                info["width"] = w
+                info["height"] = h
+                if h > 0:
+                    ar = w / h
+                    if 1.70 <= ar <= 1.85:
+                        info["aspect_ratio"] = "16:9"
+                    elif 2.25 <= ar <= 2.45:
+                        info["aspect_ratio"] = "21:9"
+                        info["tags"].append("21:9")
+                    elif 1.30 <= ar <= 1.40:
+                        info["aspect_ratio"] = "4:3"
+                    else:
+                        info["aspect_ratio"] = f"{ar:.2f}:1"
+
+                max_dim = max(w, h)
+                min_dim = min(w, h)
+                if max_dim >= 3800 or min_dim >= 2100:
+                    info["resolution_label"] = "4K (UHD)"
+                    info["tags"].extend(["4K", "2160p"])
+                elif max_dim >= 2500 or min_dim >= 1400:
+                    info["resolution_label"] = "1440p (2K)"
+                    info["tags"].extend(["1440p", "2K"])
+                elif max_dim >= 1900 or min_dim >= 1000:
+                    info["resolution_label"] = "1080p (Full HD)"
+                    info["tags"].extend(["1080p", "Full HD"])
+                elif max_dim >= 1200 or min_dim >= 700:
+                    info["resolution_label"] = "720p (HD Ready)"
+                    info["tags"].extend(["720p", "HD Ready"])
+                elif max_dim >= 700 or min_dim >= 450:
+                    info["resolution_label"] = "480p (SD)"
+                    info["tags"].extend(["480p", "SD"])
+                else:
+                    info["resolution_label"] = "SD"
+                    info["tags"].append("SD")
+
+            # Video Codec
+            if "hevc" in v_lower or "h265" in v_lower:
+                info["video_codec"] = "H.265"
+                info["tags"].append("H.265")
+            elif "h264" in v_lower or "avc" in v_lower:
+                info["video_codec"] = "H.264"
+                info["tags"].append("H.264")
+            elif "av1" in v_lower:
+                info["video_codec"] = "AV1"
+                info["tags"].append("AV1")
+            elif "vp9" in v_lower:
+                info["video_codec"] = "VP9"
+                info["tags"].append("VP9")
+            elif "mpeg4" in v_lower or "xvid" in v_lower:
+                info["video_codec"] = "MPEG-4"
+                info["tags"].append("MPEG-4")
+
+            # Color depth (10-bit vs 8-bit)
+            if any(p in v_lower for p in ("10le", "10be", "p010", "10-bit")):
+                info["color_depth"] = "10-bit"
+                info["tags"].append("10-bit")
+
+            # Dynamic Range (HDR vs SDR)
+            if "dovi" in v_lower or "dvhe" in v_lower:
+                info["dynamic_range"] = "Dolby Vision"
+                info["tags"].extend(["Dolby Vision", "HDR"])
+            elif "smpte2084" in v_lower or "bt2020" in v_lower:
+                info["dynamic_range"] = "HDR10"
+                info["tags"].extend(["HDR10", "HDR"])
+            elif "arib-std-b67" in v_lower:
+                info["dynamic_range"] = "HLG"
+                info["tags"].extend(["HLG", "HDR"])
+            else:
+                info["dynamic_range"] = "SDR"
+
+            # FPS
+            fps_m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:fps|tbr)\b", v_line)
+            if fps_m:
+                fps_val = float(fps_m.group(1))
+                info["fps"] = round(fps_val, 2)
+                if fps_val >= 50:
+                    info["tags"].append("60fps")
+                elif 23.5 <= fps_val <= 24.5:
+                    info["tags"].append("24fps")
+
+        # 4. Audio Stream
+        a_m = re.search(r"Stream #\d+:\d+.*?: Audio:\s*([^\n\r]+)", out)
+        if a_m:
+            a_line = a_m.group(1)
+            a_lower = a_line.lower()
+
+            if "truehd" in a_lower:
+                info["audio_codec"] = "Dolby TrueHD"
+                info["tags"].append("TrueHD")
+            elif "eac3" in a_lower:
+                info["audio_codec"] = "Dolby Digital Plus"
+                info["tags"].append("E-AC3")
+                if "atmos" in a_lower:
+                    info["tags"].append("Atmos")
+            elif "ac3" in a_lower:
+                info["audio_codec"] = "Dolby Digital"
+                info["tags"].append("AC3")
+            elif "dts" in a_lower:
+                info["audio_codec"] = "DTS"
+                info["tags"].append("DTS")
+            elif "flac" in a_lower:
+                info["audio_codec"] = "FLAC"
+                info["tags"].append("FLAC")
+            elif "aac" in a_lower:
+                info["audio_codec"] = "AAC"
+                info["tags"].append("AAC")
+            elif "opus" in a_lower:
+                info["audio_codec"] = "Opus"
+                info["tags"].append("Opus")
+            elif "mp3" in a_lower:
+                info["audio_codec"] = "MP3"
+                info["tags"].append("MP3")
+
+            if "7.1" in a_lower:
+                info["audio_channels"] = "7.1 Surround"
+                info["tags"].append("7.1 Surround")
+            elif "5.1" in a_lower:
+                info["audio_channels"] = "5.1 Surround"
+                info["tags"].append("5.1 Surround")
+            elif "stereo" in a_lower:
+                info["audio_channels"] = "Stereo"
+                info["tags"].append("Stereo")
+            elif "mono" in a_lower:
+                info["audio_channels"] = "Mono"
+
+    except Exception as e:
+        pass
+
+    # Deduplicate tags preserving order
+    seen = set()
+    info["tags"] = [t for t in info["tags"] if not (t.lower() in seen or seen.add(t.lower()))]
+    return info
+
+
+def extract_default_metadata(key_path: str, media_info: dict = None) -> dict:
+    """
+    Extracts sensible initial metadata from key path and folder structure,
+    and merges technical resolution/codec tags from media_info if provided.
     """
     parts = key_path.replace("\\", "/").split("/")
     filename = parts[-1]
@@ -69,22 +264,34 @@ def extract_default_metadata(key_path: str) -> dict:
     if not genres:
         genres = ["Movies"]
 
+    tags = ["Streamable"]
+    res_label = ""
+    duration_str = ""
+    if media_info:
+        for t in media_info.get("tags", []):
+            if t not in tags:
+                tags.append(t)
+        res_label = media_info.get("resolution_label", "")
+        duration_str = media_info.get("duration_str", "")
+
     return {
         "title": clean_title,
         "year": year,
         "genres": genres,
-        "tags": ["Streamable"],
+        "tags": tags,
         "rating": "7.5",
         "overview": "",
+        "resolution": res_label,
+        "duration": duration_str,
         "file_names": [key_path],
         "aliases": []
     }
 
 
-def generate_nfo_xml(metadata: dict) -> str:
+def generate_nfo_xml(metadata: dict, media_info: dict = None) -> str:
     """
     Generates standard Jellyfin / Kodi / Emby compliant XML (.nfo)
-    supporting titles, years, plot, rating, genres, and tags.
+    supporting titles, years, plot, rating, genres, tags, and technical stream details.
     """
     title = saxutils.escape(str(metadata.get("title", "")))
     year = saxutils.escape(str(metadata.get("year", "")))
@@ -148,11 +355,39 @@ def generate_nfo_xml(metadata: dict) -> str:
             lines.append(f'    <originaltitle>{saxutils.escape(str(alt))}</originaltitle>')
             lines.append(f'    <tag>Also: {saxutils.escape(str(alt))}</tag>')
 
+    # Technical Media stream details for Jellyfin / Emby / Kodi
+    mi = media_info or metadata.get("media_info")
+    if mi:
+        lines.append('    <fileinfo>')
+        lines.append('        <streamdetails>')
+        lines.append('            <video>')
+        if mi.get("video_codec"):
+            lines.append(f'                <codec>{saxutils.escape(str(mi["video_codec"]).lower())}</codec>')
+        if mi.get("width"):
+            lines.append(f'                <width>{mi["width"]}</width>')
+        if mi.get("height"):
+            lines.append(f'                <height>{mi["height"]}</height>')
+        if mi.get("aspect_ratio"):
+            lines.append(f'                <aspect>{saxutils.escape(str(mi["aspect_ratio"]))}</aspect>')
+        if mi.get("duration_sec"):
+            lines.append(f'                <durationinseconds>{int(mi["duration_sec"])}</durationinseconds>')
+        lines.append('            </video>')
+        if mi.get("audio_codec") or mi.get("audio_channels"):
+            lines.append('            <audio>')
+            if mi.get("audio_codec"):
+                lines.append(f'                <codec>{saxutils.escape(str(mi["audio_codec"]).lower())}</codec>')
+            if mi.get("audio_channels"):
+                ch = 6 if "5.1" in str(mi["audio_channels"]) else (8 if "7.1" in str(mi["audio_channels"]) else (2 if "stereo" in str(mi["audio_channels"]).lower() else 1))
+                lines.append(f'                <channels>{ch}</channels>')
+            lines.append('            </audio>')
+        lines.append('        </streamdetails>')
+        lines.append('    </fileinfo>')
+
     lines.append('</movie>\n')
     return "\n".join(lines)
 
 
-def write_nfo_files(library_dir: str, key_path: str, metadata: dict):
+def write_nfo_files(library_dir: str, key_path: str, metadata: dict, media_info: dict = None):
     """
     Writes NFO files alongside the .strm in jellyfin_library.
     Writes:
@@ -165,7 +400,7 @@ def write_nfo_files(library_dir: str, key_path: str, metadata: dict):
     target_path = base_dir / key_path
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    xml_content = generate_nfo_xml(metadata)
+    xml_content = generate_nfo_xml(metadata, media_info=media_info)
 
     # 1. movie.mp4.nfo
     nfo1 = target_path.parent / f"{target_path.name}.nfo"

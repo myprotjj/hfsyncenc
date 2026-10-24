@@ -509,14 +509,20 @@ def process_file_pipeline(
         if os.path.exists(temp_enc_file):
             os.remove(temp_enc_file)
 
-        # 8. Delete original local video to free disk space
+        # 8. Probe technical video/audio metadata (resolution, codecs, HDR, channels) before deletion
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [Probing Technical Metadata] Analyzing video streams & resolution...")
+        media_info = metadata_helper.probe_media_file(str_path)
+        if media_info and media_info.get("resolution_label"):
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [Detected Video Specs] {media_info.get('resolution_label')} ({media_info.get('width')}x{media_info.get('height')}), {media_info.get('video_codec', 'Video')}, {media_info.get('audio_channels', 'Audio')} | Tags: {', '.join(media_info.get('tags', []))}")
+
+        # 9. Delete original local video to free disk space
         if delete_local:
             os.remove(str_path)
             safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Deleted original: {str_path}")
 
-        # 9. Extract initial metadata & record to manifest
+        # 10. Extract initial metadata & record to manifest
         activity_tracker.tracker.update_stage(full_key, "metadata", "Generating NFO & Cloud Sync", 85, speed_str=f"{upload_speed_mbps:.1f} Mbps", details="Writing Jellyfin .strm / .nfo & syncing cloud metadata")
-        meta = metadata_helper.extract_default_metadata(full_key)
+        meta = metadata_helper.extract_default_metadata(full_key, media_info=media_info)
         meta["file_names"] = [full_key]
         meta["aliases"] = []
         meta["overview"] = ""
@@ -535,6 +541,7 @@ def process_file_pipeline(
             "file_names": [full_key],
             "aliases": [],
             "metadata": meta,
+            "media_info": media_info,
             "verifier": crypto_engine.create_verifier(password)
         }
         if audio_record:
@@ -543,9 +550,9 @@ def process_file_pipeline(
             record["subtitles"] = subtitles_record
         update_manifest_record(record, media_hash)
 
-        # 8. Generate Jellyfin pointer (.strm) & metadata (.nfo)
+        # 11. Generate Jellyfin pointer (.strm) & metadata (.nfo)
         auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
-        metadata_helper.write_nfo_files(library_dir, full_key, meta)
+        metadata_helper.write_nfo_files(library_dir, full_key, meta, media_info=media_info)
         remove_empty_folders(base_dir)
 
         # 9. Sync encrypted metadata sidecar to Hugging Face
