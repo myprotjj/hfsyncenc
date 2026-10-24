@@ -2541,9 +2541,32 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             border: 1px dashed rgba(245, 158, 11, 0.5) !important;
             background: rgba(245, 158, 11, 0.08) !important;
         }}
+        .pill-tag-edit {{
+            font-size: 0.68rem;
+            margin-left: 3px;
+            margin-right: 1px;
+            cursor: pointer;
+            opacity: 0.72;
+            color: #94a3b8;
+            transition: all 0.15s ease;
+            padding: 0 2px;
+            border-radius: 2px;
+            display: inline-flex;
+            align-items: center;
+            line-height: 1;
+        }}
+        .meta-pill:hover .pill-tag-edit {{
+            opacity: 1;
+            color: #38bdf8;
+        }}
+        .pill-tag-edit:hover {{
+            color: #ffffff !important;
+            background: rgba(56, 189, 248, 0.45);
+            transform: scale(1.25);
+        }}
         .pill-hide-trigger {{
             font-size: 0.65rem;
-            margin-left: 3px;
+            margin-left: 2px;
             cursor: pointer;
             opacity: 0;
             transition: opacity 0.15s, transform 0.15s;
@@ -4434,6 +4457,61 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             align-items: center;
             gap: 5px;
         }}
+        .card-alias-cluster {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            align-items: center;
+            width: 100%;
+            margin-top: 3px;
+        }}
+        .alias-card-pill {{
+            background: rgba(147, 51, 234, 0.14);
+            border: 1px solid rgba(147, 51, 234, 0.38);
+            color: #d8b4fe;
+            border-radius: 5px;
+            font-size: 0.70rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 2px 6px;
+            max-width: 100%;
+        }}
+        .alias-card-icon {{
+            font-size: 0.72rem;
+            color: #c084fc;
+        }}
+        .alias-card-name {{
+            max-width: 190px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #e9d5ff;
+            user-select: text;
+            font-weight: 500;
+        }}
+        .btn-alias-direct-edit {{
+            background: rgba(147, 51, 234, 0.28);
+            border: 1px solid rgba(168, 85, 247, 0.5);
+            color: #f3e8ff;
+            border-radius: 4px;
+            font-size: 0.67rem;
+            font-weight: 600;
+            padding: 1px 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }}
+        .btn-alias-direct-edit:hover {{
+            background: #9333ea;
+            border-color: #c084fc;
+            color: #ffffff;
+            transform: scale(1.04);
+            box-shadow: 0 2px 6px rgba(147, 51, 234, 0.4);
+        }}
         .alias-del-btn {{
             background: transparent;
             border: none;
@@ -6087,8 +6165,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
                 const isHidden = hiddenTagsSet.has(t);
                 badgesHtml += `
-                <span class="meta-pill ${{cls}} ${{isHidden ? 'is-hidden-tag' : ''}}" title="${{isHidden ? `Hidden tag: ${{escapeHtml(t)}} (Click 👁️ to unhide)` : `Tag: ${{escapeHtml(t)}} (Click to filter, or click 🙈 to hide)`}}">
-                    <span class="pill-label-txt" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')">${{icon}} ${{escapeHtml(t)}}</span>
+                <span class="meta-pill ${{cls}} ${{isHidden ? 'is-hidden-tag' : ''}}" title="${{isHidden ? `Hidden tag: ${{escapeHtml(t)}} (Click 👁️ to unhide)` : `Tag: ${{escapeHtml(t)}}`}}">
+                    <span class="pill-label-txt" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')" title="Filter by tag: ${{escapeHtml(t)}}">${{icon}} ${{escapeHtml(t)}}</span>
+                    <span class="pill-tag-edit" onclick="promptRenameTag('${{escapeHtml(t)}}', event)" title="Rename / edit tag '${{escapeHtml(t)}}' across all videos">&#9998;</span>
                     <span class="pill-hide-trigger" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Unhide this tag on all cards' : 'Hide this tag across all cards'}}">${{isHidden ? '&#128065;&#65039;' : '&#128584;'}}</span>
                 </span>`;
             }});
@@ -6106,16 +6185,30 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const isPrimary = (accountOwner === primaryAccount);
             const accountBadge = `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}" onclick="event.stopPropagation(); addQuickFilter('account', '${{escapeHtml(accountOwner)}}')" title="Click to filter by account: ${{escapeHtml(accountOwner)}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
 
-            const aliases = f.aliases || [];
-            const otherAliases = aliases.filter(a => {{
-                if (!a) return false;
-                const sa = String(a).trim().toLowerCase();
-                const saNoExt = sa.replace(/\.[^/.]+$/, '');
-                return sa !== nodeName.toLowerCase() && saNoExt !== cleanNode && sa !== cleanTitle && saNoExt !== cleanTitle;
+            const allAlternativeNames = [];
+            const seenAlt = new Set([cleanTitle, cleanNode]);
+            (f.file_names || []).concat(f.aliases || []).forEach(a => {{
+                if (!a) return;
+                const baseName = a.split('/').pop().split(String.fromCharCode(92)).pop().trim();
+                const cleanA = cleanTitleExtension(baseName).toLowerCase();
+                if (cleanA && !seenAlt.has(cleanA)) {{
+                    seenAlt.add(cleanA);
+                    allAlternativeNames.push(baseName);
+                }}
             }});
             let aliasBadge = '';
-            if (otherAliases.length > 0) {{
-                aliasBadge = `<span class="alias-pill" onclick="event.stopPropagation(); promptEditMetadata('${{escapeHtml(f.key)}}')" style="cursor: pointer;" title="Associated file names: ${{escapeHtml(aliases.join(', '))}}. Click to edit.">&#128206; Also: ${{escapeHtml(otherAliases.slice(0, 1).join(', '))}}${{otherAliases.length > 1 ? ` (+${{otherAliases.length - 1}})` : ''}}</span>`;
+            if (allAlternativeNames.length > 0) {{
+                aliasBadge = `<div class="card-alias-cluster">` + allAlternativeNames.map(a => {{
+                    const cleanA = cleanTitleExtension(a);
+                    return `
+                    <span class="alias-card-pill" title="Alternative filename: ${{escapeHtml(a)}}">
+                        <span class="alias-card-icon">&#128206;</span>
+                        <span class="alias-card-name" title="${{escapeHtml(a)}}">${{escapeHtml(a)}}</span>
+                        <button type="button" class="btn-alias-direct-edit" onclick="promptEditWithTitle('${{escapeHtml(f.key)}}', '${{escapeHtml(a)}}', event)" title="Use '${{escapeHtml(cleanA)}}' as title, fix typos &amp; save">
+                            &#9998; Set as Title
+                        </button>
+                    </span>`;
+                }}).join('') + `</div>`;
             }}
 
             const subs = f.subtitles || [];
@@ -6251,8 +6344,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
                 const isHidden = hiddenTagsSet.has(t);
                 badgesHtml += `
-                <span class="meta-pill ${{cls}} ${{isHidden ? 'is-hidden-tag' : ''}}" title="${{isHidden ? `Hidden tag: ${{escapeHtml(t)}} (Click 👁️ to unhide)` : `Tag: ${{escapeHtml(t)}} (Click to filter, or click 🙈 to hide)`}}">
-                    <span class="pill-label-txt" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')">${{icon}} ${{escapeHtml(t)}}</span>
+                <span class="meta-pill ${{cls}} ${{isHidden ? 'is-hidden-tag' : ''}}" title="${{isHidden ? `Hidden tag: ${{escapeHtml(t)}} (Click 👁️ to unhide)` : `Tag: ${{escapeHtml(t)}}`}}">
+                    <span class="pill-label-txt" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')" title="Filter by tag: ${{escapeHtml(t)}}">${{icon}} ${{escapeHtml(t)}}</span>
+                    <span class="pill-tag-edit" onclick="promptRenameTag('${{escapeHtml(t)}}', event)" title="Rename / edit tag '${{escapeHtml(t)}}' across all videos">&#9998;</span>
                     <span class="pill-hide-trigger" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Unhide this tag on all cards' : 'Hide this tag across all cards'}}">${{isHidden ? '&#128065;&#65039;' : '&#128584;'}}</span>
                 </span>`;
             }});
@@ -6270,16 +6364,30 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const isPrimary = (accountOwner === primaryAccount);
             const accountBadge = `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}" onclick="event.stopPropagation(); addQuickFilter('account', '${{escapeHtml(accountOwner)}}')" title="Click to filter by account: ${{escapeHtml(accountOwner)}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
 
-            const aliases = f.aliases || [];
-            const otherAliases = aliases.filter(a => {{
-                if (!a) return false;
-                const sa = String(a).trim().toLowerCase();
-                const saNoExt = sa.replace(/\.[^/.]+$/, '');
-                return sa !== nodeName.toLowerCase() && saNoExt !== cleanNode && sa !== cleanTitle && saNoExt !== cleanTitle;
+            const allAlternativeNames = [];
+            const seenAlt = new Set([cleanTitle, cleanNode]);
+            (f.file_names || []).concat(f.aliases || []).forEach(a => {{
+                if (!a) return;
+                const baseName = a.split('/').pop().split(String.fromCharCode(92)).pop().trim();
+                const cleanA = cleanTitleExtension(baseName).toLowerCase();
+                if (cleanA && !seenAlt.has(cleanA)) {{
+                    seenAlt.add(cleanA);
+                    allAlternativeNames.push(baseName);
+                }}
             }});
             let aliasBadge = '';
-            if (otherAliases.length > 0) {{
-                aliasBadge = `<span class="alias-pill" onclick="event.stopPropagation(); promptEditMetadata('${{escapeHtml(f.key)}}')" style="cursor: pointer;" title="Associated file names: ${{escapeHtml(aliases.join(', '))}}. Click to edit or remove filenames.">&#128206; Also: ${{escapeHtml(otherAliases.slice(0, 2).join(', '))}}${{otherAliases.length > 2 ? ` (+${{otherAliases.length - 2}})` : ''}} <span style="opacity: 0.7; font-size: 0.65rem;">&#9998;</span></span>`;
+            if (allAlternativeNames.length > 0) {{
+                aliasBadge = `<div class="card-alias-cluster">` + allAlternativeNames.map(a => {{
+                    const cleanA = cleanTitleExtension(a);
+                    return `
+                    <span class="alias-card-pill" title="Alternative filename: ${{escapeHtml(a)}}">
+                        <span class="alias-card-icon">&#128206;</span>
+                        <span class="alias-card-name" title="${{escapeHtml(a)}}">${{escapeHtml(a)}}</span>
+                        <button type="button" class="btn-alias-direct-edit" onclick="promptEditWithTitle('${{escapeHtml(f.key)}}', '${{escapeHtml(a)}}', event)" title="Use '${{escapeHtml(cleanA)}}' as title, fix typos &amp; save">
+                            &#9998; Set as Title
+                        </button>
+                    </span>`;
+                }}).join('') + `</div>`;
             }}
 
             const subs = f.subtitles || [];
@@ -8285,6 +8393,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 input.focus();
                 showToast('Cleaned current title', 'info');
             }}
+        }}
+
+        function promptEditWithTitle(key, titleName, event) {{
+            if (event) event.stopPropagation();
+            promptEditMetadata(key);
+            const clean = cleanTitleExtension(titleName);
+            setEditTitle(clean);
         }}
 
         function updateCandidateTitlePicker(file, key) {{
