@@ -104,6 +104,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         sys.stdout.write(f"[{self.log_date_time_string()}] {self.command} {self.path} - {args[1] if len(args) > 1 else ''}\n")
 
+
+    def read_json_body(self) -> dict:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0:
+            return {}
+        try:
+            body = self.rfile.read(content_length).decode("utf-8")
+            return json.loads(body) if body else {}
+        except Exception:
+            return {}
     def resolve_remote_blob(self, path_after_stream: str):
         manifest = load_manifest()
         clean_key = path_after_stream.strip("/").replace("\\", "/")
@@ -403,6 +413,57 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "message": "Encrypted cache cleared"}).encode("utf-8"))
+            return
+
+        elif path == "/api/cache/offline":
+            data = self.read_json_body()
+            safe_id = data.get("safe_id") if data else None
+            enabled = bool(data.get("enabled", True)) if data else True
+            if not safe_id:
+                self.send_error(400, "Missing safe_id")
+                return
+
+            manifest = load_manifest()
+            file_key = None
+            file_info = None
+            for k, v in manifest.get("files", {}).items():
+                if v.get("safe_id") == safe_id or storyboard_helper.get_safe_id(k) == safe_id:
+                    file_key = k
+                    file_info = v
+                    break
+            if not file_key:
+                file_key = safe_id
+                file_info = manifest.get("files", {}).get(file_key, {})
+
+            repo_id = file_info.get("repo_id") if file_info else None
+            blob_path = file_info.get("blob_path") if file_info else None
+            meta = self.get_file_metadata(file_key, repo_id=repo_id, blob_path=blob_path)
+            if not meta:
+                self.send_error(404, "Video metadata not found")
+                return
+
+            if enabled:
+                stream_cache.start_offline_download(
+                    cache_id=safe_id,
+                    hf_url=meta["url"],
+                    repo_token=meta.get("repo_token"),
+                    total_size=meta["header"]["total_size"],
+                    chunk_size=meta["header"]["chunk_size"],
+                    base_nonce=meta["header"]["base_nonce"],
+                    aesgcm=meta["aesgcm"],
+                    session=self.hf_session
+                )
+                msg = "Offline caching initiated in background"
+            else:
+                stream_cache.stop_offline_download(safe_id)
+                stream_cache.set_pinned_offline(safe_id, False, meta["header"]["total_size"], meta["header"]["chunk_size"])
+                msg = "Offline pin removed. 24h expiration timer active."
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "message": msg, "pinned_offline": enabled}).encode("utf-8"))
             return
         else:
             self.send_error(404, "Not Found")
@@ -3489,7 +3550,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     c_info = stream_cache.get_cache_info(safe_id, total_size=size_bytes, chunk_size=crypto_engine.DEFAULT_CHUNK_SIZE)
                     item["cache_pct"] = c_info["percentage"]
                     item["cached_bytes"] = c_info["cached_bytes"]
+                    item["cached_size_str"] = c_info["cached_size_str"]
                     item["is_cached"] = c_info["cached"]
+                    item["pinned_offline"] = c_info["pinned_offline"]
+                    item["is_downloading"] = c_info["is_downloading"]
                     repos_set.add(repo)
                     files_data.append(item)
                 else:
@@ -6333,6 +6397,85 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             color: #4ade80;
             border: 1px solid rgba(34, 197, 94, 0.45);
             font-weight: 600;
+        }}
+        .card-cache-pill {{
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 10;
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 12px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            backdrop-filter: blur(8px);
+            pointer-events: none;
+            transition: all 0.2s ease;
+        }}
+        .card-cache-pill.is-pinned {{
+            background: rgba(34, 197, 94, 0.22);
+            color: #4ade80;
+            border: 1px solid rgba(34, 197, 94, 0.5);
+            box-shadow: 0 0 10px rgba(34, 197, 94, 0.25);
+        }}
+        .card-cache-pill.is-cached {{
+            background: rgba(56, 189, 248, 0.2);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.4);
+        }}
+        .card-cache-pill.is-cloud {{
+            background: rgba(15, 23, 42, 0.75);
+            color: #94a3b8;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }}
+        .thumb-cache-track {{
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: rgba(0, 0, 0, 0.4);
+            z-index: 8;
+            overflow: hidden;
+            pointer-events: none;
+        }}
+        .thumb-cache-fill {{
+            height: 100%;
+            background: #38bdf8;
+            transition: width 0.3s ease;
+        }}
+        .thumb-cache-fill.is-pinned-fill {{
+            background: #22c55e;
+            box-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
+        }}
+        .btn-card-offline.is-pinned-active {{
+            color: #4ade80 !important;
+            border-color: rgba(34, 197, 94, 0.5) !important;
+            background: rgba(34, 197, 94, 0.15) !important;
+        }}
+        .card-offline-tag-btn {{
+            font-size: 0.68rem;
+            padding: 2px 7px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-weight: 500;
+        }}
+        .card-offline-tag-btn:hover {{
+            border-color: #38bdf8;
+            color: #38bdf8;
+        }}
+        .card-offline-tag-btn.active {{
+            background: rgba(34, 197, 94, 0.2) !important;
+            color: #4ade80 !important;
+            border-color: rgba(34, 197, 94, 0.5) !important;
+            font-weight: 700;
+            box-shadow: 0 0 8px rgba(34, 197, 94, 0.25);
         }}
 
         .file-actions {{ display: flex; gap: 6px; flex-shrink: 0; }}
@@ -9331,6 +9474,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
             const audioSizeStr = f.audio_size_str || 'Audio';
 
+            const cachePct = Math.round(f.cache_pct || 0);
+            const cachedSizeStr = f.cached_size_str || '0 B';
+            const isPinned = !!f.pinned_offline;
+            const isDownloading = !!f.is_downloading;
+
+            let cachePillHtml = '';
+            if (isPinned) {{
+                cachePillHtml = `<div class="card-cache-pill is-pinned" id="cachePill_${{safeId}}" title="📌 Offline Ready: 100% saved locally forever (${{cachedSizeStr}})"><span class="cache-pill-icon">📌</span> <span class="cache-pill-text">Offline Ready</span> <span class="cache-pill-size">(${{cachedSizeStr}})</span></div>`;
+            }} else if (cachePct > 0) {{
+                cachePillHtml = `<div class="card-cache-pill is-cached" id="cachePill_${{safeId}}" title="💾 Local Encrypted Cache: ${{cachePct}}% (${{cachedSizeStr}}) • Expires 24h after last play"><span class="cache-pill-icon">💾</span> <span class="cache-pill-text">${{cachePct}}%</span> <span class="cache-pill-size">(${{cachedSizeStr}})</span> <span class="cache-pill-exp">⏱️ 24h</span></div>`;
+            }} else {{
+                cachePillHtml = `<div class="card-cache-pill is-cloud" id="cachePill_${{safeId}}" title="☁️ Cloud Stream: 0% cached locally"><span class="cache-pill-icon">☁️</span> <span class="cache-pill-text">Cloud Stream</span></div>`;
+            }}
+
+            const cacheTrackHtml = `<div class="thumb-cache-track" title="Local Cache Buffer: ${{cachePct}}% (${{cachedSizeStr}})"><div class="thumb-cache-fill ${{isPinned ? 'is-pinned-fill' : ''}}" id="cacheFill_${{safeId}}" style="width: ${{Math.min(100, cachePct)}}%;"></div></div>`;
+
             const isMarked = markedForMergeKeys.has(f.key);
             return `
             <div class="video-card ${{isMarked ? 'is-marked-for-merge' : ''}}" data-key="${{escapeHtml(f.key)}}">
@@ -9358,6 +9517,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
                         <span class="badge-asize"> • 🎵 ${{escapeHtml(audioSizeStr)}}</span>
                     </div>
+                    ${{cachePillHtml}}
+                    ${{cacheTrackHtml}}
                     ${{resumePillHtml}}
                     ${{durationHtml}}
                     ${{resumeBarHtml}}
@@ -9369,6 +9530,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             ${{escapeHtml(title)}}
                         </div>
                         <div class="video-card-title-actions">
+                            <button type="button" class="card-offline-tag-btn ${{isPinned ? 'active' : ''}}" id="tagOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isPinned ? '📌 Pinned offline forever (Click to unpin)' : '📥 Make offline available (Caches 100% & keeps forever)'}}">
+                                ${{isPinned ? '📌 Offline' : '📥 Offline'}}
+                            </button>
                             <button type="button" class="card-mark-merge-pill ${{isMarked ? 'active' : ''}}" onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" title="${{isMarked ? 'Unmark from merge' : 'Mark this video for duplicate merge'}}">
                                 &#128256; ${{isMarked ? 'Marked' : 'Merge'}}
                             </button>
@@ -9387,6 +9551,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 <div class="video-card-actions">
                     <div class="card-action-group-left">
+                        <button type="button" class="card-icon-btn btn-card-offline ${{isPinned ? 'is-pinned-active' : ''}}" id="btnOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isPinned ? '📌 Offline Available (Pinned Forever). Click to unpin and allow 24h auto-expiry.' : '📥 Make Offline Available: Download & save full video offline forever'}}">
+                            ${{isPinned ? '📌' : '📥'}}
+                        </button>
                         <a href="/stream/${{escapeHtml(f.key)}}" target="_blank" class="card-icon-btn btn-card-link" title="Direct Stream URL">&#128279;</a>
                         ${{canViewScreens ? `<button type="button" class="card-icon-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet Screenshots">&#128444;&#65039;</button>` : ''}}
                         <a href="/stream/audio/${{escapeHtml(f.key)}}" download="${{escapeHtml(title)}}.m4a" target="_blank" class="card-icon-btn btn-card-audio" title="Download / Stream Lightweight Audio (.m4a)">&#127925;</a>
@@ -10960,6 +11127,100 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 localStorage.removeItem('hfsync_last_closed_video');
             }} catch (e) {{}}
             updateQuickResumeUI();
+        }}
+
+        async function toggleMakeOffline(safeId, event) {{
+            if (event) event.stopPropagation();
+            const fileObj = (allFiles || []).find(f => f.safe_id === safeId);
+            if (!fileObj) return;
+
+            const nextPinned = !fileObj.pinned_offline;
+            fileObj.pinned_offline = nextPinned;
+            updateCardOfflineUI(safeId, nextPinned, fileObj.cache_pct || 0, fileObj.cached_size_str || '0 B');
+
+            try {{
+                const res = await fetch('/api/cache/offline', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ safe_id: safeId, enabled: nextPinned }})
+                }});
+                const data = await res.json();
+                if (data.success) {{
+                    showToast(nextPinned ? '📌 Video marked Offline Available! Downloading remaining encrypted chunks in background...' : '⏱️ Offline pin removed. Cache will auto-expire 24h after last play.');
+                    if (nextPinned) {{
+                        pollOfflineDownloadProgress(safeId);
+                    }}
+                }} else {{
+                    showToast('⚠️ ' + (data.message || 'Operation failed'));
+                }}
+            }} catch (err) {{
+                showToast('⚠️ Request error: ' + err);
+            }}
+        }}
+
+        const offlinePollTimers = {{}};
+        function pollOfflineDownloadProgress(safeId) {{
+            if (offlinePollTimers[safeId]) return;
+            const poll = async () => {{
+                try {{
+                    const res = await fetch('/api/cache/stats');
+                    const stats = await res.json();
+                    const fileStat = (stats.files || {{}})[safeId];
+                    if (fileStat) {{
+                        const fileObj = (allFiles || []).find(f => f.safe_id === safeId);
+                        if (fileObj) {{
+                            fileObj.cache_pct = fileStat.percentage;
+                            fileObj.cached_bytes = fileStat.cached_bytes;
+                            fileObj.cached_size_str = fileStat.cached_size_str;
+                            fileObj.pinned_offline = fileStat.pinned_offline;
+                        }}
+                        updateCardOfflineUI(safeId, fileStat.pinned_offline, fileStat.percentage, fileStat.cached_size_str);
+                        const statCacheEl = document.getElementById('statCache');
+                        if (statCacheEl && stats.total_cached_size_str) {{
+                            statCacheEl.textContent = stats.total_cached_size_str;
+                        }}
+
+                        if (fileStat.percentage >= 100 || !fileStat.is_downloading) {{
+                            delete offlinePollTimers[safeId];
+                            if (fileStat.percentage >= 100) {{
+                                showToast('✅ Offline Ready: 100% of video is now saved locally!');
+                            }}
+                            return;
+                        }}
+                    }}
+                }} catch (e) {{}}
+                offlinePollTimers[safeId] = setTimeout(poll, 1500);
+            }};
+            offlinePollTimers[safeId] = setTimeout(poll, 1000);
+        }}
+
+        function updateCardOfflineUI(safeId, isPinned, pct, sizeStr) {{
+            const pill = document.getElementById(`cachePill_${{safeId}}`);
+            if (pill) {{
+                pill.className = `card-cache-pill ${{isPinned ? 'is-pinned' : (pct > 0 ? 'is-cached' : 'is-cloud')}}`;
+                pill.innerHTML = `<span class="cache-pill-icon">${{isPinned ? '📌' : (pct > 0 ? '💾' : '☁️')}}</span><span class="cache-pill-text">${{isPinned ? 'Offline Ready' : (pct > 0 ? Math.round(pct) + '%' : 'Cloud')}}</span>${{pct > 0 ? `<span class="cache-pill-size">(${{sizeStr}})</span>` : ''}}`;
+                pill.title = isPinned ? `📌 Offline Available: 100% saved locally forever (${{sizeStr}})` : (pct > 0 ? `💾 Local Encrypted Cache: ${{Math.round(pct)}}% (${{sizeStr}}) • Expires 24h after last play` : '☁️ Cloud Stream: 0% cached locally');
+            }}
+
+            const fill = document.getElementById(`cacheFill_${{safeId}}`);
+            if (fill) {{
+                fill.className = `thumb-cache-fill ${{isPinned ? 'is-pinned-fill' : ''}}`;
+                fill.style.width = Math.min(100, Math.round(pct)) + '%';
+            }}
+
+            const btn = document.getElementById(`btnOffline_${{safeId}}`);
+            if (btn) {{
+                btn.className = `card-icon-btn btn-card-offline ${{isPinned ? 'is-pinned-active' : ''}}`;
+                btn.innerHTML = isPinned ? '📌' : '📥';
+                btn.title = isPinned ? '📌 Offline Available (Pinned Forever). Click to unpin and allow 24h auto-expiry.' : '📥 Make Offline Available: Download & save full video offline forever';
+            }}
+
+            const tagBtn = document.getElementById(`tagOffline_${{safeId}}`);
+            if (tagBtn) {{
+                tagBtn.className = `card-offline-tag-btn ${{isPinned ? 'active' : ''}}`;
+                tagBtn.innerHTML = isPinned ? '📌 Offline' : '📥 Offline';
+                tagBtn.title = isPinned ? '📌 Pinned offline forever (Click to unpin)' : '📥 Make offline available (Caches 100% & keeps forever)';
+            }}
         }}
 
         function setMiniPlayerSize(size, event) {{
