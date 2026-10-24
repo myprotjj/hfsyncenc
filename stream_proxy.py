@@ -2447,6 +2447,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .folder-count {{ font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 6px; }}
         .folder-children {{ margin-left: 12px; border-left: 1px dashed #374151; padding-left: 8px; }}
         .folder-children.collapsed {{ display: none; }}
+        .is-filter-hidden {{ display: none !important; }}
+        .video-card, .file-row {{ transition: opacity 0.15s ease; }}
 
         .folder-group {{
             margin-bottom: 8px;
@@ -4449,12 +4451,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function setViewMode(mode) {{
+            if (currentViewMode === mode) return;
             currentViewMode = mode;
             try {{
                 localStorage.setItem('hfsync_view_mode', mode);
             }} catch (e) {{}}
             updateViewToggleButtons();
-            filterTree();
+            refreshTreeDisplay();
         }}
 
         function toggleCardActions(btn, event) {{
@@ -4751,13 +4754,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             let html = "";
             const folderPath = currentPath ? `${{currentPath}}/${{node.name}}` : (depth > 0 ? node.name : "");
+            const isOpen = openedTreesQueue.includes(folderPath);
 
             if (depth > 0) {{
                 html += `
                 <div class="folder-group" data-folder="${{escapeHtml(folderPath)}}">
                     <div class="folder-header">
                         <div class="folder-left" onclick="toggleFolder(this.parentElement)">
-                            <span class="folder-arrow">&#9654;</span>
+                            <span class="folder-arrow ${{isOpen ? 'open' : ''}}">&#9654;</span>
                             <span class="folder-icon">&#128193;</span>
                             <span>${{escapeHtml(node.name)}}</span>
                             <span class="folder-count">${{totalDescendantFiles}} video(s)</span>
@@ -4766,7 +4770,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             <button onclick="event.stopPropagation(); promptDeleteFolder('${{escapeHtml(folderPath)}}', ${{totalDescendantFiles}})" class="btn btn-delete btn-sm" title="Delete entire folder and all contained videos">&#128465; Delete Folder</button>
                         </div>
                     </div>
-                    <div class="folder-children collapsed">`;
+                    <div class="folder-children ${{isOpen ? '' : 'collapsed'}}">`;
             }}
 
             const folderChildren = [];
@@ -5021,6 +5025,134 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             updateFilterBadges();
         }}
 
+        /* Tree Open State, FIFO Queue (Max 3), and Position Restoration */
+        const MAX_OPEN_TREES = 3;
+        let openedTreesQueue = [];
+
+        function loadOpenedTrees() {{
+            try {{
+                const saved = localStorage.getItem('hfsync_opened_trees');
+                if (saved) {{
+                    const parsed = JSON.parse(saved);
+                    if (Array.isArray(parsed)) {{
+                        openedTreesQueue = parsed.filter(p => typeof p === 'string' && p.trim()).slice(-MAX_OPEN_TREES);
+                    }}
+                }}
+            }} catch (e) {{
+                openedTreesQueue = [];
+            }}
+        }}
+
+        function saveOpenedTrees() {{
+            try {{
+                localStorage.setItem('hfsync_opened_trees', JSON.stringify(openedTreesQueue));
+            }} catch (e) {{}}
+        }}
+
+        function saveLastInteractedTree(folderPath) {{
+            try {{
+                localStorage.setItem('hfsync_last_tree', folderPath);
+            }} catch (e) {{}}
+        }}
+
+        function findFolderGroup(folderPath) {{
+            if (!folderPath) return null;
+            const all = document.querySelectorAll('.folder-group');
+            for (let i = 0; i < all.length; i++) {{
+                if (all[i].getAttribute('data-folder') === folderPath) {{
+                    return all[i];
+                }}
+            }}
+            return null;
+        }}
+
+        function openFolderElement(folderGroup) {{
+            if (!folderGroup) return;
+            const header = folderGroup.querySelector('.folder-header');
+            if (header) {{
+                const arrow = header.querySelector('.folder-arrow');
+                if (arrow) arrow.classList.add('open');
+            }}
+            const children = folderGroup.querySelector(':scope > .folder-children');
+            if (children) children.classList.remove('collapsed');
+
+            // Ensure ancestor folders are also open
+            let parentGroup = folderGroup.parentElement ? folderGroup.parentElement.closest('.folder-group') : null;
+            while (parentGroup) {{
+                const pHeader = parentGroup.querySelector('.folder-header');
+                if (pHeader) {{
+                    const pArrow = pHeader.querySelector('.folder-arrow');
+                    if (pArrow) pArrow.classList.add('open');
+                }}
+                const pChildren = parentGroup.querySelector(':scope > .folder-children');
+                if (pChildren) pChildren.classList.remove('collapsed');
+                parentGroup = parentGroup.parentElement ? parentGroup.parentElement.closest('.folder-group') : null;
+            }}
+        }}
+
+        function closeFolderElement(folderGroup) {{
+            if (!folderGroup) return;
+            const header = folderGroup.querySelector('.folder-header');
+            if (header) {{
+                const arrow = header.querySelector('.folder-arrow');
+                if (arrow) arrow.classList.remove('open');
+            }}
+            const children = folderGroup.querySelector(':scope > .folder-children');
+            if (children) children.classList.add('collapsed');
+        }}
+
+        function applyOpenedTrees() {{
+            const allFolders = document.querySelectorAll('.folder-group');
+            allFolders.forEach(fg => {{
+                const folderPath = fg.getAttribute('data-folder');
+                if (openedTreesQueue.includes(folderPath)) {{
+                    openFolderElement(fg);
+                }} else {{
+                    closeFolderElement(fg);
+                }}
+            }});
+        }}
+
+        // Track and persist scroll position
+        let scrollDebounceTimer = null;
+        window.addEventListener('scroll', () => {{
+            if (scrollDebounceTimer) clearTimeout(scrollDebounceTimer);
+            scrollDebounceTimer = setTimeout(() => {{
+                try {{
+                    localStorage.setItem('hfsync_scroll_pos', String(window.scrollY));
+                }} catch (e) {{}}
+            }}, 150);
+        }}, {{ passive: true }});
+
+        window.addEventListener('beforeunload', () => {{
+            try {{
+                localStorage.setItem('hfsync_scroll_pos', String(window.scrollY));
+            }} catch (e) {{}}
+        }});
+
+        function restoreUserPosition() {{
+            try {{
+                const savedY = localStorage.getItem('hfsync_scroll_pos');
+                const lastTree = localStorage.getItem('hfsync_last_tree');
+                if (savedY !== null && !isNaN(parseFloat(savedY)) && parseFloat(savedY) > 0) {{
+                    const y = parseFloat(savedY);
+                    requestAnimationFrame(() => {{
+                        window.scrollTo({{ top: y, behavior: 'instant' }});
+                        setTimeout(() => {{
+                            window.scrollTo({{ top: y, behavior: 'instant' }});
+                        }}, 120);
+                    }});
+                }} else if (lastTree) {{
+                    setTimeout(() => {{
+                        const el = findFolderGroup(lastTree);
+                        if (el) {{
+                            el.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+                        }}
+                    }}, 120);
+                }}
+            }} catch (e) {{}}
+        }}
+
         function refreshTreeDisplay() {{
             updateViewToggleButtons();
             const container = document.getElementById('treeContainer');
@@ -5031,44 +5163,62 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const tree = buildTree(allFiles);
             container.innerHTML = renderTree(tree, 0);
 
-            // Promote playing video to top if active
+            // Restore opened trees
+            applyOpenedTrees();
+
+            // Run in-place filtering
+            filterTree();
+
+            // Promote playing video if active
             if (currentVideoKey) {{
                 highlightAndPromotePlayingVideo(currentVideoKey);
             }}
         }}
 
         function toggleFolder(header) {{
-            const arrow = header.querySelector('.folder-arrow');
-            const children = header.nextElementSibling;
             const folderGroup = header.closest('.folder-group');
-            if (!arrow || !children) return;
+            if (!folderGroup) return;
+            const folderPath = folderGroup.getAttribute('data-folder');
+            if (!folderPath) return;
 
-            const willOpen = !arrow.classList.contains('open');
+            const arrow = header.querySelector('.folder-arrow');
+            const isCurrentlyOpen = arrow ? arrow.classList.contains('open') : false;
 
-            // Single Unfolded Accordion Rule: Collapse all other folders so only last unfolded stays unfolded
-            if (willOpen) {{
-                document.querySelectorAll('.folder-group').forEach(fg => {{
-                    if (fg !== folderGroup) {{
-                        fg.querySelector('.folder-arrow')?.classList.remove('open');
-                        fg.querySelector('.folder-children')?.classList.add('collapsed');
-                    }}
-                }});
-                arrow.classList.add('open');
-                children.classList.remove('collapsed');
+            if (isCurrentlyOpen) {{
+                // Close this folder
+                closeFolderElement(folderGroup);
+                openedTreesQueue = openedTreesQueue.filter(p => p !== folderPath);
+                saveOpenedTrees();
             }} else {{
-                arrow.classList.remove('open');
-                children.classList.add('collapsed');
+                // Open this folder
+                openFolderElement(folderGroup);
+
+                // Add to queue (remove first if already exists to push to most recent)
+                openedTreesQueue = openedTreesQueue.filter(p => p !== folderPath);
+                openedTreesQueue.push(folderPath);
+
+                // FIFO: Max 3 trees can be open at one time; opening 4th will close earliest one
+                while (openedTreesQueue.length > MAX_OPEN_TREES) {{
+                    const oldestPath = openedTreesQueue.shift();
+                    const oldestEl = findFolderGroup(oldestPath);
+                    if (oldestEl) {{
+                        closeFolderElement(oldestEl);
+                    }}
+                }}
+
+                saveOpenedTrees();
+                saveLastInteractedTree(folderPath);
             }}
         }}
 
         function expandAll() {{
-            document.querySelectorAll('.folder-arrow').forEach(a => a.classList.add('open'));
-            document.querySelectorAll('.folder-children').forEach(c => c.classList.remove('collapsed'));
+            document.querySelectorAll('.folder-group').forEach(fg => openFolderElement(fg));
         }}
 
         function collapseAll() {{
-            document.querySelectorAll('.folder-arrow').forEach(a => a.classList.remove('open'));
-            document.querySelectorAll('.folder-children').forEach(c => c.classList.add('collapsed'));
+            document.querySelectorAll('.folder-group').forEach(fg => closeFolderElement(fg));
+            openedTreesQueue = [];
+            saveOpenedTrees();
         }}
 
         function highlightAndPromotePlayingVideo(videoKey) {{
@@ -5120,21 +5270,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         headerLeft.appendChild(playPill);
                     }}
 
-                    // Collapse all other folders (only the playing folder stays unfolded)
-                    Array.from(treeContainer.children).forEach(child => {{
-                        if (child !== topFolder && child.classList.contains('folder-group')) {{
-                            child.querySelector('.folder-arrow')?.classList.remove('open');
-                            child.querySelector('.folder-children')?.classList.add('collapsed');
+                    const topPath = topFolder.getAttribute('data-folder');
+                    if (topPath) {{
+                        openFolderElement(topFolder);
+                        if (!openedTreesQueue.includes(topPath)) {{
+                            openedTreesQueue.push(topPath);
+                            while (openedTreesQueue.length > MAX_OPEN_TREES) {{
+                                const oldestPath = openedTreesQueue.shift();
+                                const oldestEl = findFolderGroup(oldestPath);
+                                if (oldestEl) closeFolderElement(oldestEl);
+                            }}
+                            saveOpenedTrees();
                         }}
-                    }});
-
-                    // Expand this playing folder group
-                    let curr = folderGroup;
-                    while (curr && curr !== treeContainer) {{
-                        curr.querySelector('.folder-arrow')?.classList.add('open');
-                        curr.querySelector('.folder-children')?.classList.remove('collapsed');
-                        curr = curr.parentElement?.closest('.folder-group');
                     }}
+                    openFolderElement(folderGroup);
                 }}
             }}
         }}
@@ -5144,20 +5293,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const hasTags = selectedTags.size > 0;
             const hasGenres = selectedGenres.size > 0;
             const hasAccounts = selectedAccounts.size > 0;
+            const hasFilters = Boolean(q || hasTags || hasGenres || hasAccounts);
 
             updateFilterBadges();
 
-            if (!q && !hasTags && !hasGenres && !hasAccounts) {{
-                refreshTreeDisplay();
-                return;
-            }}
-
-            const filtered = allFiles.filter(f => {{
+            const matchingFileKeys = new Set();
+            allFiles.forEach(f => {{
                 const meta = f.metadata || {{}};
                 const title = (meta.title || "").toLowerCase();
                 const overview = (meta.overview || "").toLowerCase();
                 const year = String(meta.year || "").toLowerCase();
-                const key = f.key.toLowerCase();
+                const key = (f.key || "").toLowerCase();
                 const account = f.account || primaryAccount;
                 const genres = (meta.genres || []).map(g => String(g));
                 const tags = (meta.tags || []).map(t => String(t));
@@ -5195,21 +5341,60 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     matchesTag = tags.some(t => selectedTags.has(t));
                 }}
 
-                return matchesQ && matchesAccount && matchesGenre && matchesTag;
+                if (matchesQ && matchesAccount && matchesGenre && matchesTag) {{
+                    matchingFileKeys.add(f.key);
+                }}
             }});
 
-            updateViewToggleButtons();
-            const container = document.getElementById('treeContainer');
-            if (filtered.length === 0) {{
-                container.innerHTML = '<div class="empty-state">No videos match your active filter criteria. <br><button onclick="resetAllFilters()" class="btn btn-link" style="margin-top: 12px;">Reset All Filters</button></div>';
-                return;
-            }}
-            const tree = buildTree(filtered);
-            container.innerHTML = renderTree(tree, 0);
+            // 1. Toggle visibility of all video cards and list rows in-place (no DOM rebuild!)
+            const allItems = document.querySelectorAll('.video-card, .file-row');
+            allItems.forEach(item => {{
+                const key = item.getAttribute('data-key');
+                if (matchingFileKeys.has(key)) {{
+                    item.classList.remove('is-filter-hidden');
+                }} else {{
+                    item.classList.add('is-filter-hidden');
+                }}
+            }});
 
-            // Promote playing video to top if active
-            if (currentVideoKey) {{
-                highlightAndPromotePlayingVideo(currentVideoKey);
+            // 2. Update folder groups visibility and count in-place
+            const allFolderGroups = document.querySelectorAll('.folder-group');
+            allFolderGroups.forEach(fg => {{
+                const visibleCount = fg.querySelectorAll('.video-card:not(.is-filter-hidden), .file-row:not(.is-filter-hidden)').length;
+                const countBadge = fg.querySelector(':scope > .folder-header .folder-count');
+
+                if (visibleCount > 0) {{
+                    fg.classList.remove('is-filter-hidden');
+                    if (countBadge) {{
+                        if (hasFilters) {{
+                            countBadge.textContent = `${{visibleCount}} match${{visibleCount === 1 ? '' : 'es'}}`;
+                        }} else {{
+                            const totalFiles = fg.querySelectorAll('.video-card, .file-row').length;
+                            countBadge.textContent = `${{totalFiles}} video(s)`;
+                        }}
+                    }}
+                }} else {{
+                    fg.classList.add('is-filter-hidden');
+                }}
+            }});
+
+            // 3. Show/hide smooth Empty State Notice without wiping treeContainer
+            const container = document.getElementById('treeContainer');
+            let emptyEl = document.getElementById('filterEmptyNotice');
+            if (!emptyEl && container) {{
+                emptyEl = document.createElement('div');
+                emptyEl.id = 'filterEmptyNotice';
+                emptyEl.className = 'empty-state';
+                emptyEl.innerHTML = 'No videos match your active filter criteria. <br><button onclick="resetAllFilters()" class="btn btn-link" style="margin-top: 12px;">Reset All Filters</button>';
+                container.appendChild(emptyEl);
+            }}
+
+            if (emptyEl) {{
+                if (matchingFileKeys.size === 0 && allFiles.length > 0) {{
+                    emptyEl.style.display = 'block';
+                }} else {{
+                    emptyEl.style.display = 'none';
+                }}
             }}
         }}
 
@@ -6957,12 +7142,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const res = await fetch('/api/files');
                 if (res.ok) {{
                     const data = await res.json();
-                    allFiles = data.files || [];
+                    const newFiles = data.files || [];
+                    const oldKeys = (allFiles || []).map(f => f.key).sort().join('|');
+                    const newKeys = newFiles.map(f => f.key).sort().join('|');
+
+                    allFiles = newFiles;
                     skippedFiles = data.skipped || [];
                     primaryAccount = data.primary_account || primaryAccount;
                     populateFilterDropdowns();
-                    filterTree();
                     updateStats();
+
+                    if (oldKeys !== newKeys) {{
+                        const curScrollY = window.scrollY;
+                        refreshTreeDisplay();
+                        window.scrollTo({{ top: curScrollY, behavior: 'instant' }});
+                    }} else {{
+                        filterTree();
+                    }}
                 }}
             }} catch (err) {{}}
         }}
@@ -7198,10 +7394,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         // Initial setup
+        loadOpenedTrees();
         populateFilterDropdowns();
         pollActivity();
         setInterval(pollActivity, 1000);
         refreshTreeDisplay();
+        restoreUserPosition();
     </script>
 </body>
 </html>
