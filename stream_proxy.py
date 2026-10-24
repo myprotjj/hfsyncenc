@@ -1784,9 +1784,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 try:
                     os.startfile(target_dir)
                 except Exception:
-                    subprocess.Popen(["explorer", os.path.normpath(target_dir)])
+                    pass
+                try:
+                    subprocess.Popen(["explorer.exe", target_dir])
+                except Exception:
+                    pass
             else:
-                subprocess.Popen(["xdg-open", target_dir])
+                try:
+                    subprocess.Popen(["xdg-open", target_dir])
+                except Exception:
+                    pass
 
             rel_display = os.path.relpath(target_dir, os.getcwd()).replace("\\", "/")
             resp_body = json.dumps({
@@ -7197,7 +7204,38 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         </div>
     </div>
 
-    <div id="toast" class="toast"></div>
+        <!-- Sync Folder Opened Modal -->
+    <div id="syncFolderModal" class="modal-overlay" onclick="if(event.target===this)closeSyncFolderModal()" style="display: none; z-index: 1250;">
+        <div class="modal" style="max-width: 620px; background: rgba(15, 23, 42, 0.98); border: 1px solid rgba(56, 189, 248, 0.4); box-shadow: 0 10px 40px rgba(0,0,0,0.85); padding: 22px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+                <h3 style="color: #38bdf8; margin: 0; display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">
+                    <span>📂</span> Sync Folder Ready
+                </h3>
+                <button type="button" onclick="closeSyncFolderModal()" style="background: none; border: none; color: var(--text-muted); font-size: 1.3rem; cursor: pointer; padding: 0 4px; line-height: 1;">&times;</button>
+            </div>
+            <p style="margin: 0 0 14px 0; font-size: 0.88rem; color: var(--text-muted); line-height: 1.5;">
+                The folder directory structure has been created in your local sync folder. Any files dropped here will automatically be encrypted and synced to this exact tree and repository.
+            </p>
+
+            <div style="background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; margin-bottom: 6px; letter-spacing: 0.5px;">Folder Path (Auto-Copied)</div>
+                <div id="syncFolderDisplayPath" style="font-family: monospace; font-size: 0.88rem; color: #f8fafc; word-break: break-all; user-select: all; background: rgba(0, 0, 0, 0.4); padding: 10px 12px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.08);"></div>
+            </div>
+
+            <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; padding: 10px 12px; border-radius: 4px; font-size: 0.82rem; color: #cbd5e1; margin-bottom: 18px; line-height: 1.45;">
+                <strong style="color: #38bdf8;">&#128161; Lifecycle Note:</strong> Once syncing finishes, videos are encrypted, uploaded to Hugging Face, and Jellyfin pointers (.strm) are generated. To save local disk space, the uploaded files are deleted and this temporary folder in <code>videos_to_sync</code> is automatically pruned. Your media stays permanently in Jellyfin and the cloud vault.
+            </div>
+
+            <div class="modal-actions" style="justify-content: flex-end; gap: 10px; margin-top: 0;">
+                <button type="button" id="btnCopySyncPath" onclick="copySyncFolderPath()" class="tool-btn" style="background: rgba(56, 189, 248, 0.2); border-color: #38bdf8; color: #38bdf8; font-weight: 600;">
+                    📋 Copy Path
+                </button>
+                <button type="button" onclick="closeSyncFolderModal()" class="tool-btn" style="background: #334155; color: #fff;">Got It</button>
+            </div>
+        </div>
+    </div>
+
+<div id="toast" class="toast"></div>
 
     <script>
         function openScreensModal(safeId, title, event) {{
@@ -10812,11 +10850,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
+        let currentSyncFolderPath = '';
+
         async function openSyncFolderInExplorer(folderPath, event) {{
             if (event) event.stopPropagation();
             try {{
                 const targetName = folderPath || 'videos_to_sync';
-                showToast(`Opening "${{targetName}}" in Windows Explorer...`, 'info');
+                showToast(`Preparing "${{targetName}}" sync folder...`, 'info');
                 const resp = await fetch('/api/folders/open-sync', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
@@ -10824,13 +10864,43 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }});
                 const res = await resp.json();
                 if (res.success) {{
-                    showToast(`&#128194; Opened sync folder: ${{res.rel_path}} (Paste new videos here!)`, 'success');
+                    currentSyncFolderPath = res.path || '';
+                    if (navigator.clipboard && res.path) {{
+                        try {{
+                            await navigator.clipboard.writeText(res.path);
+                        }} catch (_) {{}}
+                    }}
+                    const pathEl = document.getElementById('syncFolderDisplayPath');
+                    if (pathEl) pathEl.textContent = res.path || res.rel_path;
+                    const modal = document.getElementById('syncFolderModal');
+                    if (modal) modal.style.display = 'flex';
+                    showToast('&#128194; Folder ready & path copied to clipboard!', 'success');
                 }} else {{
                     alert('Could not open sync folder: ' + (res.error || 'Unknown error'));
                 }}
             }} catch (e) {{
                 alert('Error opening sync folder: ' + e);
             }}
+        }}
+
+        function copySyncFolderPath() {{
+            if (!currentSyncFolderPath) return;
+            if (navigator.clipboard) {{
+                navigator.clipboard.writeText(currentSyncFolderPath).then(() => {{
+                    const btn = document.getElementById('btnCopySyncPath');
+                    if (btn) {{
+                        const prev = btn.innerHTML;
+                        btn.innerHTML = '&#10003; Copied!';
+                        setTimeout(() => {{ btn.innerHTML = prev; }}, 2000);
+                    }}
+                    showToast('&#10003; Path copied to clipboard!', 'success');
+                }});
+            }}
+        }}
+
+        function closeSyncFolderModal() {{
+            const modal = document.getElementById('syncFolderModal');
+            if (modal) modal.style.display = 'none';
         }}
 
         function clearAllMergeMarks() {{
