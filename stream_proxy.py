@@ -2427,6 +2427,246 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .folder-children {{ margin-left: 12px; border-left: 1px dashed #374151; padding-left: 8px; }}
         .folder-children.collapsed {{ display: none; }}
 
+        .folder-group {{
+            margin-bottom: 8px;
+            transition: all 0.25s ease;
+        }}
+        .folder-group.is-playing-group {{
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            background: rgba(56, 189, 248, 0.03);
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+            margin-bottom: 14px;
+        }}
+        .folder-group.is-playing-group > .folder-header {{
+            background: rgba(56, 189, 248, 0.09);
+            border-bottom: 1px solid rgba(56, 189, 248, 0.25);
+            border-radius: 7px 7px 0 0;
+        }}
+        .folder-playing-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: #0284c7;
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 4px;
+            margin-left: 8px;
+            animation: pulseNowPlaying 2s infinite ease-in-out;
+        }}
+        .video-card.is-now-playing {{
+            border-color: #38bdf8 !important;
+            box-shadow: 0 0 16px rgba(56, 189, 248, 0.4) !important;
+            background: rgba(56, 189, 248, 0.08) !important;
+            position: relative;
+        }}
+        .file-row.is-now-playing {{
+            border-color: #38bdf8 !important;
+            background: rgba(56, 189, 248, 0.12) !important;
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.3) !important;
+        }}
+        .now-playing-badge {{
+            position: absolute;
+            top: 6px;
+            left: 6px;
+            background: rgba(2, 132, 199, 0.95);
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 4px;
+            z-index: 6;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            animation: pulseNowPlaying 2s infinite ease-in-out;
+        }}
+        @keyframes pulseNowPlaying {{
+            0%, 100% {{ opacity: 1; transform: scale(1); }}
+            50% {{ opacity: 0.85; transform: scale(1.02); }}
+        }}
+
+        /* Advanced Multi-Select Filter Toolbar */
+        .multi-filter-group {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }}
+        .popover-wrapper {{
+            position: relative;
+            display: inline-block;
+        }}
+        .filter-pill-btn {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            color: #e5e7eb;
+            font-size: 0.84rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            user-select: none;
+            white-space: nowrap;
+        }}
+        .filter-pill-btn:hover {{
+            border-color: #4b5563;
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+        }}
+        .filter-pill-btn.is-active {{
+            background: rgba(56, 189, 248, 0.15);
+            border-color: #38bdf8;
+            color: #38bdf8;
+        }}
+        .pill-badge {{
+            background: #38bdf8;
+            color: #0b0f19;
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 10px;
+            margin-left: 2px;
+        }}
+        .filter-popover {{
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            min-width: 240px;
+            max-width: 320px;
+            background: #111827;
+            border: 1px solid #374151;
+            border-radius: 10px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.7), 0 8px 10px -6px rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            padding: 10px;
+            backdrop-filter: blur(12px);
+        }}
+        .popover-header {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #1f2937;
+        }}
+        .popover-search {{
+            width: 100%;
+            padding: 6px 10px;
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.8rem;
+            outline: none;
+            box-sizing: border-box;
+        }}
+        .popover-search:focus {{
+            border-color: #38bdf8;
+        }}
+        .popover-actions {{
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+        }}
+        .popover-actions button {{
+            background: none;
+            border: none;
+            color: #9ca3af;
+            font-size: 0.75rem;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }}
+        .popover-actions button:hover {{
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.1);
+        }}
+        .popover-list {{
+            max-height: 220px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }}
+        .popover-item {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.82rem;
+            color: #d1d5db;
+            transition: background 0.15s;
+            user-select: none;
+        }}
+        .popover-item:hover {{
+            background: rgba(255, 255, 255, 0.06);
+            color: #fff;
+        }}
+        .popover-item input[type="checkbox"] {{
+            accent-color: #38bdf8;
+            cursor: pointer;
+            width: 15px;
+            height: 15px;
+        }}
+        .popover-item-count {{
+            margin-left: auto;
+            font-size: 0.72rem;
+            color: #6b7280;
+        }}
+        .active-chips-bar {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin: 8px 0 12px 0;
+            padding: 6px 12px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 8px;
+            border: 1px dashed rgba(255, 255, 255, 0.1);
+        }}
+        .filter-chip {{
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 8px;
+            background: rgba(56, 189, 248, 0.15);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            border-radius: 12px;
+            color: #38bdf8;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }}
+        .filter-chip-remove {{
+            cursor: pointer;
+            font-size: 0.85rem;
+            line-height: 1;
+            opacity: 0.7;
+        }}
+        .filter-chip-remove:hover {{
+            opacity: 1;
+            color: #ef4444;
+        }}
+        .clear-all-chip {{
+            cursor: pointer;
+            color: #9ca3af;
+            font-size: 0.75rem;
+            text-decoration: underline;
+            margin-left: 6px;
+        }}
+        .clear-all-chip:hover {{
+            color: #f87171;
+        }}
+
         .file-row {{
             display: flex;
             align-items: center;
@@ -3841,16 +4081,71 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         <div class="toolbar">
             <input type="text" id="searchInput" class="search-input" placeholder="&#128269; Search by title, tag, genre, account, folder..." oninput="filterTree()">
-            <select id="accountFilter" class="filter-select" onchange="filterTree()">
-                <option value="">👥 All Accounts</option>
-            </select>
-            <select id="genreFilter" class="filter-select" onchange="filterTree()">
-                <option value="">📁 All Categories / Genres</option>
-            </select>
-            <select id="tagFilter" class="filter-select" onchange="filterTree()">
-                <option value="">🏷️ All Tags</option>
-            </select>
-            <button onclick="resetFilters()" class="tool-btn">&#128260; Reset</button>
+            
+            <div class="multi-filter-group">
+                <!-- Multi-select Tags Popover -->
+                <div class="popover-wrapper" id="tagPopoverWrapper">
+                    <button type="button" class="filter-pill-btn" id="tagPillBtn" onclick="toggleFilterPopover('tagPopover', event)" title="Filter by tags (resolution, duration, content type)">
+                        <span class="pill-icon">&#127991;</span>
+                        <span class="pill-label">Tags</span>
+                        <span class="pill-badge" id="tagCountBadge" style="display: none;">0</span>
+                        <span class="pill-arrow">&#9662;</span>
+                    </button>
+                    <div class="filter-popover" id="tagPopover" style="display: none;">
+                        <div class="popover-header">
+                            <input type="text" class="popover-search" placeholder="Filter tags..." oninput="filterPopoverList('tagPopover', this.value)">
+                            <div class="popover-actions">
+                                <button type="button" onclick="selectAllFilter('tag')">Select All</button>
+                                <button type="button" onclick="clearFilter('tag')">Clear</button>
+                            </div>
+                        </div>
+                        <div class="popover-list" id="tagPopoverList"></div>
+                    </div>
+                </div>
+
+                <!-- Multi-select Categories Popover -->
+                <div class="popover-wrapper" id="genrePopoverWrapper">
+                    <button type="button" class="filter-pill-btn" id="genrePillBtn" onclick="toggleFilterPopover('genrePopover', event)" title="Filter by category or genre">
+                        <span class="pill-icon">&#128193;</span>
+                        <span class="pill-label">Categories</span>
+                        <span class="pill-badge" id="genreCountBadge" style="display: none;">0</span>
+                        <span class="pill-arrow">&#9662;</span>
+                    </button>
+                    <div class="filter-popover" id="genrePopover" style="display: none;">
+                        <div class="popover-header">
+                            <input type="text" class="popover-search" placeholder="Filter categories..." oninput="filterPopoverList('genrePopover', this.value)">
+                            <div class="popover-actions">
+                                <button type="button" onclick="selectAllFilter('genre')">Select All</button>
+                                <button type="button" onclick="clearFilter('genre')">Clear</button>
+                            </div>
+                        </div>
+                        <div class="popover-list" id="genrePopoverList"></div>
+                    </div>
+                </div>
+
+                <!-- Multi-select Accounts Popover -->
+                <div class="popover-wrapper" id="accountPopoverWrapper">
+                    <button type="button" class="filter-pill-btn" id="accountPillBtn" onclick="toggleFilterPopover('accountPopover', event)" title="Filter by Hugging Face account">
+                        <span class="pill-icon">&#128100;</span>
+                        <span class="pill-label">Accounts</span>
+                        <span class="pill-badge" id="accountCountBadge" style="display: none;">0</span>
+                        <span class="pill-arrow">&#9662;</span>
+                    </button>
+                    <div class="filter-popover" id="accountPopover" style="display: none;">
+                        <div class="popover-header">
+                            <input type="text" class="popover-search" placeholder="Filter accounts..." oninput="filterPopoverList('accountPopover', this.value)">
+                            <div class="popover-actions">
+                                <button type="button" onclick="selectAllFilter('account')">Select All</button>
+                                <button type="button" onclick="clearFilter('account')">Clear</button>
+                            </div>
+                        </div>
+                        <div class="popover-list" id="accountPopoverList"></div>
+                    </div>
+                </div>
+
+                <button onclick="resetAllFilters()" id="btnResetFilters" class="tool-btn" style="display: none;" title="Reset all active filters and search">&#128260; Reset</button>
+            </div>
+
             <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
             <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
             <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
@@ -3859,6 +4154,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn" title="Switch to List Row View">&#9776; List</button>
             </div>
         </div>
+
+        <div id="activeFilterChipsBar" class="active-chips-bar" style="display: none;"></div>
 
         <div class="tree-container" id="treeContainer">
             <!-- Tree populated dynamically via JS -->
@@ -4437,7 +4734,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <div class="folder-group" data-folder="${{escapeHtml(folderPath)}}">
                     <div class="folder-header">
                         <div class="folder-left" onclick="toggleFolder(this.parentElement)">
-                            <span class="folder-arrow open">&#9654;</span>
+                            <span class="folder-arrow">&#9654;</span>
                             <span class="folder-icon">&#128193;</span>
                             <span>${{escapeHtml(node.name)}}</span>
                             <span class="folder-count">${{totalDescendantFiles}} video(s)</span>
@@ -4446,7 +4743,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             <button onclick="event.stopPropagation(); promptDeleteFolder('${{escapeHtml(folderPath)}}', ${{totalDescendantFiles}})" class="btn btn-delete btn-sm" title="Delete entire folder and all contained videos">&#128465; Delete Folder</button>
                         </div>
                     </div>
-                    <div class="folder-children">`;
+                    <div class="folder-children collapsed">`;
             }}
 
             const folderChildren = [];
@@ -4500,58 +4797,208 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return count;
         }}
 
-        function populateFilterDropdowns() {{
-            const accountSelect = document.getElementById('accountFilter');
-            const genreSelect = document.getElementById('genreFilter');
-            const tagSelect = document.getElementById('tagFilter');
+        let selectedTags = new Set();
+        let selectedGenres = new Set();
+        let selectedAccounts = new Set();
 
-            const currAccount = accountSelect ? accountSelect.value : '';
-            const currGenre = genreSelect.value;
-            const currTag = tagSelect.value;
-
-            const accountSet = new Set();
-            const genreSet = new Set();
-            const tagSet = new Set();
-
-            allFiles.forEach(f => {{
-                accountSet.add(f.account || primaryAccount);
-                const meta = f.metadata || {{}};
-                (meta.genres || []).forEach(g => {{ if (g && String(g).trim()) genreSet.add(String(g).trim()); }});
-                (meta.tags || []).forEach(t => {{ if (t && String(t).trim()) tagSet.add(String(t).trim()); }});
-            }});
-
-            if (accountSelect) {{
-                accountSelect.innerHTML = '<option value="">👥 All Accounts</option>';
-                Array.from(accountSet).sort().forEach(acc => {{
-                    const opt = document.createElement('option');
-                    opt.value = acc;
-                    opt.textContent = (acc === primaryAccount ? '👑 ' : '👤 ') + acc;
-                    if (acc === currAccount) opt.selected = true;
-                    accountSelect.appendChild(opt);
-                }});
+        function toggleFilterPopover(popoverId, event) {{
+            if (event) event.stopPropagation();
+            const popover = document.getElementById(popoverId);
+            if (!popover) return;
+            const isOpen = popover.style.display === 'block';
+            document.querySelectorAll('.filter-popover').forEach(p => p.style.display = 'none');
+            if (!isOpen) {{
+                popover.style.display = 'block';
+                const search = popover.querySelector('.popover-search');
+                if (search) {{
+                    search.value = '';
+                    search.focus();
+                    filterPopoverList(popoverId, '');
+                }}
             }}
+        }}
 
-            genreSelect.innerHTML = '<option value="">📁 All Categories / Genres</option>';
-            Array.from(genreSet).sort().forEach(g => {{
-                const opt = document.createElement('option');
-                opt.value = g;
-                opt.textContent = g;
-                if (g === currGenre) opt.selected = true;
-                genreSelect.appendChild(opt);
-            }});
-
-            tagSelect.innerHTML = '<option value="">🏷️ All Tags</option>';
-            Array.from(tagSet).sort().forEach(t => {{
-                const opt = document.createElement('option');
-                opt.value = t;
-                opt.textContent = t;
-                if (t === currTag) opt.selected = true;
-                tagSelect.appendChild(opt);
+        function filterPopoverList(popoverId, query) {{
+            const popover = document.getElementById(popoverId);
+            if (!popover) return;
+            const q = (query || '').toLowerCase().trim();
+            popover.querySelectorAll('.popover-item').forEach(item => {{
+                const text = item.getAttribute('data-val') || '';
+                item.style.display = (!q || text.toLowerCase().includes(q)) ? 'flex' : 'none';
             }});
         }}
 
+        function toggleFilterSelection(type, val) {{
+            let setObj = (type === 'tag') ? selectedTags : ((type === 'genre') ? selectedGenres : selectedAccounts);
+            if (setObj.has(val)) {{
+                setObj.delete(val);
+            }} else {{
+                setObj.add(val);
+            }}
+            updateFilterBadges();
+            filterTree();
+        }}
+
+        function selectAllFilter(type) {{
+            if (type === 'tag') {{
+                allFiles.forEach(f => {{
+                    (f.metadata?.tags || []).forEach(t => {{ if (t) selectedTags.add(String(t).trim()); }});
+                }});
+            }} else if (type === 'genre') {{
+                allFiles.forEach(f => {{
+                    (f.metadata?.genres || []).forEach(g => {{ if (g) selectedGenres.add(String(g).trim()); }});
+                }});
+            }} else if (type === 'account') {{
+                allFiles.forEach(f => {{
+                    selectedAccounts.add(f.account || primaryAccount);
+                }});
+            }}
+            updateFilterBadges();
+            populateFilterDropdowns();
+            filterTree();
+        }}
+
+        function clearFilter(type) {{
+            if (type === 'tag') selectedTags.clear();
+            else if (type === 'genre') selectedGenres.clear();
+            else if (type === 'account') selectedAccounts.clear();
+            updateFilterBadges();
+            populateFilterDropdowns();
+            filterTree();
+        }}
+
+        function resetAllFilters() {{
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) searchInput.value = '';
+            selectedTags.clear();
+            selectedGenres.clear();
+            selectedAccounts.clear();
+            updateFilterBadges();
+            populateFilterDropdowns();
+            filterTree();
+        }}
+
+        function updateFilterBadges() {{
+            const updatePill = (btnId, badgeId, setObj) => {{
+                const btn = document.getElementById(btnId);
+                const badge = document.getElementById(badgeId);
+                if (!btn || !badge) return;
+                if (setObj.size > 0) {{
+                    btn.classList.add('is-active');
+                    badge.style.display = 'inline-block';
+                    badge.textContent = setObj.size;
+                }} else {{
+                    btn.classList.remove('is-active');
+                    badge.style.display = 'none';
+                    badge.textContent = '0';
+                }}
+            }};
+            updatePill('tagPillBtn', 'tagCountBadge', selectedTags);
+            updatePill('genrePillBtn', 'genreCountBadge', selectedGenres);
+            updatePill('accountPillBtn', 'accountCountBadge', selectedAccounts);
+
+            const q = document.getElementById('searchInput') ? document.getElementById('searchInput').value.trim() : '';
+            const totalActive = selectedTags.size + selectedGenres.size + selectedAccounts.size;
+            const resetBtn = document.getElementById('btnResetFilters');
+            if (resetBtn) {{
+                resetBtn.style.display = (q || totalActive > 0) ? 'inline-block' : 'none';
+            }}
+
+            renderActiveFilterChips();
+        }}
+
+        function renderActiveFilterChips() {{
+            const bar = document.getElementById('activeFilterChipsBar');
+            if (!bar) return;
+            const totalActive = selectedTags.size + selectedGenres.size + selectedAccounts.size;
+            if (totalActive === 0) {{
+                bar.style.display = 'none';
+                bar.innerHTML = '';
+                return;
+            }}
+            bar.style.display = 'flex';
+            let html = '<span style="font-size: 0.74rem; color: #9ca3af; margin-right: 4px;">Active Filters:</span>';
+
+            selectedAccounts.forEach(acc => {{
+                html += `<span class="filter-chip">&#128100; ${{escapeHtml(acc)}} <span class="filter-chip-remove" onclick="toggleFilterSelection('account', '${{escapeHtml(acc)}}')">&times;</span></span>`;
+            }});
+            selectedGenres.forEach(g => {{
+                html += `<span class="filter-chip">&#128193; ${{escapeHtml(g)}} <span class="filter-chip-remove" onclick="toggleFilterSelection('genre', '${{escapeHtml(g)}}')">&times;</span></span>`;
+            }});
+            selectedTags.forEach(t => {{
+                html += `<span class="filter-chip">&#127991; ${{escapeHtml(t)}} <span class="filter-chip-remove" onclick="toggleFilterSelection('tag', '${{escapeHtml(t)}}')">&times;</span></span>`;
+            }});
+            html += `<span class="clear-all-chip" onclick="resetAllFilters()">Clear All</span>`;
+            bar.innerHTML = html;
+        }}
+
+        function populateFilterDropdowns() {{
+            const accountCounts = {{}};
+            const genreCounts = {{}};
+            const tagCounts = {{}};
+
+            allFiles.forEach(f => {{
+                const acc = f.account || primaryAccount;
+                accountCounts[acc] = (accountCounts[acc] || 0) + 1;
+
+                const meta = f.metadata || {{}};
+                (meta.genres || []).forEach(g => {{
+                    const strG = String(g).trim();
+                    if (strG) genreCounts[strG] = (genreCounts[strG] || 0) + 1;
+                }});
+                (meta.tags || []).forEach(t => {{
+                    const strT = String(t).trim();
+                    if (strT) tagCounts[strT] = (tagCounts[strT] || 0) + 1;
+                }});
+            }});
+
+            // Populate Tags
+            const tagList = document.getElementById('tagPopoverList');
+            if (tagList) {{
+                tagList.innerHTML = Object.keys(tagCounts).sort((a, b) => a.localeCompare(b)).map(t => {{
+                    const isChecked = selectedTags.has(t);
+                    return `
+                    <label class="popover-item" data-val="${{escapeHtml(t)}}">
+                        <input type="checkbox" ${{isChecked ? 'checked' : ''}} onchange="toggleFilterSelection('tag', '${{escapeHtml(t)}}')">
+                        <span>${{escapeHtml(t)}}</span>
+                        <span class="popover-item-count">(${{tagCounts[t]}})</span>
+                    </label>`;
+                }}).join('') || '<div style="color: #6b7280; font-size: 0.78rem; padding: 6px;">No tags found</div>';
+            }}
+
+            // Populate Categories
+            const genreList = document.getElementById('genrePopoverList');
+            if (genreList) {{
+                genreList.innerHTML = Object.keys(genreCounts).sort((a, b) => a.localeCompare(b)).map(g => {{
+                    const isChecked = selectedGenres.has(g);
+                    return `
+                    <label class="popover-item" data-val="${{escapeHtml(g)}}">
+                        <input type="checkbox" ${{isChecked ? 'checked' : ''}} onchange="toggleFilterSelection('genre', '${{escapeHtml(g)}}')">
+                        <span>${{escapeHtml(g)}}</span>
+                        <span class="popover-item-count">(${{genreCounts[g]}})</span>
+                    </label>`;
+                }}).join('') || '<div style="color: #6b7280; font-size: 0.78rem; padding: 6px;">No categories found</div>';
+            }}
+
+            // Populate Accounts
+            const accountList = document.getElementById('accountPopoverList');
+            if (accountList) {{
+                accountList.innerHTML = Object.keys(accountCounts).sort((a, b) => a.localeCompare(b)).map(acc => {{
+                    const isChecked = selectedAccounts.has(acc);
+                    const isPrimary = (acc === primaryAccount);
+                    return `
+                    <label class="popover-item" data-val="${{escapeHtml(acc)}}">
+                        <input type="checkbox" ${{isChecked ? 'checked' : ''}} onchange="toggleFilterSelection('account', '${{escapeHtml(acc)}}')">
+                        <span>${{isPrimary ? '&#128081; ' : '&#128100; '}}${{escapeHtml(acc)}}</span>
+                        <span class="popover-item-count">(${{accountCounts[acc]}})</span>
+                    </label>`;
+                }}).join('') || '<div style="color: #6b7280; font-size: 0.78rem; padding: 6px;">No accounts found</div>';
+            }}
+
+            updateFilterBadges();
+        }}
+
         function refreshTreeDisplay() {{
-            updateViewToggleButtons();
             updateViewToggleButtons();
             const container = document.getElementById('treeContainer');
             if (allFiles.length === 0) {{
@@ -4560,14 +5007,34 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
             const tree = buildTree(allFiles);
             container.innerHTML = renderTree(tree, 0);
+
+            // Promote playing video to top if active
+            if (currentVideoKey) {{
+                highlightAndPromotePlayingVideo(currentVideoKey);
+            }}
         }}
 
         function toggleFolder(header) {{
             const arrow = header.querySelector('.folder-arrow');
             const children = header.nextElementSibling;
-            if (arrow && children) {{
-                arrow.classList.toggle('open');
-                children.classList.toggle('collapsed');
+            const folderGroup = header.closest('.folder-group');
+            if (!arrow || !children) return;
+
+            const willOpen = !arrow.classList.contains('open');
+
+            // Single Unfolded Accordion Rule: Collapse all other folders so only last unfolded stays unfolded
+            if (willOpen) {{
+                document.querySelectorAll('.folder-group').forEach(fg => {{
+                    if (fg !== folderGroup) {{
+                        fg.querySelector('.folder-arrow')?.classList.remove('open');
+                        fg.querySelector('.folder-children')?.classList.add('collapsed');
+                    }}
+                }});
+                arrow.classList.add('open');
+                children.classList.remove('collapsed');
+            }} else {{
+                arrow.classList.remove('open');
+                children.classList.add('collapsed');
             }}
         }}
 
@@ -4581,13 +5048,88 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             document.querySelectorAll('.folder-children').forEach(c => c.classList.add('collapsed'));
         }}
 
-        function filterTree() {{
-            const q = document.getElementById('searchInput').value.toLowerCase().trim();
-            const selAccount = document.getElementById('accountFilter') ? document.getElementById('accountFilter').value : '';
-            const selGenre = document.getElementById('genreFilter').value;
-            const selTag = document.getElementById('tagFilter').value;
+        function highlightAndPromotePlayingVideo(videoKey) {{
+            if (!videoKey) return;
+            const cleanKey = videoKey.replace(/^\/+/, '');
+            const allCards = document.querySelectorAll('.video-card, .file-row');
+            let targetCard = null;
 
-            if (!q && !selAccount && !selGenre && !selTag) {{
+            allCards.forEach(c => {{
+                const k = (c.getAttribute('data-key') || '').replace(/^\/+/, '');
+                if (k === cleanKey || k.toLowerCase() === cleanKey.toLowerCase()) {{
+                    targetCard = c;
+                    c.classList.add('is-now-playing');
+                    if (!c.querySelector('.now-playing-badge')) {{
+                        const badge = document.createElement('div');
+                        badge.className = 'now-playing-badge';
+                        badge.innerHTML = '&#9654; Playing';
+                        const thumb = c.querySelector('.video-thumb-card');
+                        if (thumb) thumb.appendChild(badge);
+                    }}
+                }} else {{
+                    c.classList.remove('is-now-playing');
+                    c.querySelector('.now-playing-badge')?.remove();
+                }}
+            }});
+
+            if (targetCard) {{
+                const folderGroup = targetCard.closest('.folder-group');
+                const treeContainer = document.getElementById('treeContainer');
+
+                if (folderGroup && treeContainer) {{
+                    // Find root top folder under treeContainer
+                    let topFolder = folderGroup;
+                    while (topFolder.parentElement && topFolder.parentElement !== treeContainer && topFolder.parentElement.closest('.folder-group')) {{
+                        topFolder = topFolder.parentElement.closest('.folder-group');
+                    }}
+
+                    // Move this playing folder to the very top of the list!
+                    if (treeContainer.firstElementChild !== topFolder) {{
+                        treeContainer.prepend(topFolder);
+                    }}
+
+                    // Mark as playing group
+                    document.querySelectorAll('.folder-group').forEach(fg => {{
+                        fg.classList.remove('is-playing-group');
+                        fg.querySelector('.folder-playing-badge')?.remove();
+                    }});
+                    topFolder.classList.add('is-playing-group');
+                    const headerLeft = topFolder.querySelector('.folder-left');
+                    if (headerLeft && !headerLeft.querySelector('.folder-playing-badge')) {{
+                        const playPill = document.createElement('span');
+                        playPill.className = 'folder-playing-badge';
+                        playPill.innerHTML = '&#9654; Now Playing';
+                        headerLeft.appendChild(playPill);
+                    }}
+
+                    // Collapse all other folders (only the playing folder stays unfolded)
+                    Array.from(treeContainer.children).forEach(child => {{
+                        if (child !== topFolder && child.classList.contains('folder-group')) {{
+                            child.querySelector('.folder-arrow')?.classList.remove('open');
+                            child.querySelector('.folder-children')?.classList.add('collapsed');
+                        }}
+                    }});
+
+                    // Expand this playing folder group
+                    let curr = folderGroup;
+                    while (curr && curr !== treeContainer) {{
+                        curr.querySelector('.folder-arrow')?.classList.add('open');
+                        curr.querySelector('.folder-children')?.classList.remove('collapsed');
+                        curr = curr.parentElement?.closest('.folder-group');
+                    }}
+                }}
+            }}
+        }}
+
+        function filterTree() {{
+            const q = document.getElementById('searchInput') ? document.getElementById('searchInput').value.toLowerCase().trim() : '';
+            const hasTags = selectedTags.size > 0;
+            const hasGenres = selectedGenres.size > 0;
+            const hasAccounts = selectedAccounts.size > 0;
+
+            updateFilterBadges();
+
+            if (!q && !hasTags && !hasGenres && !hasAccounts) {{
                 refreshTreeDisplay();
                 return;
             }}
@@ -4598,7 +5140,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const overview = (meta.overview || "").toLowerCase();
                 const year = String(meta.year || "").toLowerCase();
                 const key = f.key.toLowerCase();
-                const account = (f.account || primaryAccount).toLowerCase();
+                const account = f.account || primaryAccount;
                 const genres = (meta.genres || []).map(g => String(g));
                 const tags = (meta.tags || []).map(t => String(t));
                 const genresLower = genres.map(g => g.toLowerCase());
@@ -4613,7 +5155,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                title.includes(q) ||
                                year.includes(q) ||
                                overview.includes(q) ||
-                               account.includes(q) ||
+                               account.toLowerCase().includes(q) ||
                                genresLower.some(g => g.includes(q)) ||
                                tagsLower.some(t => t.includes(q)) ||
                                aliases.some(a => a.includes(q)) ||
@@ -4621,18 +5163,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
 
                 let matchesAccount = true;
-                if (selAccount) {{
-                    matchesAccount = ((f.account || primaryAccount) === selAccount);
+                if (hasAccounts) {{
+                    matchesAccount = selectedAccounts.has(account);
                 }}
 
                 let matchesGenre = true;
-                if (selGenre) {{
-                    matchesGenre = genres.includes(selGenre);
+                if (hasGenres) {{
+                    matchesGenre = genres.some(g => selectedGenres.has(g));
                 }}
 
                 let matchesTag = true;
-                if (selTag) {{
-                    matchesTag = tags.includes(selTag);
+                if (hasTags) {{
+                    matchesTag = tags.some(t => selectedTags.has(t));
                 }}
 
                 return matchesQ && matchesAccount && matchesGenre && matchesTag;
@@ -4641,23 +5183,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             updateViewToggleButtons();
             const container = document.getElementById('treeContainer');
             if (filtered.length === 0) {{
-                container.innerHTML = '<div class="empty-state">No videos match your active filter criteria. <br><button onclick="resetFilters()" class="btn btn-link" style="margin-top: 12px;">Reset Filters</button></div>';
+                container.innerHTML = '<div class="empty-state">No videos match your active filter criteria. <br><button onclick="resetAllFilters()" class="btn btn-link" style="margin-top: 12px;">Reset All Filters</button></div>';
                 return;
             }}
             const tree = buildTree(filtered);
             container.innerHTML = renderTree(tree, 0);
-            expandAll();
+
+            // Promote playing video to top if active
+            if (currentVideoKey) {{
+                highlightAndPromotePlayingVideo(currentVideoKey);
+            }}
         }}
 
-        function resetFilters() {{
-            document.getElementById('searchInput').value = "";
-            if (document.getElementById('accountFilter')) {{
-                document.getElementById('accountFilter').value = "";
+        // Close dropdown popovers on outside click
+        document.addEventListener('click', function(e) {{
+            if (!e.target.closest('.popover-wrapper')) {{
+                document.querySelectorAll('.filter-popover').forEach(p => p.style.display = 'none');
             }}
-            document.getElementById('genreFilter').value = "";
-            document.getElementById('tagFilter').value = "";
-            filterTree();
-        }}
+        }});
 
         /* Interactive Video Thumbnail Moving Preview Engine */
         let thumbCycleInterval = null;
@@ -4968,6 +5511,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             currentBlobId = blobPath || url;
             currentVideoKey = (url.startsWith('/stream/') ? url.substring('/stream/'.length) : url);
             try {{ currentVideoKey = decodeURIComponent(currentVideoKey); }} catch (e) {{}}
+            highlightAndPromotePlayingVideo(currentVideoKey);
             playerTitle.textContent = title || "Decrypted Stream";
             box.style.display = 'block';
             resetAudioMode();
