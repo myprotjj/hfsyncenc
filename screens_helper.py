@@ -208,4 +208,4 @@ def get_screens_thumb_path(safe_id: str) -> str:
 
 
 def has_screens(safe_id: str) -> bool:
-    return bool(get_screens_path(safe_id) or get_screens_thumb_path(safe_id))
+    return bool(get_screens_path(safe_id))

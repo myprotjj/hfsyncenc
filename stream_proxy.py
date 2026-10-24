@@ -130,6 +130,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         obfuscated_blob = crypto_engine.get_obfuscated_blob_path(rel_in_repo, self.name_key)
         return repo_id, obfuscated_blob
 
+    def resolve_key_from_id_or_path(self, raw_id: str) -> str:
+        clean = unquote(raw_id).strip("/").replace("\\", "/")
+        manifest = load_manifest()
+        # 1. Exact key match
+        if clean in manifest.get("files", {}):
+            return clean
+        # 2. Match by safe_id or file_names or aliases
+        for k, v in manifest.get("files", {}).items():
+            if storyboard_helper.get_safe_id(k) == clean:
+                return k
+            if clean in (v.get("file_names") or []) or clean in (v.get("aliases") or []):
+                return k
+        return clean
+
     def get_file_metadata(self, path_after_stream: str, repo_id: str = None, blob_path: str = None):
         is_custom_blob = bool(repo_id and blob_path)
         if is_custom_blob:
@@ -230,6 +244,26 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
+        elif path.startswith("/stream/play/"):
+            raw_id = path[len("/stream/play/"):].strip("/")
+            resolved_key = self.resolve_key_from_id_or_path(raw_id)
+            meta = self.get_file_metadata(resolved_key)
+            if not meta:
+                self.send_error(404, "File not found")
+                return
+
+            total_size = meta["header"]["total_size"]
+            mime, _ = mimetypes.guess_type(resolved_key)
+            content_type = mime or "video/mp4"
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition", "inline")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(total_size))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
         elif path.startswith("/stream/"):
             path_after_stream = path[len("/stream/"):]
             meta = self.get_file_metadata(path_after_stream)
@@ -243,6 +277,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", content_type)
+            self.send_header("Content-Disposition", "inline")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(total_size))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -1432,6 +1468,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     print(f"[!] Warning on-demand restoring screens {safe_id}: {e}")
 
         if not img_path or not os.path.exists(img_path):
+            img_path = storyboard_helper.get_storyboard_image_path(safe_id) if safe_id else None
+
+        if not img_path or not os.path.exists(img_path):
             self.send_error(404, "Screens image not found")
             return
 
@@ -1630,6 +1669,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         elif path.startswith("/stream/audio/"):
             key_after = path[len("/stream/audio/"):]
             self.handle_stream_audio(key_after)
+        elif path.startswith("/stream/play/"):
+            raw_id = path[len("/stream/play/"):].strip("/")
+            resolved_key = self.resolve_key_from_id_or_path(raw_id)
+            self.handle_stream(resolved_key)
         elif path.startswith("/stream/"):
             path_after_stream = path[len("/stream/"):]
             self.handle_stream(path_after_stream)
@@ -1701,6 +1744,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
+                audio_entry = info.get("audio")
+                if audio_entry and audio_entry.get("size_bytes"):
+                    audio_size_str = f"{audio_entry['size_bytes'] / (1024 * 1024):.1f} MB"
+                elif dur_sec and dur_sec > 0:
+                    audio_size_str = f"~{(dur_sec * 16 * 1024) / (1024 * 1024):.1f} MB"
+                else:
+                    audio_size_str = "Audio"
+                audio_codec = (media_info.get("audio_codec") if media_info else None) or "AAC"
+
                 item = {
                     "key": key,
                     "safe_id": safe_id,
@@ -1717,6 +1769,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     "hf_url": hf_url,
                     "size_bytes": size_bytes,
                     "size_str": f"{size_bytes / (1024 * 1024):.2f} MB",
+                    "audio_size_str": audio_size_str,
+                    "audio_codec": audio_codec,
                     "uploaded_at": info.get("uploaded_at", "N/A"),
                     "file_names": file_names,
                     "aliases": aliases,
@@ -1813,6 +1867,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
+                audio_entry = info.get("audio")
+                if audio_entry and audio_entry.get("size_bytes"):
+                    audio_size_str = f"{audio_entry['size_bytes'] / (1024 * 1024):.1f} MB"
+                elif dur_sec and dur_sec > 0:
+                    audio_size_str = f"~{(dur_sec * 16 * 1024) / (1024 * 1024):.1f} MB"
+                else:
+                    audio_size_str = "Audio"
+                audio_codec = (media_info.get("audio_codec") if media_info else None) or "AAC"
+
                 item = {
                     "key": key,
                     "safe_id": safe_id,
@@ -1829,6 +1892,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     "hf_url": hf_url,
                     "size_bytes": size_bytes,
                     "size_str": f"{size_bytes / (1024 * 1024):.2f} MB",
+                    "audio_size_str": audio_size_str,
+                    "audio_codec": audio_codec,
                     "uploaded_at": info.get("uploaded_at", "N/A"),
                     "file_names": file_names,
                     "aliases": aliases,
@@ -2419,19 +2484,69 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         /* Auto-Activating Floating Popup Mini-Player */
         .yt-container.is-floating-mini {{
             position: fixed !important;
-            bottom: 24px !important;
-            right: 24px !important;
-            width: 380px !important;
-            max-width: calc(100vw - 48px) !important;
+            bottom: 24px;
+            right: 24px;
+            width: 480px;
+            max-width: calc(100vw - 24px) !important;
             aspect-ratio: 16 / 9 !important;
             height: auto !important;
-            max-height: 240px !important;
+            max-height: 270px;
             z-index: 99999 !important;
             border-radius: 12px !important;
             box-shadow: 0 16px 45px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
             overflow: hidden !important;
             animation: yt-float-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
             backdrop-filter: blur(8px) !important;
+            touch-action: none;
+        }}
+        .yt-container.is-floating-mini.mini-size-s {{
+            width: 360px !important;
+            max-height: 202px !important;
+        }}
+        .yt-container.is-floating-mini.mini-size-m {{
+            width: 500px !important;
+            max-height: 281px !important;
+        }}
+        .yt-container.is-floating-mini.mini-size-l {{
+            width: 680px !important;
+            max-height: 382px !important;
+        }}
+        .yt-container.is-floating-mini .yt-top-overlay {{
+            cursor: move;
+            user-select: none;
+        }}
+        .yt-mini-size-controls {{
+            display: none;
+        }}
+        .yt-container.is-floating-mini .yt-mini-size-controls {{
+            display: inline-flex !important;
+            align-items: center;
+            gap: 2px;
+            background: rgba(0, 0, 0, 0.45);
+            border-radius: 4px;
+            padding: 1px 3px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            margin-right: 4px;
+        }}
+        .yt-mini-size-btn {{
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }}
+        .yt-mini-size-btn:hover {{
+            color: #fff;
+            background: rgba(255, 255, 255, 0.2);
+        }}
+        .yt-mini-size-btn.active {{
+            color: #040711;
+            background: var(--primary);
+            box-shadow: 0 0 6px rgba(56, 189, 248, 0.6);
         }}
         @keyframes yt-float-in {{
             from {{ transform: translateY(30px) scale(0.92); opacity: 0; }}
@@ -3117,17 +3232,66 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .card-size-badge {{
             position: absolute;
             top: 6px;
-            right: 6px;
-            background: rgba(0, 0, 0, 0.82);
+            left: 6px;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(4px);
             color: #93c5fd;
             font-size: 0.65rem;
             font-weight: 600;
             font-family: monospace;
-            padding: 2px 6px;
+            padding: 2px 7px;
             border-radius: 4px;
             pointer-events: none;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            z-index: 2;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            z-index: 3;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+            transition: opacity 0.15s ease;
+        }}
+        .card-size-badge .badge-asize {{
+            color: #a7f3d0;
+        }}
+        .card-resume-bar {{
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            height: 3.5px;
+            background: #ef4444;
+            box-shadow: 0 0 6px rgba(239, 68, 68, 0.85);
+            z-index: 4;
+            pointer-events: none;
+            transition: width 0.2s ease;
+        }}
+        .card-resume-badge {{
+            position: absolute;
+            bottom: 6px;
+            left: 6px;
+            background: rgba(220, 38, 38, 0.9);
+            backdrop-filter: blur(4px);
+            color: #ffffff;
+            font-size: 0.62rem;
+            font-weight: 700;
+            font-family: monospace;
+            padding: 1px 6px;
+            border-radius: 4px;
+            pointer-events: none;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            z-index: 3;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+            transition: opacity 0.15s ease;
+        }}
+        .video-thumb-card:hover .card-resume-badge {{
+            opacity: 0;
+        }}
+        .meta-pill, .genre-pill, .tag-pill, .account-pill {{
+            cursor: pointer !important;
+            transition: transform 0.12s ease, filter 0.12s ease;
+        }}
+        .meta-pill:hover, .genre-pill:hover, .tag-pill:hover, .account-pill:hover {{
+            filter: brightness(1.25) !important;
+            transform: scale(1.05) !important;
         }}
         .video-card-body {{
             padding: 10px 12px 8px 12px;
@@ -4147,6 +4311,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <span id="playerTitle" class="yt-video-title">Now Playing</span>
                     </div>
                     <div class="yt-top-actions">
+                        <div class="yt-mini-size-controls" title="Change Popup Player Size">
+                            <button type="button" class="yt-mini-size-btn" data-size="s" onclick="setMiniPlayerSize('s', event)" title="Small (360px)">S</button>
+                            <button type="button" class="yt-mini-size-btn active" data-size="m" onclick="setMiniPlayerSize('m', event)" title="Medium (500px)">M</button>
+                            <button type="button" class="yt-mini-size-btn" data-size="l" onclick="setMiniPlayerSize('l', event)" title="Large (680px)">L</button>
+                        </div>
                         <button type="button" class="yt-btn yt-btn-icon yt-mini-expand-btn" onclick="expandFromFloatingMini()" title="Expand to Main View">
                             <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
                         </button>
@@ -4615,10 +4784,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (!modal || !img) return;
 
             const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
-            let url = '/api/screens/image?id=' + encodeURIComponent(safeId);
-            if (fileObj && !fileObj.has_screens && fileObj.has_storyboard) {{
-                const sb = storyboardCache[safeId];
-                url = sb ? sb.sprite_url : ('/api/storyboard/image?id=' + encodeURIComponent(safeId) + '&v=' + Date.now());
+            const sb = storyboardCache[safeId];
+            let url = '';
+            if (sb && sb.sprite_url) {{
+                url = sb.sprite_url;
+            }} else if (fileObj && fileObj.has_storyboard) {{
+                const v = fileObj.sb_version || Date.now();
+                url = `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{v}}`;
+            }} else {{
+                url = `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }}
 
             img.src = url;
@@ -4749,7 +4923,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (meta.year) badgesHtml += `<span class="meta-pill year-pill">&#128197; ${{escapeHtml(meta.year)}}</span>`;
             if (meta.rating) badgesHtml += `<span class="meta-pill rating-pill">&#11088; ${{escapeHtml(meta.rating)}}</span>`;
             genres.forEach(g => {{
-                badgesHtml += `<span class="meta-pill genre-pill">&#127916; ${{escapeHtml(g)}}</span>`;
+                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Click to filter by genre: ${{escapeHtml(g)}}">&#127916; ${{escapeHtml(g)}}</span>`;
             }});
             tags.forEach(t => {{
                 const tl = String(t).trim().toLowerCase();
@@ -4773,7 +4947,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl === 'gameplay') {{ cls = 'gameplay-pill'; icon = '&#128377;'; }}
                 else if (tl === 'music video') {{ cls = 'music-pill'; icon = '&#127925;'; }}
                 else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
-                badgesHtml += `<span class="meta-pill ${{cls}}">${{icon}} ${{escapeHtml(t)}}</span>`;
+                badgesHtml += `<span class="meta-pill ${{cls}}" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')" title="Click to filter by tag: ${{escapeHtml(t)}}">${{icon}} ${{escapeHtml(t)}}</span>`;
             }});
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
@@ -4787,7 +4961,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const accountOwner = f.account || primaryAccount;
             const isPrimary = (accountOwner === primaryAccount);
-            const accountBadge = `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
+            const accountBadge = `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}" onclick="event.stopPropagation(); addQuickFilter('account', '${{escapeHtml(accountOwner)}}')" title="Click to filter by account: ${{escapeHtml(accountOwner)}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
 
             const aliases = f.aliases || [];
             const otherAliases = aliases.filter(a => {{
@@ -4824,16 +4998,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const durationStr = f.duration_str || (f.duration_sec ? formatTime(f.duration_sec) : '');
             const durationHtml = durationStr ? `<div class="card-duration-badge">${{escapeHtml(durationStr)}}</div>` : '';
 
+            const savedPos = getSavedVideoPosition(safeId);
+            let resumeBarHtml = '';
+            let resumePillHtml = '';
+            if (savedPos && savedPos.time > 5 && savedPos.duration > 0) {{
+                const pct = Math.min(100, Math.round((savedPos.time / savedPos.duration) * 100));
+                resumeBarHtml = `<div class="card-resume-bar" style="width: ${{pct}}%;"></div>`;
+                resumePillHtml = `<div class="card-resume-badge" title="Resume at ${{formatTime(savedPos.time)}} / ${{formatTime(savedPos.duration)}}">⏱️ ${{formatTime(savedPos.time)}}</div>`;
+            }}
+            const audioSizeStr = f.audio_size_str || 'Audio';
+
             return `
             <div class="video-card" data-key="${{escapeHtml(f.key)}}">
                 <div class="video-card-thumb video-thumb-card" 
                      data-key="${{escapeHtml(f.key)}}" 
                      data-safeid="${{safeId}}"
-                     onclick="playVideo('/stream/${{escapeHtml(f.key)}}', '${{escapeHtml(title)}}', '${{escapeHtml(f.blob_path || '')}}')"
+                     data-duration="${{f.duration_sec || 0}}"
+                     onclick="handleCardThumbClick(this, event)"
                      onmouseenter="handleThumbEnter(this)"
                      onmouseleave="handleThumbLeave(this)"
                      onmousemove="handleThumbMove(this, event)"
-                     title="Click to play, hover to preview screenshots">
+                     title="Click to play from scrub position">
                     <div class="thumb-canvas" id="thumb-canvas-${{safeId}}" style="${{thumbBgStyle}}">
                         ${{fallbackHtml}}
                     </div>
@@ -4843,10 +5028,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    <div class="thumb-badge">${{hasStoryboard ? '100 HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
                     ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res 100-Screen Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
-                    <div class="card-size-badge">${{escapeHtml(f.size_str)}}</div>
+                    <div class="card-size-badge" title="Video size: ${{escapeHtml(f.size_str)}}, Audio: ${{escapeHtml(audioSizeStr)}}">
+                        <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
+                        <span class="badge-asize"> • 🎵 ${{escapeHtml(audioSizeStr)}}</span>
+                    </div>
+                    ${{resumePillHtml}}
                     ${{durationHtml}}
+                    ${{resumeBarHtml}}
                 </div>
                 
                 <div class="video-card-body">
@@ -4892,7 +5081,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (meta.year) badgesHtml += `<span class="meta-pill year-pill">&#128197; ${{escapeHtml(meta.year)}}</span>`;
             if (meta.rating) badgesHtml += `<span class="meta-pill rating-pill">&#11088; ${{escapeHtml(meta.rating)}}</span>`;
             genres.forEach(g => {{
-                badgesHtml += `<span class="meta-pill genre-pill">&#127916; ${{escapeHtml(g)}}</span>`;
+                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Click to filter by genre: ${{escapeHtml(g)}}">&#127916; ${{escapeHtml(g)}}</span>`;
             }});
             tags.forEach(t => {{
                 const tl = String(t).trim().toLowerCase();
@@ -4916,7 +5105,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl === 'gameplay') {{ cls = 'gameplay-pill'; icon = '&#128377;'; }}
                 else if (tl === 'music video') {{ cls = 'music-pill'; icon = '&#127925;'; }}
                 else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
-                badgesHtml += `<span class="meta-pill ${{cls}}">${{icon}} ${{escapeHtml(t)}}</span>`;
+                badgesHtml += `<span class="meta-pill ${{cls}}" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')" title="Click to filter by tag: ${{escapeHtml(t)}}">${{icon}} ${{escapeHtml(t)}}</span>`;
             }});
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
@@ -4930,7 +5119,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const accountOwner = f.account || primaryAccount;
             const isPrimary = (accountOwner === primaryAccount);
-            const accountBadge = `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
+            const accountBadge = `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}" onclick="event.stopPropagation(); addQuickFilter('account', '${{escapeHtml(accountOwner)}}')" title="Click to filter by account: ${{escapeHtml(accountOwner)}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
 
             const aliases = f.aliases || [];
             const otherAliases = aliases.filter(a => {{
@@ -4967,16 +5156,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const durationStr = f.duration_str || (f.duration_sec ? formatTime(f.duration_sec) : '');
             const durationHtml = durationStr ? `<div class="card-duration-badge list-duration-badge">${{escapeHtml(durationStr)}}</div>` : '';
 
+            const savedPos = getSavedVideoPosition(safeId);
+            let resumeBarHtml = '';
+            let resumePillHtml = '';
+            if (savedPos && savedPos.time > 5 && savedPos.duration > 0) {{
+                const pct = Math.min(100, Math.round((savedPos.time / savedPos.duration) * 100));
+                resumeBarHtml = `<div class="card-resume-bar" style="width: ${{pct}}%;"></div>`;
+                resumePillHtml = `<div class="card-resume-badge" title="Resume at ${{formatTime(savedPos.time)}} / ${{formatTime(savedPos.duration)}}">⏱️ ${{formatTime(savedPos.time)}}</div>`;
+            }}
+            const audioSizeStr = f.audio_size_str || 'Audio';
+
             return `
             <div class="file-row" data-key="${{escapeHtml(f.key)}}">
                 <div class="video-thumb-card" 
                      data-key="${{escapeHtml(f.key)}}" 
                      data-safeid="${{safeId}}"
-                     onclick="playVideo('/stream/${{escapeHtml(f.key)}}', '${{escapeHtml(title)}}', '${{escapeHtml(f.blob_path || '')}}')"
+                     data-duration="${{f.duration_sec || 0}}"
+                     onclick="handleCardThumbClick(this, event)"
                      onmouseenter="handleThumbEnter(this)"
                      onmouseleave="handleThumbLeave(this)"
                      onmousemove="handleThumbMove(this, event)"
-                     title="Click to play, hover to preview screenshots">
+                     title="Click to play from scrub position">
                     <div class="thumb-canvas" id="thumb-canvas-${{safeId}}" style="${{thumbBgStyle}}">
                         ${{fallbackHtml}}
                     </div>
@@ -4986,9 +5186,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    <div class="thumb-badge">${{hasStoryboard ? '100 HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
                     ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
+                    ${{resumePillHtml}}
                     ${{durationHtml}}
+                    ${{resumeBarHtml}}
                 </div>
                 <div style="flex: 1; min-width: 0;">
                     <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
@@ -4998,7 +5199,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     ${{overviewHtml}}
                     <div class="meta-badges">
                         ${{accountBadge}}
-                        <span class="file-meta">${{f.size_str}}</span>
+                        <span class="file-meta">💾 ${{f.size_str}} • 🎵 ${{audioSizeStr}}</span>
                         ${{badgesHtml}}
                         ${{aliasBadge}}
                         ${{subBadge}}
@@ -5124,6 +5325,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const text = item.getAttribute('data-val') || '';
                 item.style.display = (!q || text.toLowerCase().includes(q)) ? 'flex' : 'none';
             }});
+        }}
+
+        function addQuickFilter(type, val) {{
+            if (!val) return;
+            const clean = String(val).trim();
+            if (type === 'genre') {{
+                selectedGenres.add(clean);
+            }} else if (type === 'tag') {{
+                selectedTags.add(clean);
+            }} else if (type === 'account') {{
+                selectedAccounts.add(clean);
+            }}
+            updateFilterBadges();
+            populateFilterDropdowns();
+            filterTree();
+            showToast(`Filter added: ${{clean}}`);
         }}
 
         function toggleFilterSelection(type, val) {{
@@ -5944,6 +6161,174 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}, {{ passive: true }});
         }}
 
+        function savePlayerVolume(vol, muted) {{
+            try {{
+                localStorage.setItem('hfsync_player_vol', String(typeof vol === 'number' ? vol : 1.0));
+                localStorage.setItem('hfsync_player_muted', muted ? '1' : '0');
+            }} catch (e) {{}}
+        }}
+
+        function restorePlayerVolume() {{
+            const player = document.getElementById('videoPlayer');
+            if (!player) return;
+            try {{
+                const savedVol = localStorage.getItem('hfsync_player_vol');
+                const savedMuted = localStorage.getItem('hfsync_player_muted');
+                if (savedVol !== null && !isNaN(parseFloat(savedVol))) {{
+                    player.volume = Math.max(0, Math.min(1, parseFloat(savedVol)));
+                }}
+                if (savedMuted !== null) {{
+                    player.muted = (savedMuted === '1');
+                }}
+            }} catch (e) {{}}
+            updateVolumeUI();
+        }}
+
+        let lastPosSaveTime = 0;
+        function saveVideoPosition(safeId, time, duration) {{
+            if (!safeId) return;
+            try {{
+                localStorage.setItem('hfsync_pos_' + safeId, JSON.stringify({{
+                    time: Math.floor(time),
+                    duration: Math.floor(duration),
+                    updated: Date.now()
+                }}));
+            }} catch (e) {{}}
+            updateCardResumeIndicators(safeId, time, duration);
+        }}
+
+        function getSavedVideoPosition(safeId) {{
+            if (!safeId) return null;
+            try {{
+                const raw = localStorage.getItem('hfsync_pos_' + safeId);
+                if (raw) return JSON.parse(raw);
+            }} catch (e) {{}}
+            return null;
+        }}
+
+        function clearVideoPosition(safeId) {{
+            if (!safeId) return;
+            try {{
+                localStorage.removeItem('hfsync_pos_' + safeId);
+            }} catch (e) {{}}
+            updateCardResumeIndicators(safeId, 0, 0);
+        }}
+
+        function updateCardResumeIndicators(safeId, time, duration) {{
+            const cards = document.querySelectorAll(`[data-safeid="${{safeId}}"]`);
+            cards.forEach(card => {{
+                let resumeBar = card.querySelector('.card-resume-bar');
+                let resumePill = card.querySelector('.card-resume-badge');
+                if (time > 5 && duration > 0) {{
+                    const pct = Math.min(100, Math.round((time / duration) * 100));
+                    if (!resumeBar) {{
+                        resumeBar = document.createElement('div');
+                        resumeBar.className = 'card-resume-bar';
+                        card.appendChild(resumeBar);
+                    }}
+                    resumeBar.style.width = pct + '%';
+                    resumeBar.style.display = 'block';
+
+                    if (!resumePill) {{
+                        resumePill = document.createElement('div');
+                        resumePill.className = 'card-resume-badge';
+                        card.appendChild(resumePill);
+                    }}
+                    resumePill.textContent = '⏱️ ' + formatTime(time);
+                    resumePill.title = `Resume at ${{formatTime(time)}} / ${{formatTime(duration)}} (${{pct}}%)`;
+                    resumePill.style.display = 'block';
+                }} else {{
+                    if (resumeBar) resumeBar.style.display = 'none';
+                    if (resumePill) resumePill.style.display = 'none';
+                }}
+            }});
+        }}
+
+        function setMiniPlayerSize(size, event) {{
+            if (event) event.stopPropagation();
+            const container = document.getElementById('ytContainer');
+            if (!container) return;
+            const valid = ['s', 'm', 'l'];
+            const s = valid.includes(size) ? size : 'm';
+            container.classList.remove('mini-size-s', 'mini-size-m', 'mini-size-l');
+            container.classList.add('mini-size-' + s);
+            try {{
+                localStorage.setItem('hfsync_mini_size', s);
+            }} catch (e) {{}}
+            document.querySelectorAll('.yt-mini-size-btn').forEach(b => {{
+                b.classList.toggle('active', b.dataset.size === s);
+            }});
+        }}
+
+        function initMiniPlayerDraggable() {{
+            const container = document.getElementById('ytContainer');
+            const header = container ? container.querySelector('.yt-top-overlay') : null;
+            if (!container || !header || container.dataset.draggableInited) return;
+            container.dataset.draggableInited = "1";
+
+            let isDragging = false;
+            let startX = 0, startY = 0;
+            let initialLeft = 0, initialTop = 0;
+
+            header.addEventListener('pointerdown', (e) => {{
+                if (!container.classList.contains('is-floating-mini')) return;
+                if (e.target.closest('button') || e.target.closest('a') || e.target.closest('.yt-mini-size-controls')) return;
+
+                isDragging = true;
+                header.setPointerCapture(e.pointerId);
+                const rect = container.getBoundingClientRect();
+                initialLeft = rect.left;
+                initialTop = rect.top;
+                startX = e.clientX;
+                startY = e.clientY;
+
+                container.style.bottom = 'auto';
+                container.style.right = 'auto';
+                container.style.left = `${{initialLeft}}px`;
+                container.style.top = `${{initialTop}}px`;
+                container.style.userSelect = 'none';
+            }});
+
+            header.addEventListener('pointermove', (e) => {{
+                if (!isDragging) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                const newLeft = Math.max(6, Math.min(window.innerWidth - container.offsetWidth - 6, initialLeft + dx));
+                const newTop = Math.max(6, Math.min(window.innerHeight - container.offsetHeight - 6, initialTop + dy));
+                container.style.left = `${{newLeft}}px`;
+                container.style.top = `${{newTop}}px`;
+            }});
+
+            const endDrag = (e) => {{
+                if (isDragging) {{
+                    isDragging = false;
+                    container.style.userSelect = '';
+                    try {{ header.releasePointerCapture(e.pointerId); }} catch (err) {{}}
+                }}
+            }};
+            header.addEventListener('pointerup', endDrag);
+            header.addEventListener('pointercancel', endDrag);
+        }}
+
+        function handleCardThumbClick(card, event) {{
+            if (!card) return;
+            if (event && (event.target.closest('button') || event.target.closest('a'))) return;
+            const key = card.dataset.key;
+            const safeId = card.dataset.safeid;
+            const fileObj = (allFiles || []).find(f => f.key === key || f.safe_id === safeId);
+            const title = fileObj ? (fileObj.metadata?.title || key) : key;
+            const blobPath = fileObj ? (fileObj.blob_path || '') : '';
+            const dur = fileObj ? (fileObj.duration_sec || 0) : 0;
+
+            let seekTime = 0;
+            if (dur > 0 && event && event.clientX) {{
+                const rect = card.getBoundingClientRect();
+                const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+                seekTime = Math.floor(pct * dur);
+            }}
+            playVideo('/stream/' + key, title, blobPath, seekTime);
+        }}
+
         function activateFloatingMiniPlayer() {{
             const box = document.getElementById('playerBox');
             const container = document.getElementById('ytContainer');
@@ -5957,6 +6342,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
             container.classList.add('is-floating-mini');
             isFloatingMini = true;
+
+            // Always reset position to bottom right on every activation/open
+            container.style.left = '';
+            container.style.top = '';
+            container.style.bottom = '24px';
+            container.style.right = '24px';
+
+            let savedSize = 'm';
+            try {{ savedSize = localStorage.getItem('hfsync_mini_size') || 'm'; }} catch (e) {{}}
+            setMiniPlayerSize(savedSize);
+            initMiniPlayerDraggable();
         }}
 
         function deactivateFloatingMiniPlayer() {{
@@ -5965,6 +6361,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (!box || !container || !isFloatingMini) return;
 
             container.classList.remove('is-floating-mini');
+            container.style.left = '';
+            container.style.top = '';
+            container.style.bottom = '';
+            container.style.right = '';
             box.style.minHeight = '';
             isFloatingMini = false;
         }}
@@ -5999,7 +6399,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             setTimeout(() => fb.classList.remove('show'), 450);
         }}
 
-        function playVideo(url, title, blobPath) {{
+        function playVideo(url, title, blobPath, startTime) {{
             const box = document.getElementById('playerBox');
             const player = document.getElementById('videoPlayer');
             const playerTitle = document.getElementById('playerTitle');
@@ -6010,11 +6410,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             currentBlobId = blobPath || url;
             currentVideoKey = (url.startsWith('/stream/') ? url.substring('/stream/'.length) : url);
             try {{ currentVideoKey = decodeURIComponent(currentVideoKey); }} catch (e) {{}}
+            
+            const fileObj = (allFiles || []).find(f => f.key === currentVideoKey || (f.file_names && f.file_names.includes(currentVideoKey)));
+            const safeId = fileObj ? fileObj.safe_id : currentVideoKey;
+
             highlightAndPromotePlayingVideo(currentVideoKey);
             playerTitle.textContent = title || "Decrypted Stream";
             box.style.display = 'block';
             resetAudioMode();
             updateSubtitleTracks(currentVideoKey);
+            restorePlayerVolume();
 
             // Check if user is scrolled down away from main player
             const rect = box.getBoundingClientRect();
@@ -6026,7 +6431,35 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 deactivateFloatingMiniPlayer();
             }}
 
-            player.src = url;
+            // Use /stream/play/{safeId} (no .mp4 extension) to completely avoid IDM capture:
+            const streamPlayUrl = '/stream/play/' + encodeURIComponent(safeId);
+            player.src = streamPlayUrl;
+
+            // Target resume position or scrub seek point:
+            let targetSeek = 0;
+            if (typeof startTime === 'number' && startTime > 0) {{
+                targetSeek = startTime;
+            }} else {{
+                const savedPos = getSavedVideoPosition(safeId);
+                if (savedPos && savedPos.time > 5) {{
+                    targetSeek = savedPos.time;
+                }}
+            }}
+
+            if (targetSeek > 0) {{
+                const applySeek = () => {{
+                    try {{
+                        player.currentTime = targetSeek;
+                        flashCenterFeedback(`Position: ${{formatTime(targetSeek)}}`);
+                    }} catch (err) {{}}
+                }};
+                if (player.readyState >= 1) {{
+                    applySeek();
+                }} else {{
+                    player.addEventListener('loadedmetadata', applySeek, {{ once: true }});
+                }}
+            }}
+
             player.play().catch(() => {{}});
 
             if (!isScrolledDown && container) {{
@@ -6036,6 +6469,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             initYtPlayerEvents();
             loadStoryboard(url, player.duration);
             initFloatingScrollObserver();
+            initMiniPlayerDraggable();
             resetControlsTimer();
         }}
 
@@ -6044,6 +6478,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             deactivateFloatingMiniPlayer();
             const box = document.getElementById('playerBox');
             const player = document.getElementById('videoPlayer');
+            const container = document.getElementById('ytContainer');
+            if (container) {{
+                container.style.left = '';
+                container.style.top = '';
+                container.style.bottom = '24px';
+                container.style.right = '24px';
+            }}
             if (document.fullscreenElement) {{
                 document.exitFullscreen().catch(() => {{}});
             }}
@@ -6079,6 +6520,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         function toggleMute() {{
             const player = document.getElementById('videoPlayer');
             player.muted = !player.muted;
+            savePlayerVolume(player.volume, player.muted);
             updateVolumeUI();
         }}
 
@@ -6239,7 +6681,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (spinner) spinner.style.display = 'none';
             }});
 
-            // Time & Buffer Tracking
+            restorePlayerVolume();
+
+            // Time & Buffer Tracking & Resume Position Saving
             player.addEventListener('timeupdate', () => {{
                 if (!player.duration) return;
                 const pct = (player.currentTime / player.duration) * 100;
@@ -6253,7 +6697,29 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     const bufPct = (bufEnd / player.duration) * 100;
                     scrubBuffered.style.width = `${{Math.min(100, bufPct)}}%`;
                 }}
+
+                // Save watched progress for resume
+                const now = Date.now();
+                if (now - lastPosSaveTime > 2000 && currentVideoKey && player.duration > 15) {{
+                    lastPosSaveTime = now;
+                    const cur = player.currentTime;
+                    const dur = player.duration;
+                    const fileObj = (allFiles || []).find(f => f.key === currentVideoKey || (f.file_names && f.file_names.includes(currentVideoKey)));
+                    const safeId = fileObj ? fileObj.safe_id : currentVideoKey;
+                    if (cur > 5 && cur < dur - 10) {{
+                        saveVideoPosition(safeId, cur, dur);
+                    }} else if (cur >= dur - 10) {{
+                        clearVideoPosition(safeId);
+                    }}
+                }}
+
                 updateStatsForNerds();
+            }});
+
+            player.addEventListener('ended', () => {{
+                const fileObj = (allFiles || []).find(f => f.key === currentVideoKey || (f.file_names && f.file_names.includes(currentVideoKey)));
+                const safeId = fileObj ? fileObj.safe_id : currentVideoKey;
+                clearVideoPosition(safeId);
             }});
 
             player.addEventListener('loadedmetadata', () => {{
@@ -6351,6 +6817,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }} else if (newVol === 0) {{
                     player.muted = true;
                 }}
+                savePlayerVolume(player.volume, player.muted);
                 updateVolumeUI();
                 flashCenterFeedback(`Vol ${{Math.round(player.volume * 100)}}%`);
                 resetControlsTimer();
@@ -6368,6 +6835,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 volSlider.addEventListener('input', (e) => {{
                     player.volume = parseFloat(e.target.value);
                     player.muted = false;
+                    savePlayerVolume(player.volume, player.muted);
                     updateVolumeUI();
                 }});
                 volSlider.addEventListener('wheel', handleVolumeWheel, {{ passive: false }});
@@ -6599,6 +7067,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (topTrackList) {{
                 topTrackList.innerHTML = tracksHtml;
             }}
+
+            let preferredLang = 'off';
+            try {{
+                preferredLang = localStorage.getItem('hfsync_sub_' + key) || localStorage.getItem('hfsync_sub_global') || 'off';
+            }} catch (e) {{}}
+
+            const matchingSub = subs.find(s => s.lang === preferredLang || (s.label && s.label.toLowerCase() === preferredLang.toLowerCase()));
+            if (preferredLang !== 'off' && matchingSub) {{
+                setSubtitleTrack(matchingSub.lang);
+            }} else {{
+                setSubtitleTrack('off');
+            }}
         }}
 
         function setSubtitleTrack(lang) {{
@@ -6606,6 +7086,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const menu = document.getElementById('ytSubMenu');
             const topMenu = document.getElementById('ytTopSubMenu');
             currentSubLang = lang;
+
+            if (currentVideoKey) {{
+                try {{
+                    localStorage.setItem('hfsync_sub_' + currentVideoKey, lang);
+                    if (lang !== 'off') localStorage.setItem('hfsync_sub_global', lang);
+                }} catch (e) {{}}
+            }}
 
             if (player && player.textTracks) {{
                 for (let i = 0; i < player.textTracks.length; i++) {{
@@ -7973,6 +8460,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", content_type)
                 if custom_content_type and "audio" in custom_content_type:
                     self.send_header("Content-Disposition", f'inline; filename="{Path(clean_key).stem}.m4a"')
+                else:
+                    self.send_header("Content-Disposition", "inline")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
                 self.send_header("Content-Length", str(req_len))
                 self.send_header("Accept-Ranges", "bytes")
@@ -8025,6 +8515,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
             if custom_content_type and "audio" in custom_content_type:
                 self.send_header("Content-Disposition", f'inline; filename="{Path(clean_key).stem}.m4a"')
+            else:
+                self.send_header("Content-Disposition", "inline")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(total_size))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Access-Control-Allow-Origin", "*")
