@@ -323,6 +323,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 rec["metadata"]["duration"] = mi.get("duration_str", "")
 
                                 metadata_helper.write_nfo_files("jellyfin_library", k, rec["metadata"], media_info=mi)
+                                storyboard_helper.update_storyboard_duration(k, mi.get("duration_sec", 0))
                                 updated_count += 1
                                 activity_tracker.tracker.add_event(
                                     "info",
@@ -333,6 +334,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             pass
                 if updated_count > 0:
                     save_manifest(manifest)
+                    try:
+                        acc = self.acc_mgr.get_upload_account() if hasattr(self, "acc_mgr") and self.acc_mgr else None
+                        if acc:
+                            for r_id in set(r.get("repo_id") for r in files.values() if r.get("repo_id")):
+                                r_files = {rk: rv for rk, rv in files.items() if rv.get("repo_id") == r_id}
+                                metadata_helper.sync_repo_manifest_to_hf(acc["api"], r_id, r_files, self.password)
+                    except Exception:
+                        pass
                 activity_tracker.tracker.add_event(
                     "success",
                     "Tech Specs Scan Complete",
@@ -1537,15 +1546,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 media_info = info.get("media_info")
                 sb_meta = storyboard_helper.get_storyboard_meta(key)
+                dur_sec = 0
+                duration_str = ""
                 if media_info and media_info.get("duration_sec"):
                     dur_sec = media_info.get("duration_sec", 0)
                     duration_str = media_info.get("duration_str") or format_duration(dur_sec)
                 elif sb_meta and sb_meta.get("duration"):
-                    dur_sec = sb_meta.get("duration", 0)
-                    duration_str = format_duration(dur_sec)
-                else:
-                    dur_sec = 0
-                    duration_str = ""
+                    raw_sb_dur = float(sb_meta.get("duration", 0))
+                    # Ignore 180.0 default fallback placeholder from storyboard generator
+                    if abs(raw_sb_dur - 180.0) > 0.05:
+                        dur_sec = raw_sb_dur
+                        duration_str = format_duration(dur_sec)
 
                 item = {
                     "key": key,
@@ -1639,15 +1650,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 media_info = info.get("media_info")
                 sb_meta = storyboard_helper.get_storyboard_meta(key)
+                dur_sec = 0
+                duration_str = ""
                 if media_info and media_info.get("duration_sec"):
                     dur_sec = media_info.get("duration_sec", 0)
                     duration_str = media_info.get("duration_str") or format_duration(dur_sec)
                 elif sb_meta and sb_meta.get("duration"):
-                    dur_sec = sb_meta.get("duration", 0)
-                    duration_str = format_duration(dur_sec)
-                else:
-                    dur_sec = 0
-                    duration_str = ""
+                    raw_sb_dur = float(sb_meta.get("duration", 0))
+                    # Ignore 180.0 default fallback placeholder from storyboard generator
+                    if abs(raw_sb_dur - 180.0) > 0.05:
+                        dur_sec = raw_sb_dur
+                        duration_str = format_duration(dur_sec)
 
                 item = {
                     "key": key,

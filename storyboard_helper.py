@@ -37,6 +37,28 @@ def get_safe_id(key: str) -> str:
     return hashlib.sha256(ck.encode("utf-8")).hexdigest()[:24]
 
 
+def update_storyboard_duration(key: str, real_duration: float) -> bool:
+    """Updates existing storyboard metadata JSON with the true probed duration."""
+    if not real_duration or real_duration <= 0:
+        return False
+    ck = clean_key(key)
+    safe_id = get_safe_id(ck)
+    json_path = os.path.join(STORYBOARD_DIR, f"{safe_id}.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["duration"] = round(real_duration, 2)
+            if data.get("total_frames"):
+                data["interval"] = round(real_duration / data["total_frames"], 3)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return True
+        except Exception:
+            pass
+    return False
+
+
 def get_storyboard_meta(key: str) -> dict:
     ck = clean_key(key)
     safe_id = get_safe_id(ck)

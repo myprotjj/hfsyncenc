@@ -332,6 +332,23 @@ class AccountManager:
                         orig_n = Path(key).name
                         rec["aliases"] = [a for a in rec["aliases"] if a != orig_n and a.lower() != orig_n.lower()]
 
+                    # Safely merge with existing local manifest record to protect local media specs
+                    existing = manifest.get("files", {}).get(key, {})
+                    if existing:
+                        if existing.get("media_info") and not rec.get("media_info"):
+                            rec["media_info"] = existing["media_info"]
+                        ex_meta = existing.get("metadata", {})
+                        if ex_meta:
+                            rec_meta = rec.get("metadata", {})
+                            if not rec_meta:
+                                rec["metadata"] = dict(ex_meta)
+                            elif ex_meta.get("tags") and not rec_meta.get("tags"):
+                                rec["metadata"]["tags"] = list(ex_meta["tags"])
+                            if ex_meta.get("genres") and not rec_meta.get("genres"):
+                                rec["metadata"]["genres"] = list(ex_meta["genres"])
+                            if ex_meta.get("title") and (not rec_meta.get("title") or rec_meta["title"].startswith("blob_")):
+                                rec["metadata"]["title"] = ex_meta["title"]
+
                     manifest["files"][key] = rec
 
                     media_hash = rec.get("media_hash") or rec.get("content_hash")
