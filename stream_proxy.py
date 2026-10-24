@@ -297,9 +297,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_delete_folder()
         elif path == "/api/metadata":
             self.handle_update_metadata()
+        elif path == "/api/folder-tags":
+            self.handle_folder_tags()
         elif path == "/api/sync-hf":
             self.handle_sync_hf()
-        elif path == "/api/restore-hf":
+        elif path in ("/api/restore-hf", "/api/recheck-cloud"):
             self.handle_restore_hf()
         elif path == "/api/delete-skipped":
             self.handle_delete_skipped()
@@ -831,7 +833,102 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp_body)
 
+    def handle_folder_tags(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            folder = str(req_data.get("folder", "")).strip().replace("\\", "/")
+            action = str(req_data.get("action", "")).strip().lower()
+            tag = str(req_data.get("tag", "")).strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
 
+        if not folder or action not in ("add", "remove") or not tag:
+            self.send_error(400, "Missing or invalid folder, action, or tag")
+            return
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        prefix = folder.rstrip("/") + "/"
+        matched_keys = [k for k in files if k == folder or k.replace("\\", "/").startswith(prefix)]
+
+        updated_count = 0
+        for k in matched_keys:
+            finfo = files[k]
+            meta = finfo.get("metadata") or {}
+            existing_tags = meta.get("tags") or []
+            if isinstance(existing_tags, str):
+                existing_tags = [t.strip() for t in existing_tags.split(",") if t.strip()]
+            elif isinstance(existing_tags, list):
+                existing_tags = [str(t).strip() for t in existing_tags if str(t).strip()]
+            else:
+                existing_tags = []
+
+            modified = False
+            if action == "add":
+                if tag not in existing_tags:
+                    existing_tags.append(tag)
+                    modified = True
+            elif action == "remove":
+                if tag in existing_tags:
+                    existing_tags = [t for t in existing_tags if t != tag]
+                    modified = True
+
+            if modified:
+                meta["tags"] = existing_tags
+                finfo["metadata"] = meta
+                finfo["verifier"] = crypto_engine.create_verifier(self.password)
+                try:
+                    metadata_helper.write_nfo_files("jellyfin_library", k, meta)
+                except Exception as e:
+                    logger.warning("Error writing NFO for %s: %s", k, e)
+                updated_count += 1
+
+        if updated_count > 0:
+            save_manifest(manifest)
+
+            # Sync updated items to HF in background so HTTP response is instant
+            def _bg_sync_hf(keys_to_sync):
+                try:
+                    m = load_manifest()
+                    repos_touched = set()
+                    for item_key in keys_to_sync:
+                        finfo = m.get("files", {}).get(item_key)
+                        if not finfo:
+                            continue
+                        repo_id = finfo.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                        repos_touched.add(repo_id)
+                        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        blob_path = finfo.get("blob_path") or finfo.get("remote_path")
+                        if blob_path:
+                            record = dict(finfo)
+                            record["full_key"] = item_key
+                            metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
+                    for r_id in repos_touched:
+                        api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                        metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                except Exception as ex:
+                    logger.warning("Background folder tag HF sync warning: %s", ex)
+
+            threading.Thread(target=_bg_sync_hf, args=(matched_keys,), daemon=True).start()
+
+        resp_body = json.dumps({
+            "success": True,
+            "folder": folder,
+            "action": action,
+            "tag": tag,
+            "updated_count": updated_count
+        }).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
 
     def handle_remove_alias(self):
         content_length = int(self.headers.get("Content-Length", 0))
@@ -1641,6 +1738,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_dashboard()
         elif path == "/api/files":
             self.handle_api_files()
+        elif path in ("/api/restore-hf", "/api/recheck-cloud"):
+            self.handle_restore_hf()
         elif path == "/api/accounts":
             self.handle_api_accounts()
         elif path == "/api/activity":
@@ -1991,31 +2090,210 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             padding: 24px;
         }}
         .container {{ max-width: 1140px; margin: 0 auto; }}
-        header {{
+        header, .vault-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
             border-bottom: 1px solid var(--panel-border);
-            padding-bottom: 20px;
-            margin-bottom: 24px;
-        }}
-        h1 {{ margin: 0; font-size: 1.6rem; color: var(--primary); display: flex; align-items: center; gap: 10px; }}
-        .stats-bar {{
-            display: flex;
-            gap: 16px;
+            padding: 4px 0 12px 0;
+            margin-bottom: 10px;
             flex-wrap: wrap;
-            margin-bottom: 20px;
+            gap: 12px;
         }}
-        .stat-card {{
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            padding: 12px 18px;
+        .vault-brand-cluster {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }}
+        .vault-brand-title {{
+            margin: 0;
+            font-size: 1.32rem;
+            color: var(--primary);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+        }}
+        .vault-actions-cluster {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }}
+
+        /* Status Pills (Always-On-Top Indicators) */
+        .status-pill {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            font-size: 0.74rem;
+            font-weight: 600;
+            letter-spacing: 0.2px;
+            transition: all 0.25s ease;
+            white-space: nowrap;
+        }}
+        .status-pill.status-online {{
+            background: rgba(16, 185, 129, 0.14);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #34d399;
+        }}
+        .status-pill.status-offline {{
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.6);
+            color: #fca5a5;
+            animation: pulse-alert 1.2s infinite alternate;
+        }}
+        .status-pill.status-idle {{
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #6ee7b7;
+        }}
+        .status-pill.status-active {{
+            background: rgba(56, 189, 248, 0.2);
+            border: 1px solid rgba(56, 189, 248, 0.55);
+            color: #7dd3fc;
+            animation: pulse-sync 1.5s infinite alternate;
+        }}
+        .status-pill.status-attention {{
+            background: rgba(245, 158, 11, 0.2);
+            border: 1px solid rgba(245, 158, 11, 0.6);
+            color: #fcd34d;
+            animation: pulse-alert 1.2s infinite alternate;
+        }}
+        @keyframes pulse-sync {{
+            from {{ box-shadow: 0 0 4px rgba(56, 189, 248, 0.3); }}
+            to {{ box-shadow: 0 0 12px rgba(56, 189, 248, 0.75); }}
+        }}
+        @keyframes pulse-alert {{
+            from {{ box-shadow: 0 0 4px rgba(239, 68, 68, 0.3); }}
+            to {{ box-shadow: 0 0 14px rgba(239, 68, 68, 0.85); transform: scale(1.02); }}
+        }}
+        .pill-dot {{
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            display: inline-block;
+        }}
+        .status-online .pill-dot, .status-idle .pill-dot {{ background: #10b981; box-shadow: 0 0 6px #10b981; }}
+        .status-offline .pill-dot {{ background: #ef4444; box-shadow: 0 0 6px #ef4444; }}
+        .status-active .pill-dot {{ background: #38bdf8; box-shadow: 0 0 6px #38bdf8; }}
+        .status-attention .pill-dot {{ background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }}
+
+        /* Minimalist Metrics Strip (Saves massive vertical space) */
+        .metrics-strip {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+            padding: 6px 12px;
+            background: rgba(17, 24, 39, 0.65);
+            border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 8px;
-            flex: 1;
-            min-width: 180px;
+            backdrop-filter: blur(8px);
         }}
-        .stat-label {{ font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; }}
-        .stat-value {{ font-size: 1.3rem; font-weight: bold; margin-top: 4px; color: #fff; }}
+        .metric-chip {{
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.78rem;
+            color: #9ca3af;
+            padding: 2px 7px;
+            border-radius: 6px;
+            transition: background 0.15s;
+        }}
+        .metric-chip.clickable {{
+            cursor: pointer;
+        }}
+        .metric-chip.clickable:hover {{
+            background: rgba(255, 255, 255, 0.06);
+            color: #fff;
+        }}
+        .metric-val {{
+            font-weight: 700;
+            color: #f3f4f6;
+            font-size: 0.86rem;
+        }}
+        .metric-divider {{
+            color: rgba(255, 255, 255, 0.15);
+            font-size: 0.8rem;
+        }}
+
+        /* Tree-Level Folder Tags Cluster */
+        .folder-tags-cluster {{
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 10px;
+            flex-wrap: wrap;
+        }}
+        .tree-tag-chip {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 1px 7px;
+            background: rgba(147, 51, 234, 0.18);
+            border: 1px solid rgba(147, 51, 234, 0.4);
+            border-radius: 4px;
+            color: #d8b4fe;
+            font-size: 0.72rem;
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }}
+        .tree-tag-chip:hover {{
+            background: rgba(147, 51, 234, 0.3);
+            border-color: #a855f7;
+        }}
+        .tree-tag-remove {{
+            cursor: pointer;
+            color: #fca5a5;
+            font-weight: bold;
+            margin-left: 2px;
+            padding: 0 2px;
+            border-radius: 2px;
+        }}
+        .tree-tag-remove:hover {{
+            background: rgba(239, 68, 68, 0.3);
+            color: #fff;
+        }}
+        .btn-tree-add-tag {{
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px dashed rgba(255, 255, 255, 0.25);
+            border-radius: 4px;
+            color: #9ca3af;
+            font-size: 0.68rem;
+            font-weight: 600;
+            padding: 1px 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }}
+        .btn-tree-add-tag:hover {{
+            background: rgba(56, 189, 248, 0.15);
+            border-color: #38bdf8;
+            color: #38bdf8;
+        }}
+
+        /* Hide Tags Mode */
+        .cards-hide-tags .video-card:not(.is-expanded) .video-card-badges,
+        .cards-hide-tags .file-row:not(.is-expanded) .row-badges {{
+            display: none !important;
+        }}
+        .video-card.is-expanded .video-card-badges {{
+            display: flex !important;
+            padding-top: 6px;
+            border-top: 1px dashed rgba(255, 255, 255, 0.1);
+            margin-top: 6px;
+        }}
+        .sticky-status-cluster {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: auto;
+        }}
         
         .skipped-banner {{
             background: rgba(245, 158, 11, 0.1);
@@ -2868,15 +3146,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             position: absolute;
             top: calc(100% + 6px);
             left: 0;
-            min-width: 240px;
-            max-width: 320px;
+            min-width: 260px;
+            max-width: 340px;
             background: #111827;
             border: 1px solid #374151;
             border-radius: 10px;
             box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.7), 0 8px 10px -6px rgba(0, 0, 0, 0.7);
             z-index: 1000;
-            padding: 10px;
-            backdrop-filter: blur(12px);
+            padding: 12px;
+            backdrop-filter: blur(16px);
         }}
         .popover-header {{
             display: flex;
@@ -2903,20 +3181,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .popover-actions {{
             display: flex;
             justify-content: space-between;
-            gap: 8px;
+            align-items: center;
+            gap: 6px;
         }}
         .popover-actions button {{
-            background: none;
-            border: none;
-            color: #9ca3af;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: #d1d5db;
             font-size: 0.75rem;
+            font-weight: 600;
             cursor: pointer;
-            padding: 2px 6px;
-            border-radius: 4px;
+            padding: 3px 9px;
+            border-radius: 5px;
+            transition: all 0.15s ease;
         }}
         .popover-actions button:hover {{
-            color: #38bdf8;
-            background: rgba(56, 189, 248, 0.1);
+            color: #fff;
+            background: rgba(56, 189, 248, 0.25);
+            border-color: #38bdf8;
         }}
         .popover-list {{
             max-height: 220px;
@@ -3751,17 +4033,43 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .modal {{
             background: var(--panel);
             border: 1px solid var(--panel-border);
-            padding: 24px;
+            padding: 20px 24px;
             border-radius: 12px;
-            max-width: 520px;
+            max-width: 560px;
             width: 100%;
             box-shadow: 0 20px 40px rgba(0,0,0,0.85);
-            max-height: 90vh;
+            max-height: 88vh;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            box-sizing: border-box;
+        }}
+        .modal-header {{
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }}
+        .modal-body {{
             overflow-y: auto;
+            flex: 1;
+            padding-right: 6px;
+            margin-right: -4px;
         }}
         .modal h3 {{ margin-top: 0; color: #ef4444; }}
         .modal p {{ color: var(--text-muted); font-size: 0.92rem; line-height: 1.5; }}
-        .modal-actions {{ display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }}
+        .modal-actions {{
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 10px;
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px solid var(--panel-border);
+            background: var(--panel);
+            position: sticky;
+            bottom: 0;
+            z-index: 20;
+        }}
 
         .form-group {{ margin-bottom: 14px; }}
         .form-label {{
@@ -4239,76 +4547,78 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>&#128274; HFSYNC Encrypted Media Vault</h1>
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Extract resolution (4K, 1080p, 720p, SD), audio, and video codecs for all existing videos">
+        <header class="vault-header">
+            <div class="vault-brand-cluster">
+                <span class="vault-brand-title">&#128274; HFSYNC Vault</span>
+                <span id="hdrServerStatus" class="status-pill status-online" title="Streaming Proxy Server Status">
+                    <span class="pill-dot"></span> Port 8080 Active
+                </span>
+                <span id="hdrWatcherStatus" class="status-pill status-idle" title="Directory Watcher Service Status">
+                    <span class="pill-dot"></span> Watcher: Idle
+                </span>
+            </div>
+            <div class="vault-actions-cluster">
+                <button onclick="recheckCloudSync()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Recheck Hugging Face for new cloud uploads and sync">
+                    &#128260; Recheck Cloud
+                </button>
+                <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" title="Extract resolution, audio, and video codecs">
                     &#127916; Scan Tech Specs
                 </button>
-                <button onclick="openAccountsModal()" class="tool-btn" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.12);">
+                <button onclick="openAccountsModal()" class="tool-btn" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.12);" title="Manage connected Hugging Face accounts">
                     &#128101; Accounts (<span id="headerAccCount">{total_accounts}</span>)
                 </button>
-                <div style="font-size: 0.9rem; color: var(--accent); font-weight: 500;">
-                    &#9679; Streaming Bridge Active (Port 8080)
-                </div>
+                <button onclick="toggleActivityLog()" id="btnToggleLog" class="tool-btn" title="View live pipeline activity log">
+                    &#128220; Activity (<span id="eventCountBadge">0</span>)
+                </button>
             </div>
         </header>
 
-        <div class="stats-bar">
-            <div class="stat-card">
-                <div class="stat-label">Playable Videos</div>
-                <div class="stat-value" id="statVideos">{len(files_data)}</div>
+        <!-- Minimalist Metrics Strip (Saves over 150px height!) -->
+        <div class="metrics-strip">
+            <div class="metric-chip" title="Playable decrypted videos">
+                <span>&#127916;</span>
+                <span class="metric-val" id="statVideos">{len(files_data)}</span>
+                <span>Videos</span>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Cloud Storage Size</div>
-                <div class="stat-value" id="statSize">{total_size_mb:.2f} MB</div>
+            <span class="metric-divider">&bull;</span>
+            <div class="metric-chip" title="Total cloud storage across datasets">
+                <span>&#9729;&#65039;</span>
+                <span class="metric-val" id="statSize">{total_size_mb:.2f} MB</span>
+                <span>Storage</span>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Primary Upload User</div>
-                <div class="stat-value" style="font-size: 1.1rem; color: var(--primary);">&#128081; {primary_user}</div>
+            <span class="metric-divider">&bull;</span>
+            <div class="metric-chip" title="Primary account for new uploads">
+                <span>&#128081;</span>
+                <span class="metric-val" style="color: var(--primary);">{primary_user}</span>
+                <span>Primary</span>
             </div>
-            <div class="stat-card" style="cursor: pointer;" onclick="openAccountsModal()" title="Manage Hugging Face accounts">
-                <div class="stat-label">&#128101; Connected Accounts</div>
-                <div class="stat-value" id="statAccounts">{total_accounts} <span style="font-size: 0.78rem; font-weight: normal; color: var(--text-muted);">&#9881;&#65039; Manage</span></div>
+            <span class="metric-divider">&bull;</span>
+            <div class="metric-chip clickable" onclick="openAccountsModal()" title="Connected Hugging Face accounts (Click to manage)">
+                <span>&#128101;</span>
+                <span class="metric-val" id="statAccounts">{total_accounts}</span>
+                <span>Accounts <span style="font-size: 0.72rem; color: var(--text-muted);">&#9881;&#65039;</span></span>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Target Repositories</div>
-                <div class="stat-value" id="statRepos">{len(repos_set)}</div>
+            <span class="metric-divider">&bull;</span>
+            <div class="metric-chip" title="Target repositories on Hugging Face">
+                <span>&#128230;</span>
+                <span class="metric-val" id="statRepos">{len(repos_set)}</span>
+                <span>Repos</span>
             </div>
             {skipped_stat_html}
         </div>
 
         {skipped_banner_html}
 
-        <!-- Live Realtime Processing & Activity Pipeline -->
-        <div id="liveActivityBox" class="live-activity-box">
-            <div class="live-activity-header">
-                <div class="live-activity-left">
-                    <span id="liveStatusPulse" class="status-pulse-dot pulse-idle"></span>
-                    <span id="liveStatusTitle" style="font-weight: 600; font-size: 0.95rem;">Watcher Service Active &bull; Idle</span>
-                    <span id="liveStatusSub" style="font-size: 0.8rem; color: var(--text-muted);">Waiting for videos in videos_to_sync/</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span id="liveActiveBadge" class="live-active-badge" style="display: none;">0 Active</span>
-                    <button onclick="toggleActivityLog()" id="btnToggleLog" class="tool-btn btn-sm">&#128220; Activity Log (<span id="eventCountBadge">0</span>)</button>
-                </div>
-            </div>
+        <!-- Active Processing Tasks Grid (Appears only during active syncing) -->
+        <div id="activeTasksContainer" class="active-tasks-grid" style="display: none;"></div>
 
-            <!-- Active Processing Tasks Grid -->
-            <div id="activeTasksContainer" class="active-tasks-grid" style="display: none;">
-                <!-- Populated dynamically via JS -->
+        <!-- Expandable Live Activity Log / Console (Appears only when toggled) -->
+        <div id="activityLogPanel" class="activity-log-panel" style="display: none;">
+            <div class="activity-log-header">
+                <span>Recent Pipeline Events</span>
+                <button onclick="clearActivityEvents()" class="tool-btn btn-xs" style="font-size: 0.72rem;">Clear Log</button>
             </div>
-
-            <!-- Expandable Live Activity Log / Console -->
-            <div id="activityLogPanel" class="activity-log-panel" style="display: none;">
-                <div class="activity-log-header">
-                    <span>Recent Pipeline Events</span>
-                    <button onclick="clearActivityEvents()" class="tool-btn btn-xs" style="font-size: 0.72rem;">Clear Log</button>
-                </div>
-                <div id="activityEventsList" class="activity-events-list">
-                    <!-- Events stream here -->
-                </div>
-            </div>
+            <div id="activityEventsList" class="activity-events-list"></div>
         </div>
 
 
@@ -4515,6 +4825,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 <div class="popover-actions">
                                     <button type="button" onclick="selectAllFilter('tag')">Select All</button>
                                     <button type="button" onclick="clearFilter('tag')">Clear</button>
+                                    <button type="button" onclick="closeAllPopovers()" style="color:#38bdf8;font-weight:700;">Done</button>
                                 </div>
                             </div>
                             <div class="popover-list" id="tagPopoverList"></div>
@@ -4535,6 +4846,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 <div class="popover-actions">
                                     <button type="button" onclick="selectAllFilter('genre')">Select All</button>
                                     <button type="button" onclick="clearFilter('genre')">Clear</button>
+                                    <button type="button" onclick="closeAllPopovers()" style="color:#38bdf8;font-weight:700;">Done</button>
                                 </div>
                             </div>
                             <div class="popover-list" id="genrePopoverList"></div>
@@ -4555,6 +4867,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                 <div class="popover-actions">
                                     <button type="button" onclick="selectAllFilter('account')">Select All</button>
                                     <button type="button" onclick="clearFilter('account')">Clear</button>
+                                    <button type="button" onclick="closeAllPopovers()" style="color:#38bdf8;font-weight:700;">Done</button>
                                 </div>
                             </div>
                             <div class="popover-list" id="accountPopoverList"></div>
@@ -4565,12 +4878,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span id="filterSummaryCount" class="filter-summary-count" style="display: none;"></span>
                 </div>
 
+                <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn" title="Toggle tag badges visibility on video cards">&#127991; Tags: <span id="tagsStateLabel">Shown</span></button>
                 <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
                 <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
                 <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
                 <div class="view-toggle-group">
                     <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn" title="Switch to Cards Grid View">&#127183; Cards</button>
                     <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn" title="Switch to List Row View">&#9776; List</button>
+                </div>
+
+                <div class="sticky-status-cluster">
+                    <span id="stickyServerStatus" class="status-pill status-online" title="Streaming Proxy Server Status">
+                        <span class="pill-dot"></span> 8080
+                    </span>
+                    <span id="stickyWatcherStatus" class="status-pill status-idle" title="Directory Watcher Service Status">
+                        <span class="pill-dot"></span> Watcher: Idle
+                    </span>
                 </div>
             </div>
 
@@ -4585,12 +4908,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
     <!-- Metadata & Tags Edit Modal -->
     <div id="metadataModal" class="modal-overlay">
         <div class="modal">
-            <h3 style="color: var(--primary); margin-bottom: 4px;">&#127991; Edit Jellyfin Metadata &amp; Tags</h3>
-            <p style="margin-top: 0; margin-bottom: 16px; font-size: 0.84rem;">
-                Changes update <code>upload_manifest.json</code> and standard Jellyfin <code>.nfo</code> XML files.
-            </p>
-
-            <input type="hidden" id="editKey">
+            <div class="modal-header">
+                <h3 style="color: var(--primary); margin: 0 0 4px 0;">&#127991; Edit Jellyfin Metadata &amp; Tags</h3>
+                <span style="font-size: 0.8rem; color: #9ca3af;">
+                    Changes update <code>upload_manifest.json</code> and standard Jellyfin <code>.nfo</code> XML files.
+                </span>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editKey">
 
             <div id="editAliasesBox" style="margin-bottom: 16px; background: rgba(147, 51, 234, 0.08); border: 1px solid rgba(147, 51, 234, 0.28); border-radius: 8px; padding: 12px 14px; display: none;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
@@ -4693,6 +5018,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <button type="button" id="btnUploadModalSub" class="btn btn-hf btn-xs" onclick="submitUploadSubtitle()" style="padding: 5px 12px; white-space: nowrap;" disabled>+ Upload Subtitle</button>
                 </div>
             </div>
+            </div> <!-- End of modal-body -->
 
             <div class="modal-actions">
                 <button onclick="closeMetadataModal()" class="tool-btn">Cancel</button>
@@ -4848,6 +5174,204 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (modal) modal.style.display = 'none';
         }}
 
+        function handleScreensBtnEnter(btn, event) {{
+            if (event) event.stopPropagation();
+            const wrap = btn.closest('.card-thumb-wrap, .video-thumb-card, .list-thumb-wrap');
+            if (!wrap) return;
+            const canvas = wrap.querySelector('.thumb-canvas');
+            if (!canvas) return;
+            const safeId = wrap.dataset.safeid;
+            if (!safeId) return;
+
+            clearInterval(thumbCycleInterval);
+            if (canvas.dataset.originalBg === undefined) {{
+                canvas.dataset.originalBg = canvas.style.backgroundImage || '';
+                canvas.dataset.originalSize = canvas.style.backgroundSize || 'cover';
+                canvas.dataset.originalPos = canvas.style.backgroundPosition || 'center';
+            }}
+
+            const screensUrl = `/api/screens/image?id=${{encodeURIComponent(safeId)}}`;
+            canvas.style.backgroundImage = `url('${{screensUrl}}')`;
+            canvas.style.backgroundSize = 'contain';
+            canvas.style.backgroundPosition = 'center';
+            canvas.style.backgroundRepeat = 'no-repeat';
+            canvas.style.backgroundColor = '#0b0f19';
+        }}
+
+        function handleScreensBtnLeave(btn, event) {{
+            if (event) event.stopPropagation();
+            const wrap = btn.closest('.card-thumb-wrap, .video-thumb-card, .list-thumb-wrap');
+            if (!wrap) return;
+            const canvas = wrap.querySelector('.thumb-canvas');
+            if (!canvas) return;
+
+            if (canvas.dataset.originalBg !== undefined) {{
+                canvas.style.backgroundImage = canvas.dataset.originalBg;
+                canvas.style.backgroundSize = canvas.dataset.originalSize || 'cover';
+                canvas.style.backgroundPosition = canvas.dataset.originalPos || 'center';
+                canvas.style.backgroundRepeat = '';
+                canvas.style.backgroundColor = '';
+                delete canvas.dataset.originalBg;
+                delete canvas.dataset.originalSize;
+                delete canvas.dataset.originalPos;
+            }}
+        }}
+
+        function closeAllPopovers() {{
+            document.querySelectorAll('.filter-popover').forEach(p => p.style.display = 'none');
+        }}
+
+        let hideCardTags = (localStorage.getItem('hfsync_hide_card_tags') === '1');
+
+        function applyHideTagsState() {{
+            const btn = document.getElementById('btnHideTags');
+            const label = document.getElementById('tagsStateLabel');
+            const container = document.getElementById('treeContainer');
+            if (hideCardTags) {{
+                if (container) container.classList.add('cards-hide-tags');
+                if (label) label.textContent = 'Hidden';
+                if (btn) {{
+                    btn.classList.add('is-active-filter');
+                    btn.title = 'Tags are hidden on cards (Click card arrow ▼ to see tags, or click here to show all)';
+                }}
+            }} else {{
+                if (container) container.classList.remove('cards-hide-tags');
+                if (label) label.textContent = 'Shown';
+                if (btn) {{
+                    btn.classList.remove('is-active-filter');
+                    btn.title = 'Tags are visible on cards (Click here to hide)';
+                }}
+            }}
+        }}
+
+        function toggleHideTags() {{
+            hideCardTags = !hideCardTags;
+            try {{ localStorage.setItem('hfsync_hide_card_tags', hideCardTags ? '1' : '0'); }} catch (e) {{}}
+            applyHideTagsState();
+        }}
+
+        async function promptAddTagToFolder(folderPath, event) {{
+            if (event) event.stopPropagation();
+            const tag = prompt(`Enter tag to add to all videos in "${{folderPath}}":`);
+            if (!tag || !tag.trim()) return;
+            const cleanTag = tag.trim();
+
+            try {{
+                const res = await fetch('/api/folder-tags', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ folder: folderPath, action: 'add', tag: cleanTag }})
+                }});
+                const data = await res.json();
+                if (data.success) {{
+                    const prefix = folderPath + '/';
+                    allFiles.forEach(f => {{
+                        if (f.key.startsWith(prefix) || f.key === folderPath) {{
+                            if (!f.metadata) f.metadata = {{}};
+                            if (!f.metadata.tags) f.metadata.tags = [];
+                            if (!f.metadata.tags.includes(cleanTag)) f.metadata.tags.push(cleanTag);
+                        }}
+                    }});
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                    flashCenterFeedback(`+ Added "${{cleanTag}}" to ${{data.updated_count}} videos`);
+                }}
+            }} catch (err) {{
+                alert('Failed to add folder tag: ' + err.message);
+            }}
+        }}
+
+        async function removeTagFromFolder(folderPath, tag, event) {{
+            if (event) event.stopPropagation();
+            if (!confirm(`Remove tag "${{tag}}" from all videos in folder "${{folderPath}}"?`)) return;
+
+            try {{
+                const res = await fetch('/api/folder-tags', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ folder: folderPath, action: 'remove', tag: tag }})
+                }});
+                const data = await res.json();
+                if (data.success) {{
+                    const prefix = folderPath + '/';
+                    allFiles.forEach(f => {{
+                        if (f.key.startsWith(prefix) || f.key === folderPath) {{
+                            if (f.metadata && f.metadata.tags) {{
+                                f.metadata.tags = f.metadata.tags.filter(t => t !== tag);
+                            }}
+                        }}
+                    }});
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                    flashCenterFeedback(`- Removed "${{tag}}" from ${{folderPath}}`);
+                }}
+            }} catch (err) {{
+                alert('Failed to remove folder tag: ' + err.message);
+            }}
+        }}
+
+        async function recheckCloudSync() {{
+            const btn = document.getElementById('btnRecheckCloud');
+            const origHtml = btn ? btn.innerHTML : '&#128260; Recheck Cloud';
+            if (btn) {{
+                btn.disabled = true;
+                btn.innerHTML = '&#128260; Scanning Cloud...';
+            }}
+            try {{
+                const res = await fetch('/api/recheck-cloud', {{ method: 'POST' }});
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                const recovered = data.recovered_count || 0;
+                const skipped = data.skipped_count || 0;
+                let msg = recovered > 0 ? `+ Found ${{recovered}} new video(s) from cloud!` : `Cloud check: Vault is up to date`;
+                if (skipped > 0) msg += ` (${{skipped}} skipped)`;
+                flashCenterFeedback(msg);
+                await reloadFilesList();
+            }} catch (err) {{
+                flashCenterFeedback('Cloud check error: ' + err.message);
+            }} finally {{
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.innerHTML = origHtml;
+                }}
+            }}
+        }}
+
+        function updateSystemStatusIndicators(serverOnline, watcherState, watcherMsg) {{
+            const sPills = [document.getElementById('hdrServerStatus'), document.getElementById('stickyServerStatus')];
+            const wPills = [document.getElementById('hdrWatcherStatus'), document.getElementById('stickyWatcherStatus')];
+
+            sPills.forEach(p => {{
+                if (!p) return;
+                if (serverOnline) {{
+                    p.className = 'status-pill status-online';
+                    p.innerHTML = '<span class="pill-dot"></span> Port 8080 Active';
+                    p.title = 'Streaming Proxy Server Connected';
+                }} else {{
+                    p.className = 'status-pill status-offline';
+                    p.innerHTML = '<span class="pill-dot"></span> ⚠️ Server Disconnected!';
+                    p.title = 'Streaming Proxy Server is offline or unreachable!';
+                }}
+            }});
+
+            wPills.forEach(p => {{
+                if (!p) return;
+                if (watcherState === 'active') {{
+                    p.className = 'status-pill status-active';
+                    p.innerHTML = `<span class="pill-dot"></span> ⚡ ${{escapeHtml(watcherMsg || 'Syncing...')}}`;
+                    p.title = 'Watcher Service is actively syncing files to vault';
+                }} else if (watcherState === 'attention') {{
+                    p.className = 'status-pill status-attention';
+                    p.innerHTML = `<span class="pill-dot"></span> ⚠️ ${{escapeHtml(watcherMsg || 'Attention')}}`;
+                    p.title = watcherMsg || 'Watcher alert';
+                }} else {{
+                    p.className = 'status-pill status-idle';
+                    p.innerHTML = '<span class="pill-dot"></span> Watcher: Idle';
+                    p.title = 'Watcher Service is running and waiting for videos';
+                }}
+            }});
+        }}
+
         let allFiles = {files_json_str};
         let skippedFiles = {skipped_json_str};
         let primaryAccount = "{primary_user}";
@@ -4938,18 +5462,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         function toggleCardActions(btn, event) {{
             if (event) event.stopPropagation();
-            const card = btn.closest('.video-card');
+            const card = btn.closest('.video-card, .file-row');
             if (!card) return;
-            const actionsBar = card.querySelector('.video-card-actions');
+            const actionsBar = card.querySelector('.video-card-actions, .file-row-actions');
             const arrowBtn = card.querySelector('.card-action-arrow-btn') || btn;
             if (!actionsBar) return;
 
             const isOpen = actionsBar.classList.contains('is-open');
             if (isOpen) {{
                 actionsBar.classList.remove('is-open');
+                card.classList.remove('is-expanded');
                 arrowBtn.classList.remove('is-active');
             }} else {{
                 actionsBar.classList.add('is-open');
+                card.classList.add('is-expanded');
                 arrowBtn.classList.add('is-active');
             }}
         }}
@@ -5069,7 +5595,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res 100-Screen Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
+                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens on card &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
                     <div class="card-size-badge" title="Video size: ${{escapeHtml(f.size_str)}}, Audio: ${{escapeHtml(audioSizeStr)}}">
                         <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
                         <span class="badge-asize"> • 🎵 ${{escapeHtml(audioSizeStr)}}</span>
@@ -5227,7 +5753,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
+                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
                     ${{resumePillHtml}}
                     ${{durationHtml}}
                     ${{resumeBarHtml}}
@@ -5257,6 +5783,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             </div>`;
         }}
 
+        function getFolderFiles(folderNode) {{
+            let files = [];
+            if (!folderNode) return files;
+            if (folderNode.type === "file") return [folderNode.data];
+            if (folderNode.children) {{
+                Object.values(folderNode.children).forEach(child => {{
+                    files = files.concat(getFolderFiles(child));
+                }});
+            }}
+            return files;
+        }}
+
         function renderTree(node, depth = 0, currentPath = "") {{
             if (node.type === "file") {{
                 return currentViewMode === 'card' ? renderCard(node.data, node.name) : renderListRow(node.data, node.name);
@@ -5270,6 +5808,26 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const isOpen = openedTreesQueue.includes(folderPath);
 
             if (depth > 0) {{
+                const descendantFiles = getFolderFiles(node);
+                let commonTags = [];
+                if (descendantFiles.length > 0) {{
+                    const firstTags = (descendantFiles[0].metadata?.tags || []);
+                    commonTags = firstTags.filter(t => {{
+                        return descendantFiles.every(f => (f.metadata?.tags || []).includes(t));
+                    }});
+                }}
+
+                const treeTagsHtml = `
+                <div class="folder-tags-cluster">
+                    ${{commonTags.map(t => `
+                        <span class="tree-tag-chip" title="Tag shared by all ${{descendantFiles.length}} videos in this folder (Click &times; to remove from all)">
+                            &#127991; ${{escapeHtml(t)}}
+                            <span class="tree-tag-remove" onclick="removeTagFromFolder('${{escapeHtml(folderPath)}}', '${{escapeHtml(t)}}', event)">&times;</span>
+                        </span>
+                    `).join('')}}
+                    <button type="button" class="btn-tree-add-tag" onclick="promptAddTagToFolder('${{escapeHtml(folderPath)}}', event)" title="Add a tag to all videos in this folder in bulk">+ Tag</button>
+                </div>`;
+
                 html += `
                 <div class="folder-group" data-folder="${{escapeHtml(folderPath)}}">
                     <div class="folder-header">
@@ -5278,6 +5836,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             <span class="folder-icon">&#128193;</span>
                             <span>${{escapeHtml(node.name)}}</span>
                             <span class="folder-count">${{totalDescendantFiles}} video(s)</span>
+                            ${{treeTagsHtml}}
                         </div>
                         <div class="folder-actions">
                             <button onclick="event.stopPropagation(); promptDeleteFolder('${{escapeHtml(folderPath)}}', ${{totalDescendantFiles}})" class="btn btn-delete btn-sm" title="Delete entire folder and all contained videos">&#128465; Delete Folder</button>
@@ -5715,6 +6274,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (currentVideoKey) {{
                 highlightAndPromotePlayingVideo(currentVideoKey);
             }}
+            applyHideTagsState();
         }}
 
         function toggleFolder(header) {{
@@ -7880,11 +8440,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         async function pollActivity() {{
             try {{
                 const res = await fetch('/api/activity');
-                if (!res.ok) return;
+                if (!res.ok) {{
+                    updateSystemStatusIndicators(false, 'offline', 'Server Offline');
+                    return;
+                }}
                 const data = await res.json();
                 renderActivity(data);
             }} catch (err) {{
-                // Silently ignore network blips in background polling
+                updateSystemStatusIndicators(false, 'offline', 'Server Offline');
             }}
         }}
 
@@ -7907,6 +8470,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const batchTotal = data.batch_total || 0;
             const batchDone = data.batch_completed || 0;
             const isProcessing = inFlightTasks.length > 0 || (batchTotal > 0 && batchDone < batchTotal);
+
+            // Update Dual Status Indicators (Sticky Header & Filter Bar)
+            const errorTasks = activeTasks.filter(t => t.stage === 'error');
+            if (errorTasks.length > 0) {{
+                updateSystemStatusIndicators(true, 'attention', `Watcher Alert (${{errorTasks.length}} Error)`);
+            }} else if (isProcessing) {{
+                const countMsg = batchTotal > 0 ? `${{batchDone}}/${{batchTotal}} Syncing` : `${{inFlightTasks.length}} Syncing`;
+                updateSystemStatusIndicators(true, 'active', countMsg);
+            }} else {{
+                updateSystemStatusIndicators(true, 'idle');
+            }}
 
             if (isProcessing) {{
                 if (box) box.classList.add('is-active');
@@ -7938,67 +8512,78 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (badge) badge.style.display = 'none';
             }}
 
-            // Render Active Task Cards
+            // Render Active Task Cards without unnecessary DOM flicker
             if (activeTasks.length > 0) {{
                 if (tasksContainer) {{
                     tasksContainer.style.display = 'flex';
-                    tasksContainer.innerHTML = activeTasks.map(t => {{
-                        let stageIcon = '🔄';
-                        let stageColor = '#38bdf8';
-                        if (t.stage === 'hashing') {{ stageIcon = '🔍'; stageColor = '#fbbf24'; }}
-                        else if (t.stage === 'dup_check') {{ stageIcon = '👥'; stageColor = '#a855f7'; }}
-                        else if (t.stage === 'encrypting') {{ stageIcon = '🔒'; stageColor = '#38bdf8'; }}
-                        else if (t.stage === 'uploading') {{ stageIcon = '☁️'; stageColor = '#60a5fa'; }}
-                        else if (t.stage === 'metadata') {{ stageIcon = '🏷️'; stageColor = '#34d399'; }}
-                        else if (t.stage === 'completed') {{ stageIcon = '✅'; stageColor = '#10b981'; }}
-                        else if (t.stage === 'skipped_duplicate') {{ stageIcon = '⏭️'; stageColor = '#f59e0b'; }}
-                        else if (t.stage === 'paused') {{ stageIcon = '⏸️'; stageColor = '#f59e0b'; }}
-                        else if (t.stage === 'error') {{ stageIcon = '❌'; stageColor = '#ef4444'; }}
+                    const fp = activeTasks.map(t => `${{t.filename}}:${{t.stage}}:${{t.percent}}:${{t.speed_str || ''}}:${{t.elapsed_sec || ''}}`).join('|');
+                    if (tasksContainer.dataset.lastFp !== fp) {{
+                        tasksContainer.dataset.lastFp = fp;
+                        tasksContainer.innerHTML = activeTasks.map(t => {{
+                            let stageIcon = '🔄';
+                            let stageColor = '#38bdf8';
+                            if (t.stage === 'hashing') {{ stageIcon = '🔍'; stageColor = '#fbbf24'; }}
+                            else if (t.stage === 'dup_check') {{ stageIcon = '👥'; stageColor = '#a855f7'; }}
+                            else if (t.stage === 'encrypting') {{ stageIcon = '🔒'; stageColor = '#38bdf8'; }}
+                            else if (t.stage === 'uploading') {{ stageIcon = '☁️'; stageColor = '#60a5fa'; }}
+                            else if (t.stage === 'metadata') {{ stageIcon = '🏷️'; stageColor = '#34d399'; }}
+                            else if (t.stage === 'completed') {{ stageIcon = '✅'; stageColor = '#10b981'; }}
+                            else if (t.stage === 'skipped_duplicate') {{ stageIcon = '⏭️'; stageColor = '#f59e0b'; }}
+                            else if (t.stage === 'paused') {{ stageIcon = '⏸️'; stageColor = '#f59e0b'; }}
+                            else if (t.stage === 'error') {{ stageIcon = '❌'; stageColor = '#ef4444'; }}
+
+                            return `
+                            <div class="active-task-card">
+                                <div class="task-card-top">
+                                    <span class="task-file-name">
+                                        <span>${{stageIcon}}</span>
+                                        <span>${{escapeHtml(t.filename)}}</span>
+                                        ${{t.size_str ? `<span style="font-size: 0.75rem; color: #9ca3af; font-weight: normal;">(${{t.size_str}})</span>` : ''}}
+                                    </span>
+                                    <span style="font-size: 0.75rem; font-weight: 600; color: ${{stageColor}};">
+                                        ${{escapeHtml(t.stage_name || t.stage)}} &bull; ${{t.percent}}%
+                                    </span>
+                                </div>
+                                <div class="task-progress-track">
+                                    <div class="task-progress-fill" style="width: ${{t.percent}}%;"></div>
+                                </div>
+                                <div class="task-card-bottom">
+                                    <span>${{escapeHtml(t.details || '')}}</span>
+                                    <span>${{t.speed_str ? `⚡ ${{escapeHtml(t.speed_str)}} &bull; ` : ''}}${{t.elapsed_sec ? `${{t.elapsed_sec}}s` : ''}} ${{t.account ? `&bull; 👤 ${{escapeHtml(t.account)}}` : ''}}</span>
+                                </div>
+                            </div>`;
+                        }}).join('');
+                    }}
+                }}
+            }} else {{
+                if (tasksContainer) {{
+                    tasksContainer.style.display = 'none';
+                    tasksContainer.dataset.lastFp = '';
+                }}
+            }}
+
+            // Render Events Stream without unnecessary DOM flicker
+            if (eventsList && events.length > 0) {{
+                const fp = events.map(e => `${{e.time}}:${{e.type}}:${{e.title}}:${{e.message}}`).join('|');
+                if (eventsList.dataset.lastFp !== fp) {{
+                    eventsList.dataset.lastFp = fp;
+                    eventsList.innerHTML = events.map(e => {{
+                        let badgeClass = 'badge-info';
+                        if (e.type === 'success') badgeClass = 'badge-success';
+                        else if (e.type === 'upload') badgeClass = 'badge-upload';
+                        else if (e.type === 'skip') badgeClass = 'badge-skip';
+                        else if (e.type === 'error') badgeClass = 'badge-error';
 
                         return `
-                        <div class="active-task-card">
-                            <div class="task-card-top">
-                                <span class="task-file-name">
-                                    <span>${{stageIcon}}</span>
-                                    <span>${{escapeHtml(t.filename)}}</span>
-                                    ${{t.size_str ? `<span style="font-size: 0.75rem; color: #9ca3af; font-weight: normal;">(${{t.size_str}})</span>` : ''}}
-                                </span>
-                                <span style="font-size: 0.75rem; font-weight: 600; color: ${{stageColor}};">
-                                    ${{escapeHtml(t.stage_name || t.stage)}} &bull; ${{t.percent}}%
-                                </span>
-                            </div>
-                            <div class="task-progress-track">
-                                <div class="task-progress-fill" style="width: ${{t.percent}}%;"></div>
-                            </div>
-                            <div class="task-card-bottom">
-                                <span>${{escapeHtml(t.details || '')}}</span>
-                                <span>${{t.speed_str ? `⚡ ${{escapeHtml(t.speed_str)}} &bull; ` : ''}}${{t.elapsed_sec ? `${{t.elapsed_sec}}s` : ''}} ${{t.account ? `&bull; 👤 ${{escapeHtml(t.account)}}` : ''}}</span>
-                            </div>
+                        <div class="activity-event-row">
+                            <span class="event-time">${{escapeHtml(e.time)}}</span>
+                            <span class="event-badge ${{badgeClass}}">${{escapeHtml(e.type)}}</span>
+                            <span style="font-weight: 600; color: #e5e7eb;">${{escapeHtml(e.title)}}</span>
+                            <span style="color: #9ca3af;">${{escapeHtml(e.message)}}</span>
+                            ${{e.speed ? `<span style="color: #38bdf8; font-size: 0.75rem;">(${{escapeHtml(e.speed)}})</span>` : ''}}
                         </div>`;
                     }}).join('');
                 }}
-            }} else {{
-                if (tasksContainer) tasksContainer.style.display = 'none';
-            }}
-
-            // Render Events Stream
-            if (eventsList && events.length > 0) {{
-                eventsList.innerHTML = events.map(e => {{
-                    let badgeClass = 'badge-info';
-                    if (e.type === 'success') badgeClass = 'badge-success';
-                    else if (e.type === 'upload') badgeClass = 'badge-upload';
-                    else if (e.type === 'skip') badgeClass = 'badge-skip';
-                    else if (e.type === 'error') badgeClass = 'badge-error';
-
-                    return `
-                    <div class="activity-event-row">
-                        <span class="event-time">${{escapeHtml(e.time)}}</span>
-                        <span class="event-badge ${{badgeClass}}">${{escapeHtml(e.type)}}</span>
-                        <span style="font-weight: 600; color: #e5e7eb;">${{escapeHtml(e.title)}}</span>
-                        <span style="color: #9ca3af;">${{escapeHtml(e.message)}}</span>
-                        ${{e.speed ? `<span style="color: #38bdf8; font-size: 0.75rem;">(${{escapeHtml(e.speed)}})</span>` : ''}}
-                    </div>`;
-                }}).join('');
             }}
 
             // Monotonic reload tracking:
@@ -8292,6 +8877,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         setInterval(pollActivity, 1000);
         refreshTreeDisplay();
         restoreUserPosition();
+        applyHideTagsState();
+        updateSystemStatusIndicators(true, 'idle');
     </script>
 </body>
 </html>
