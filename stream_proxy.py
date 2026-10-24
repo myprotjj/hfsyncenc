@@ -297,6 +297,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_delete_folder()
         elif path == "/api/metadata":
             self.handle_update_metadata()
+        elif path == "/api/video-tag":
+            self.handle_video_tag_action()
         elif path == "/api/folder-tags":
             self.handle_folder_tags()
         elif path == "/api/sync-hf":
@@ -924,6 +926,111 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "file_names": file_info.get("file_names", [key]),
             "conflicts_resolved": bool(resolve_conflicts),
             "message": "Metadata saved to Jellyfin .nfo, conflicts resolved, and syncing to Hugging Face."
+        }).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_video_tag_action(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            key = str(req_data.get("key", "")).strip()
+            action = str(req_data.get("action", "add")).strip().lower()
+            tag_type = str(req_data.get("type", "tag")).strip().lower()
+            val = str(req_data.get("value", "")).strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not key or action not in ("add", "remove") or not val:
+            self.send_error(400, "Missing or invalid key, action, or value")
+            return
+
+        is_genre = tag_type in ("genre", "category", "cat")
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        if key not in files:
+            found_key = None
+            for k in files:
+                if k == key or Path(k).name == Path(key).name or k.endswith("/" + Path(key).name):
+                    found_key = k
+                    break
+            if found_key:
+                key = found_key
+            else:
+                self.send_error(404, f"Video key '{key}' not found in manifest")
+                return
+
+        finfo = files[key]
+        meta = finfo.get("metadata") or {}
+
+        field_name = "genres" if is_genre else "tags"
+        existing = meta.get(field_name) or []
+        if isinstance(existing, str):
+            existing = [x.strip() for x in existing.split(",") if x.strip()]
+        elif isinstance(existing, list):
+            existing = [str(x).strip() for x in existing if str(x).strip()]
+        else:
+            existing = []
+
+        modified = False
+        if action == "add":
+            if not any(x.lower() == val.lower() for x in existing):
+                existing.append(val)
+                modified = True
+        elif action == "remove":
+            new_list = [x for x in existing if x.lower() != val.lower()]
+            if len(new_list) != len(existing):
+                existing = new_list
+                modified = True
+
+        if modified:
+            meta[field_name] = existing
+            finfo["metadata"] = meta
+            finfo["verifier"] = crypto_engine.create_verifier(self.password)
+            save_manifest(manifest)
+
+            # Write clean Jellyfin NFO files (.nfo, .mp4.nfo, .strm.nfo)
+            try:
+                metadata_helper.write_nfo_files("jellyfin_library", key, meta)
+            except Exception as e:
+                logger.warning("Error writing NFO for %s: %s", key, e)
+
+            # Fast background thread for Hugging Face sync so HTTP response is INSTANT (< 15ms)
+            repo_id = finfo.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+            blob_path = finfo.get("blob_path") or finfo.get("remote_path")
+
+            def _bg_sync_meta(item_key, r_id, b_path, f_record):
+                try:
+                    api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                    if b_path:
+                        rec = dict(f_record)
+                        rec["full_key"] = item_key
+                        metadata_helper.sync_item_metadata_to_hf(api, r_id, b_path, rec, self.password)
+                    m = load_manifest()
+                    repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                    metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                except Exception as ex:
+                    logger.warning("Background metadata HF sync warning: %s", ex)
+
+            if blob_path:
+                threading.Thread(target=_bg_sync_meta, args=(key, repo_id, blob_path, finfo), daemon=True).start()
+
+        resp_body = json.dumps({
+            "success": True,
+            "key": key,
+            "metadata": meta,
+            "action": action,
+            "type": "genre" if is_genre else "tag",
+            "value": val,
+            "message": f"Successfully {action}ed {'Category' if is_genre else 'Tag'} '{val}'"
         }).encode("utf-8")
 
         self.send_response(200)
@@ -2599,6 +2706,239 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             background: rgba(56, 189, 248, 0.15);
             border-color: #38bdf8;
             color: #38bdf8;
+        }}
+
+        /* Video Card Quick-Add Button & Popover */
+        .btn-card-quick-add {{
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 1px 7px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            border-radius: 9999px;
+            border: 1px dashed rgba(168, 85, 247, 0.45);
+            background: rgba(168, 85, 247, 0.08);
+            color: #d8b4fe;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            vertical-align: middle;
+            white-space: nowrap;
+            user-select: none;
+            line-height: 1.4;
+        }}
+        .btn-card-quick-add:hover {{
+            background: rgba(168, 85, 247, 0.24);
+            border-color: #c084fc;
+            color: #f5d0fe;
+            transform: translateY(-1px);
+            box-shadow: 0 0 8px rgba(168, 85, 247, 0.35);
+        }}
+        .card-quick-add-popover {{
+            position: fixed;
+            z-index: 99999;
+            width: 320px;
+            max-height: 440px;
+            background: rgba(15, 23, 42, 0.98);
+            border: 1px solid rgba(168, 85, 247, 0.45);
+            border-radius: 10px;
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.8), 0 0 24px rgba(168, 85, 247, 0.22);
+            backdrop-filter: blur(16px);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: quickAddFadeIn 0.15s ease-out;
+            font-family: inherit;
+        }}
+        @keyframes quickAddFadeIn {{
+            from {{ opacity: 0; transform: translateY(-4px) scale(0.98); }}
+            to {{ opacity: 1; transform: translateY(0) scale(1); }}
+        }}
+        .quick-add-header {{
+            padding: 10px 12px 8px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.02);
+        }}
+        .quick-add-title {{
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: #e9d5ff;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }}
+        .quick-add-close {{
+            background: transparent;
+            border: none;
+            color: #9ca3af;
+            font-size: 1.15rem;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 4px;
+            border-radius: 4px;
+            transition: color 0.12s, background 0.12s;
+        }}
+        .quick-add-close:hover {{
+            color: #f3f4f6;
+            background: rgba(255, 255, 255, 0.1);
+        }}
+        .quick-add-input-box {{
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(0, 0, 0, 0.15);
+        }}
+        .quick-add-input {{
+            width: 100%;
+            box-sizing: border-box;
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            border-radius: 6px;
+            border: 1px solid rgba(168, 85, 247, 0.35);
+            background: rgba(15, 23, 42, 0.85);
+            color: #f8fafc;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }}
+        .quick-add-input:focus {{
+            border-color: #c084fc;
+            box-shadow: 0 0 10px rgba(168, 85, 247, 0.35);
+        }}
+        .quick-add-filter-tabs {{
+            display: flex;
+            gap: 4px;
+            margin-top: 6px;
+        }}
+        .quick-add-tab {{
+            padding: 2px 7px;
+            font-size: 0.70rem;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.12s;
+        }}
+        .quick-add-tab:hover {{
+            background: rgba(255, 255, 255, 0.08);
+            color: #e2e8f0;
+        }}
+        .quick-add-tab.active {{
+            background: rgba(168, 85, 247, 0.25);
+            border-color: #a855f7;
+            color: #f3e8ff;
+            font-weight: 600;
+        }}
+        .quick-add-applied-section {{
+            padding: 6px 10px;
+            background: rgba(0, 0, 0, 0.25);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            font-size: 0.72rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            max-height: 80px;
+            overflow-y: auto;
+        }}
+        .quick-add-applied-chip {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 0.68rem;
+        }}
+        .quick-add-applied-chip.is-tag {{
+            background: rgba(56, 189, 248, 0.15);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            color: #7dd3fc;
+        }}
+        .quick-add-applied-chip.is-genre {{
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #6ee7b7;
+        }}
+        .quick-add-chip-del {{
+            cursor: pointer;
+            color: #f87171;
+            font-weight: bold;
+            margin-left: 2px;
+            font-size: 0.8rem;
+            line-height: 1;
+        }}
+        .quick-add-chip-del:hover {{
+            color: #ef4444;
+        }}
+        .quick-add-list {{
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            max-height: 230px;
+        }}
+        .quick-add-item {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.76rem;
+            color: #e2e8f0;
+            transition: background 0.12s;
+            user-select: none;
+        }}
+        .quick-add-item:hover {{
+            background: rgba(168, 85, 247, 0.22);
+            color: #ffffff;
+        }}
+        .quick-add-item-name {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .quick-add-item-type {{
+            font-size: 0.65rem;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }}
+        .quick-add-item-type.tag-type {{
+            background: rgba(56, 189, 248, 0.2);
+            color: #38bdf8;
+        }}
+        .quick-add-item-type.cat-type {{
+            background: rgba(16, 185, 129, 0.2);
+            color: #34d399;
+        }}
+        .quick-add-create-btn {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
+            text-align: left;
+            padding: 6px 8px;
+            border-radius: 6px;
+            border: 1px dashed rgba(168, 85, 247, 0.4);
+            background: rgba(168, 85, 247, 0.1);
+            color: #d8b4fe;
+            font-size: 0.74rem;
+            cursor: pointer;
+            margin-bottom: 4px;
+            transition: all 0.12s;
+        }}
+        .quick-add-create-btn:hover {{
+            background: rgba(168, 85, 247, 0.28);
+            border-color: #c084fc;
+            color: #ffffff;
         }}
 
         /* Hide Tags Mode */
@@ -5554,6 +5894,28 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         </div>
     </div>
 
+    <!-- Card Quick-Add Tag/Category Popover -->
+    <div id="cardQuickAddPopover" class="card-quick-add-popover" style="display: none;">
+        <div class="quick-add-header">
+            <div class="quick-add-title">&#127991; Add Tag or Category</div>
+            <button type="button" class="quick-add-close" onclick="closeCardQuickAdd()">&times;</button>
+        </div>
+        <div class="quick-add-input-box">
+            <input type="text" id="cardQuickAddInput" class="quick-add-input" placeholder="Type tag or category name..." oninput="handleQuickAddInput(this.value)" onkeydown="handleQuickAddKeydown(event)">
+            <div class="quick-add-filter-tabs">
+                <button type="button" class="quick-add-tab active" data-filter="all" onclick="setQuickAddFilterTab('all')">All Available</button>
+                <button type="button" class="quick-add-tab" data-filter="tags" onclick="setQuickAddFilterTab('tags')">&#127991; Tags</button>
+                <button type="button" class="quick-add-tab" data-filter="categories" onclick="setQuickAddFilterTab('categories')">&#128193; Categories</button>
+            </div>
+        </div>
+        <div id="quickAddAppliedBox" class="quick-add-applied-section">
+            <!-- Applied tags & categories -->
+        </div>
+        <div id="quickAddSuggestionsList" class="quick-add-list">
+            <!-- Unapplied suggestions & create options -->
+        </div>
+    </div>
+
     <!-- Metadata & Tags Edit Modal -->
     <div id="metadataModal" class="modal-overlay">
         <div class="modal">
@@ -6220,18 +6582,26 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
-        function renderCard(f, nodeName) {{
+        /* Video Card Quick-Add Tag & Category Engine */
+        let quickAddActiveFilter = 'all';
+
+        function renderCardBadgesHtml(f) {{
             const meta = f.metadata || {{}};
-            const title = meta.title || nodeName;
             const genres = meta.genres || [];
             const tags = meta.tags || [];
 
             let badgesHtml = '';
+            const accountOwner = f.account || primaryAccount;
+            const isPrimary = (accountOwner === primaryAccount);
+            badgesHtml += `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}" onclick="event.stopPropagation(); addQuickFilter('account', '${{escapeHtml(accountOwner)}}')" title="Click to filter by account: ${{escapeHtml(accountOwner)}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
+
             if (meta.year) badgesHtml += `<span class="meta-pill year-pill">&#128197; ${{escapeHtml(meta.year)}}</span>`;
             if (meta.rating) badgesHtml += `<span class="meta-pill rating-pill">&#11088; ${{escapeHtml(meta.rating)}}</span>`;
+
             genres.forEach(g => {{
                 badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Category / Folder: ${{escapeHtml(g)}} (Click to filter)"><span class="cat-pill-prefix">&#128193; CAT:</span><span class="cat-pill-name">${{escapeHtml(g)}}</span></span>`;
             }});
+
             tags.forEach(t => {{
                 const tl = String(t).trim().toLowerCase();
                 let cls = 'tag-pill';
@@ -6262,6 +6632,336 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span class="pill-hide-trigger" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Unhide this tag on all cards' : 'Hide this tag across all cards'}}">${{isHidden ? '&#128065;&#65039;' : '&#128584;'}}</span>
                 </span>`;
             }});
+
+            badgesHtml += `
+            <button type="button" class="btn-card-quick-add" onclick="toggleCardQuickAdd('${{escapeHtml(f.key)}}', this, event)" title="Instant add Tag or Category to this video">
+                + Tag / Category
+            </button>`;
+
+            return badgesHtml;
+        }}
+
+        function toggleCardQuickAdd(key, btn, event) {{
+            if (event) {{
+                event.preventDefault();
+                event.stopPropagation();
+            }}
+            const pop = document.getElementById('cardQuickAddPopover');
+            if (!pop) return;
+
+            if (pop.style.display === 'flex' && pop.dataset.currentKey === key) {{
+                closeCardQuickAdd();
+                return;
+            }}
+
+            pop.dataset.currentKey = key;
+            pop.style.display = 'flex';
+
+            const rect = btn.getBoundingClientRect();
+            const popWidth = 320;
+            const popHeight = 360;
+
+            let left = rect.left;
+            if (left + popWidth > window.innerWidth - 12) {{
+                left = window.innerWidth - popWidth - 12;
+            }}
+            if (left < 12) left = 12;
+
+            let top = rect.bottom + 6;
+            if (top + popHeight > window.innerHeight - 12) {{
+                top = Math.max(12, rect.top - popHeight - 6);
+            }}
+
+            pop.style.left = left + 'px';
+            pop.style.top = top + 'px';
+
+            const input = document.getElementById('cardQuickAddInput');
+            if (input) {{
+                input.value = '';
+                setTimeout(() => input.focus(), 60);
+            }}
+
+            quickAddActiveFilter = 'all';
+            updateQuickAddTabs();
+            renderQuickAddSuggestions();
+        }}
+
+        function closeCardQuickAdd() {{
+            const pop = document.getElementById('cardQuickAddPopover');
+            if (pop) {{
+                pop.style.display = 'none';
+                pop.dataset.currentKey = '';
+            }}
+        }}
+
+        function setQuickAddFilterTab(type) {{
+            quickAddActiveFilter = type;
+            updateQuickAddTabs();
+            renderQuickAddSuggestions();
+        }}
+
+        function updateQuickAddTabs() {{
+            const tabs = document.querySelectorAll('.quick-add-tab');
+            tabs.forEach(t => {{
+                t.classList.toggle('active', t.dataset.filter === quickAddActiveFilter);
+            }});
+        }}
+
+        function handleQuickAddInput(val) {{
+            renderQuickAddSuggestions();
+        }}
+
+        function handleQuickAddKeydown(event) {{
+            if (event.key === 'Escape') {{
+                closeCardQuickAdd();
+                return;
+            }}
+            if (event.key === 'Enter') {{
+                event.preventDefault();
+                const input = document.getElementById('cardQuickAddInput');
+                const q = input ? input.value.trim() : '';
+                if (!q) return;
+
+                const pop = document.getElementById('cardQuickAddPopover');
+                const key = pop ? pop.dataset.currentKey : null;
+                if (!key) return;
+
+                const firstItem = pop.querySelector('.quick-add-item');
+                if (firstItem) {{
+                    firstItem.click();
+                    return;
+                }}
+
+                // Otherwise create new tag by default
+                quickAddTagOrGenre(key, 'tag', q);
+            }}
+        }}
+
+        function renderQuickAddSuggestions() {{
+            const pop = document.getElementById('cardQuickAddPopover');
+            if (!pop || pop.style.display !== 'flex') return;
+
+            const key = pop.dataset.currentKey;
+            const f = allFiles.find(x => x.key === key);
+            if (!f) return;
+
+            const appliedTags = new Set((f.metadata?.tags || []).map(t => String(t).trim()));
+            const appliedGenres = new Set((f.metadata?.genres || []).map(g => String(g).trim()));
+
+            // Render applied box
+            const appliedBox = document.getElementById('quickAddAppliedBox');
+            if (appliedBox) {{
+                let appliedHtml = '';
+                appliedGenres.forEach(g => {{
+                    appliedHtml += `
+                    <span class="quick-add-applied-chip is-genre" title="Applied Category: Click × to remove">
+                        📁 ${{escapeHtml(g)}}
+                        <span class="quick-add-chip-del" onclick="quickRemoveTagOrGenre('${{escapeHtml(key)}}', 'genre', '${{escapeHtml(g)}}')">&times;</span>
+                    </span>`;
+                }});
+                appliedTags.forEach(t => {{
+                    appliedHtml += `
+                    <span class="quick-add-applied-chip is-tag" title="Applied Tag: Click × to remove">
+                        🏷️ ${{escapeHtml(t)}}
+                        <span class="quick-add-chip-del" onclick="quickRemoveTagOrGenre('${{escapeHtml(key)}}', 'tag', '${{escapeHtml(t)}}')">&times;</span>
+                    </span>`;
+                }});
+                if (!appliedHtml) {{
+                    appliedHtml = `<span style="color: #64748b; font-size: 0.70rem; font-style: italic;">No tags or categories applied yet</span>`;
+                }}
+                appliedBox.innerHTML = appliedHtml;
+            }}
+
+            // Gather all available unique genres and tags across the entire system
+            const allAvailableGenres = new Set();
+            const allAvailableTags = new Set();
+            allFiles.forEach(file => {{
+                (file.metadata?.genres || []).forEach(g => {{
+                    const strG = String(g).trim();
+                    if (strG && !appliedGenres.has(strG)) allAvailableGenres.add(strG);
+                }});
+                (file.metadata?.tags || []).forEach(t => {{
+                    const strT = String(t).trim();
+                    if (strT && !appliedTags.has(strT)) allAvailableTags.add(strT);
+                }});
+            }});
+
+            const input = document.getElementById('cardQuickAddInput');
+            const rawQ = (input ? input.value : '').trim();
+            const q = rawQ.toLowerCase();
+
+            const showTags = (quickAddActiveFilter === 'all' || quickAddActiveFilter === 'tags');
+            const showCats = (quickAddActiveFilter === 'all' || quickAddActiveFilter === 'categories');
+
+            let matchingGenres = showCats ? Array.from(allAvailableGenres).filter(g => !q || g.toLowerCase().includes(q)).sort((a, b) => a.localeCompare(b)) : [];
+            let matchingTags = showTags ? Array.from(allAvailableTags).filter(t => !q || t.toLowerCase().includes(q)).sort((a, b) => a.localeCompare(b)) : [];
+
+            const listEl = document.getElementById('quickAddSuggestionsList');
+            if (!listEl) return;
+
+            let html = '';
+
+            // If user typed something, show Create New Tag and Create New Category options
+            if (rawQ) {{
+                const existsExactTag = Array.from(appliedTags).some(t => t.toLowerCase() === q) || Array.from(allAvailableTags).some(t => t.toLowerCase() === q);
+                const existsExactGenre = Array.from(appliedGenres).some(g => g.toLowerCase() === q) || Array.from(allAvailableGenres).some(g => g.toLowerCase() === q);
+
+                html += `
+                <button type="button" class="quick-add-create-btn" onclick="quickAddTagOrGenre('${{escapeHtml(key)}}', 'tag', '${{escapeHtml(rawQ)}}')">
+                    <span>✨</span>
+                    <span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${{existsExactTag ? 'Add Tag' : 'Create New Tag'}}: <b>"${{escapeHtml(rawQ)}}"</b></span>
+                    <span class="quick-add-item-type tag-type">+ Tag</span>
+                </button>
+                <button type="button" class="quick-add-create-btn" onclick="quickAddTagOrGenre('${{escapeHtml(key)}}', 'genre', '${{escapeHtml(rawQ)}}')">
+                    <span>📁</span>
+                    <span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${{existsExactGenre ? 'Add Category' : 'Create New Category'}}: <b>"${{escapeHtml(rawQ)}}"</b></span>
+                    <span class="quick-add-item-type cat-type">+ Category</span>
+                </button>`;
+            }}
+
+            // Render unapplied matching categories
+            matchingGenres.forEach(g => {{
+                html += `
+                <div class="quick-add-item" onclick="quickAddTagOrGenre('${{escapeHtml(key)}}', 'genre', '${{escapeHtml(g)}}')">
+                    <span class="quick-add-item-name">
+                        <span>📁</span> <span>${{escapeHtml(g)}}</span>
+                    </span>
+                    <span class="quick-add-item-type cat-type">Category</span>
+                </div>`;
+            }});
+
+            // Render unapplied matching tags
+            matchingTags.forEach(t => {{
+                html += `
+                <div class="quick-add-item" onclick="quickAddTagOrGenre('${{escapeHtml(key)}}', 'tag', '${{escapeHtml(t)}}')">
+                    <span class="quick-add-item-name">
+                        <span>🏷️</span> <span>${{escapeHtml(t)}}</span>
+                    </span>
+                    <span class="quick-add-item-type tag-type">Tag</span>
+                </div>`;
+            }});
+
+            if (matchingGenres.length === 0 && matchingTags.length === 0 && !rawQ) {{
+                html = `<div style="padding: 16px 8px; text-align: center; color: #94a3b8; font-size: 0.75rem;">All existing tags &amp; categories are already applied!<br>Type above to create a brand new tag or category.</div>`;
+            }} else if (matchingGenres.length === 0 && matchingTags.length === 0 && rawQ) {{
+                html += `<div style="padding: 8px 6px; text-align: center; color: #64748b; font-size: 0.72rem; font-style: italic;">No other existing matches. Click above to create.</div>`;
+            }}
+
+            listEl.innerHTML = html;
+        }}
+
+        async function quickAddTagOrGenre(key, type, val) {{
+            const clean = String(val).trim();
+            if (!clean || !key) return;
+
+            try {{
+                const resp = await fetch('/api/video-tag', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ key: key, action: 'add', type: type, value: clean }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    const f = allFiles.find(x => x.key === key);
+                    if (f) {{
+                        f.metadata = res.metadata;
+                    }}
+                    if (typeof FILE_CACHE !== 'undefined' && FILE_CACHE && FILE_CACHE[key]) {{
+                        FILE_CACHE[key].metadata = res.metadata;
+                    }}
+                    updateCardBadgesDom(key);
+                    populateFilterDropdowns();
+                    renderQuickAddSuggestions();
+                    const input = document.getElementById('cardQuickAddInput');
+                    if (input) {{
+                        input.value = '';
+                        input.focus();
+                    }}
+                    showToast(`✅ Added ${{type === 'genre' ? 'Category' : 'Tag'}}: "${{clean}}"`, 'success');
+                }} else {{
+                    alert('Failed to add: ' + (res.message || 'Unknown error'));
+                }}
+            }} catch (err) {{
+                alert('Request failed: ' + err);
+            }}
+        }}
+
+        async function quickRemoveTagOrGenre(key, type, val) {{
+            const clean = String(val).trim();
+            if (!clean || !key) return;
+
+            try {{
+                const resp = await fetch('/api/video-tag', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ key: key, action: 'remove', type: type, value: clean }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    const f = allFiles.find(x => x.key === key);
+                    if (f) {{
+                        f.metadata = res.metadata;
+                    }}
+                    if (typeof FILE_CACHE !== 'undefined' && FILE_CACHE && FILE_CACHE[key]) {{
+                        FILE_CACHE[key].metadata = res.metadata;
+                    }}
+                    updateCardBadgesDom(key);
+                    populateFilterDropdowns();
+                    renderQuickAddSuggestions();
+                    showToast(`Removed ${{type === 'genre' ? 'Category' : 'Tag'}}: "${{clean}}"`, 'info');
+                }} else {{
+                    alert('Failed to remove: ' + (res.message || 'Unknown error'));
+                }}
+            }} catch (err) {{
+                alert('Request failed: ' + err);
+            }}
+        }}
+
+        function updateCardBadgesDom(key) {{
+            const f = allFiles.find(x => x.key === key);
+            if (!f) return;
+            const cards = document.querySelectorAll(`.video-card[data-key="${{CSS.escape(key)}}"]`);
+            cards.forEach(card => {{
+                const badgesContainer = card.querySelector('.video-card-badges');
+                if (badgesContainer) {{
+                    const nodeName = (card.querySelector('.video-card-sub')?.textContent || card.querySelector('.video-card-title')?.textContent || '').trim();
+                    const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
+                    const cleanTitle = (f.metadata?.title || '').trim().toLowerCase();
+                    const allAlternativeNames = [];
+                    const seenAlt = new Set([cleanTitle, cleanNode]);
+                    (f.file_names || []).concat(f.aliases || []).forEach(a => {{
+                        if (!a) return;
+                        const baseName = a.split('/').pop().split(String.fromCharCode(92)).pop().trim();
+                        const cleanA = cleanTitleExtension(baseName).toLowerCase();
+                        if (cleanA && !seenAlt.has(cleanA)) {{
+                            seenAlt.add(cleanA);
+                            allAlternativeNames.push(baseName);
+                        }}
+                    }});
+                    let aliasBadge = '';
+                    if (allAlternativeNames.length > 0) {{
+                        aliasBadge = `<div class="card-alias-cluster">` + allAlternativeNames.map(a => {{
+                            const cleanA = cleanTitleExtension(a);
+                            return `
+                            <span class="alias-card-pill" title="Alternative filename: ${{escapeHtml(a)}}">
+                                <span class="alias-card-icon">&#128206;</span>
+                                <span class="alias-card-name" title="${{escapeHtml(a)}}">${{escapeHtml(a)}}</span>
+                                <button type="button" class="btn-alias-direct-edit" onclick="promptEditWithTitle('${{escapeHtml(f.key)}}', '${{escapeHtml(a)}}', event)" title="Use '${{escapeHtml(cleanA)}}' as title, fix typos &amp; save">
+                                    &#9998; Set as Title
+                                </button>
+                            </span>`;
+                        }}).join('') + `</div>`;
+                    }}
+
+                    badgesContainer.innerHTML = renderCardBadgesHtml(f) + aliasBadge;
+                }}
+            }});
+        }}
+
+        function renderCard(f, nodeName) {{
+            const meta = f.metadata || {{}};
+            const title = meta.title || nodeName;
+            const badgesHtml = renderCardBadgesHtml(f);
 
             const cleanNode = nodeName.replace(/\.[^/.]+$/, '').trim().toLowerCase();
             const cleanTitle = title.trim().toLowerCase();
@@ -6378,7 +7078,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     ${{subtitleHtml}}
                     ${{overviewHtml}}
                     <div class="video-card-badges">
-                        ${{accountBadge}}
                         ${{badgesHtml}}
                         ${{aliasBadge}}
                     </div>
@@ -7321,6 +8020,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         document.addEventListener('click', function(e) {{
             if (!e.target.closest('.popover-wrapper')) {{
                 document.querySelectorAll('.filter-popover').forEach(p => p.style.display = 'none');
+            }}
+            const pop = document.getElementById('cardQuickAddPopover');
+            if (pop && pop.style.display === 'flex') {{
+                if (!e.target.closest('#cardQuickAddPopover') && !e.target.closest('.btn-card-quick-add')) {{
+                    closeCardQuickAdd();
+                }}
             }}
         }});
 
