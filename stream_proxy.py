@@ -6431,7 +6431,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 deactivateFloatingMiniPlayer();
             }}
 
-            // Use /stream/play/{safeId} (no .mp4 extension) to completely avoid IDM capture:
+            // Use /stream/play/ (no .mp4 extension) to completely avoid IDM capture:
             const streamPlayUrl = '/stream/play/' + encodeURIComponent(safeId);
             player.src = streamPlayUrl;
 
