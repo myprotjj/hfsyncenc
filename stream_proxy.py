@@ -1764,6 +1764,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             keep_key = str(req_data.get("keep_key", "")).strip()
             discard_keys = req_data.get("discard_keys", [])
             delete_remote = bool(req_data.get("delete_remote", True))
+            target_title = str(req_data.get("target_title", "")).strip()
         except Exception:
             self.send_error(400, "Invalid JSON payload")
             return
@@ -1786,6 +1787,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         keep_record.setdefault("extra_media_hashes", [])
         keep_record.setdefault("aliases", [])
         keep_record.setdefault("file_names", [keep_key])
+        if target_title:
+            keep_record.setdefault("metadata", {})
+            keep_record["metadata"]["title"] = target_title
 
         existing_hashes = set()
         for h in keep_record.get("extra_media_hashes", []):
@@ -1810,6 +1814,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             disc_name = Path(disc_key).name
             res_label = (disc_record.get("media_info") or {}).get("resolution_label") or (disc_record.get("metadata") or {}).get("resolution") or ""
             size_bytes = disc_record.get("orig_size") or 0
+
+            # 0. Carry over genres and tags from discarded video
+            disc_meta = disc_record.get("metadata", {})
+            keep_meta = keep_record.setdefault("metadata", {})
+            for g in disc_meta.get("genres", []):
+                if g and g not in keep_meta.setdefault("genres", []):
+                    keep_meta["genres"].append(g)
+            for t in disc_meta.get("tags", []):
+                if t and t not in keep_meta.setdefault("tags", []):
+                    keep_meta["tags"].append(t)
 
             # 1. Add discarded video's media hash to keep_record["extra_media_hashes"]
             if disc_hash and disc_hash not in existing_hashes:
@@ -5083,6 +5097,72 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             gap: 6px;
             padding: 4px 0 10px 0;
         }}
+        .video-card.is-marked-for-merge {{
+            border-color: #a855f7 !important;
+            box-shadow: 0 0 20px rgba(168, 85, 247, 0.45) !important;
+        }}
+        .file-row.is-marked-for-merge {{
+            background: rgba(168, 85, 247, 0.12) !important;
+            border-color: #a855f7 !important;
+        }}
+        .thumb-mark-merge-btn {{
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(4px);
+            color: #c084fc;
+            border: 1px solid rgba(168, 85, 247, 0.45);
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 4px;
+            cursor: pointer;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            transition: all 0.15s ease;
+        }}
+        .thumb-mark-merge-btn:hover {{
+            background: #9333ea;
+            color: #fff;
+            border-color: #a855f7;
+            transform: scale(1.05);
+        }}
+        .thumb-mark-merge-btn.active {{
+            background: #9333ea;
+            color: #fff;
+            border-color: #c084fc;
+            box-shadow: 0 0 10px rgba(168, 85, 247, 0.6);
+        }}
+        .btn-card-merge.active {{
+            background: #9333ea !important;
+            color: #fff !important;
+            border-color: #c084fc !important;
+        }}
+        .floating-merge-bar {{
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid #a855f7;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85), 0 0 20px rgba(168, 85, 247, 0.35);
+            backdrop-filter: blur(12px);
+            border-radius: 50px;
+            padding: 8px 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            z-index: 1050;
+            max-width: 90vw;
+            animation: slideUpMergeBar 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        }}
+        @keyframes slideUpMergeBar {{
+            from {{ transform: translate(-50%, 40px); opacity: 0; }}
+            to {{ transform: translate(-50%, 0); opacity: 1; }}
+        }}
         .video-card {{
             background: #111827;
             border: 1px solid rgba(255, 255, 255, 0.08);
@@ -6610,7 +6690,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </div>
 
                 <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn" title="Toggle tag badges visibility on video cards">&#127991; Tags: <span id="tagsStateLabel">Shown</span></button>
-                <button onclick="openMergeVideosModal(null, event)" class="tool-btn" title="Merge duplicate videos across library and lock hashes">&#128256; Merge Videos</button>
+                <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn" title="Merge marked duplicate videos and lock hashes">&#128256; Merge Videos <span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.65rem; padding: 1px 6px; margin-left: 4px;">0</span></button>
                 <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
                 <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
                 <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
@@ -6634,6 +6714,30 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         <div class="tree-container" id="treeContainer">
             <!-- Tree populated dynamically via JS -->
+        </div>
+    </div>
+
+    <!-- Floating Merge Action Bar (Appears when videos are marked for merge) -->
+    <div id="floatingMergeBar" class="floating-merge-bar" style="display: none;">
+        <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+            <div style="width: 28px; height: 28px; border-radius: 50%; background: #9333ea; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; flex-shrink: 0;">
+                &#128256;
+            </div>
+            <div style="min-width: 0;">
+                <div style="font-weight: 700; font-size: 0.88rem; color: #f8fafc; display: flex; align-items: center; gap: 6px;">
+                    <span id="floatingMergeCountLabel">0 Videos Marked</span>
+                    <span class="badge badge-purple" style="font-size: 0.65rem;">Fingerprint Lock</span>
+                </div>
+                <div id="floatingMergeSubtitle" style="font-size: 0.72rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 450px;">
+                    Mark another video to configure merge
+                </div>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+            <button type="button" onclick="clearAllMergeMarks()" class="tool-btn btn-xs" style="padding: 5px 10px;">Clear</button>
+            <button type="button" id="floatingMergeBtn" onclick="openMergeMarkedModal()" class="btn btn-sm btn-play" style="background: #9333ea; border-color: #a855f7; padding: 6px 16px; font-weight: 700;">
+                &#128256; Merge Marked Videos &rarr;
+            </button>
         </div>
     </div>
 
@@ -6856,9 +6960,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
     </div>
 
 
-        <!-- Merge Duplicate Videos Modal -->
+            <!-- Merge Duplicate Videos Modal -->
     <div id="mergeVideosModal" class="modal-overlay" style="display: none; z-index: 1160;" onclick="handleMergeModalBackdropClick(event)">
-        <div class="modal" style="max-width: 860px; width: 95%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; padding: 0; border: 1px solid rgba(168, 85, 247, 0.35); box-shadow: 0 20px 60px rgba(0,0,0,0.9); background: #0b1120;">
+        <div class="modal" style="max-width: 900px; width: 95%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; padding: 0; border: 1px solid rgba(168, 85, 247, 0.35); box-shadow: 0 20px 60px rgba(0,0,0,0.9); background: #0b1120;">
             
             <!-- Modal Header -->
             <div style="padding: 16px 22px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255,255,255,0.02); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
@@ -6869,172 +6973,29 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div>
                         <div style="font-weight: 700; font-size: 1.05rem; color: #f8fafc; display: flex; align-items: center; gap: 8px;">
                             <span>Merge Duplicate Videos</span>
-                            <span class="badge badge-purple" style="font-size: 0.65rem; padding: 2px 7px;">Fingerprint Lock</span>
+                            <span id="mergeModalHeaderBadge" class="badge badge-purple" style="font-size: 0.65rem; padding: 2px 7px;">Fingerprint Lock</span>
                         </div>
                         <div style="font-size: 0.76rem; color: #94a3b8; margin-top: 2px;">
-                            Keep the best version, merge tags &amp; metadata, and permanently lock duplicate fingerprints so discarded files never re-upload.
+                            Choose which video file to keep and which title to save. Discarded duplicates are deleted, and their hashes permanently locked so they never re-upload.
                         </div>
                     </div>
                 </div>
                 <button type="button" onclick="closeMergeVideosModal()" class="tool-btn btn-xs" style="font-size: 1.2rem; padding: 4px 10px; line-height: 1;" title="Close">&times;</button>
             </div>
 
-            <!-- Modal Body (3 Views) -->
-            <div class="modal-body" style="padding: 18px 22px; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 280px;">
-                
-                <!-- VIEW 1: Browse Detected Duplicates & Search Library (Global Mode) -->
-                <div id="mergeViewDetect" style="display: none;">
-                    <!-- Auto-detected Duplicates Section -->
-                    <div id="mergeAutoPairsContainer" style="margin-bottom: 20px;">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-                            <div style="font-size: 0.85rem; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
-                                <span>&#10024; Detected Duplicate Candidates in Library</span>
-                                <span id="mergeDetectedCountBadge" class="badge badge-info" style="font-size: 0.65rem; padding: 1px 6px;">0</span>
-                            </div>
-                            <span style="font-size: 0.72rem; color: #64748b;">Based on matching titles, copy markers &amp; durations</span>
-                        </div>
-                        <div id="mergeAutoPairsList" style="display: flex; flex-direction: column; gap: 8px;">
-                            <!-- Pairs populated dynamically -->
-                        </div>
-                    </div>
-
-                    <!-- Manual Video Search Section -->
-                    <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 14px;">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: #f8fafc; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                            <span>&#128269; Or Search Library to Pick Video 1:</span>
-                        </div>
-                        <div style="position: relative; margin-bottom: 10px;">
-                            <input type="text" id="mergeGlobalSearchInput" class="form-input" placeholder="Type title, folder, or filename to find Video 1..." oninput="handleMergeGlobalSearch(this.value)" style="padding-left: 34px; font-size: 0.85rem;">
-                            <span style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #64748b; font-size: 0.85rem;">&#128269;</span>
-                        </div>
-                        <div id="mergeGlobalSearchResults" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
-                            <!-- Populated dynamically -->
-                        </div>
-                    </div>
-                </div>
-
-                <!-- VIEW 2: Pick Duplicate for Video A -->
-                <div id="mergeViewSelectB" style="display: none;">
-                    <!-- Video A Banner Card -->
-                    <div style="background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 14px;">
-                        <div style="display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1;">
-                            <div id="mergeBannerThumbA" style="width: 76px; height: 46px; border-radius: 6px; background: #0f172a; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center;">
-                                <span style="font-size: 1.2rem;">&#127916;</span>
-                            </div>
-                            <div style="min-width: 0; flex: 1;">
-                                <div style="font-size: 0.70rem; font-weight: 700; color: #c084fc; text-transform: uppercase; letter-spacing: 0.5px;">Video 1 (Selected)</div>
-                                <div id="mergeBannerTitleA" style="font-size: 0.92rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">-</div>
-                                <div id="mergeBannerBadgesA" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px;"></div>
-                            </div>
-                        </div>
-                        <button type="button" onclick="showMergeView('detect')" class="tool-btn btn-xs" style="white-space: nowrap; padding: 4px 10px; font-size: 0.75rem;">
-                            Change Video 1
-                        </button>
-                    </div>
-
-                    <!-- Step Header -->
-                    <div style="font-size: 0.85rem; font-weight: 700; color: #f8fafc; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                        <span>Select duplicate video to merge into Video 1:</span>
-                    </div>
-
-                    <!-- Smart Suggestions for Video A -->
-                    <div id="mergeSmartSuggestionsBBox" style="margin-bottom: 14px; display: none;">
-                        <div style="font-size: 0.74rem; font-weight: 600; color: #34d399; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 4px;">
-                            <span>&#11088; Suggested Duplicate Matches</span>
-                        </div>
-                        <div id="mergeSmartSuggestionsBList" style="display: flex; flex-direction: column; gap: 6px;"></div>
-                    </div>
-
-                    <!-- Search Input for Video B -->
-                    <div style="position: relative; margin-bottom: 10px;">
-                        <input type="text" id="mergeSearchInputB" class="form-input" placeholder="Search other video by title, folder, or filename..." oninput="handleMergeSearchB(this.value)" style="padding-left: 34px; font-size: 0.85rem;">
-                        <span style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #64748b; font-size: 0.85rem;">&#128269;</span>
-                    </div>
-                    <div id="mergeSearchResultsB" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
-                        <!-- Results -->
-                    </div>
-                </div>
-
-                <!-- VIEW 3: Side-by-Side Comparison & Confirm -->
-                <div id="mergeViewCompare" style="display: none;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-                        <span style="font-size: 0.80rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px;">
-                            Compare Versions &amp; Choose Which to Keep
-                        </span>
-                        <button type="button" onclick="showMergeView('selectB')" class="tool-btn btn-xs" style="font-size: 0.75rem; padding: 3px 8px;">
-                            &larr; Pick Different Duplicate
-                        </button>
-                    </div>
-
-                    <!-- Comparison Grid -->
-                    <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px;" id="mergeCompareGrid">
-                        
-                        <!-- Card A -->
-                        <div id="mergeCompCardA" onclick="setMergeKeepChoice('A')" style="background: rgba(15, 23, 42, 0.7); border: 2px solid #10b981; border-radius: 10px; padding: 14px; cursor: pointer; transition: all 0.2s ease; position: relative;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <span style="font-size: 0.70rem; font-weight: 700; color: #c084fc; text-transform: uppercase;">Video A</span>
-                                <span id="mergeCompBadgeA" class="badge badge-success" style="font-size: 0.70rem; padding: 2px 8px;">&#128081; Keep This Video</span>
-                            </div>
-                            <div style="display: flex; gap: 12px; margin-bottom: 10px;">
-                                <div id="mergeCompThumbA" style="width: 96px; height: 58px; background: #0f172a; border-radius: 6px; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center;">
-                                    <span style="font-size: 1.4rem;">&#127916;</span>
-                                </div>
-                                <div style="min-width: 0; flex: 1;">
-                                    <div id="mergeCompTitleA" style="font-size: 0.90rem; font-weight: 700; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</div>
-                                    <div id="mergeCompFolderA" style="font-size: 0.70rem; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px;">-</div>
-                                </div>
-                            </div>
-                            <div id="mergeCompBadgesA" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px;"></div>
-                            <button type="button" id="mergeBtnKeepA" onclick="event.stopPropagation(); setMergeKeepChoice('A')" class="btn btn-sm" style="width: 100%; background: #10b981; color: #fff; font-weight: 700; padding: 7px 10px; border-radius: 6px;">
-                                &#10003; Keeping Video A (Canonical)
-                            </button>
-                        </div>
-
-                        <!-- Card B -->
-                        <div id="mergeCompCardB" onclick="setMergeKeepChoice('B')" style="background: rgba(15, 23, 42, 0.7); border: 2px solid rgba(239, 68, 68, 0.4); border-radius: 10px; padding: 14px; cursor: pointer; transition: all 0.2s ease; position: relative;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <span style="font-size: 0.70rem; font-weight: 700; color: #94a3b8; text-transform: uppercase;">Video B</span>
-                                <span id="mergeCompBadgeB" class="badge badge-danger" style="font-size: 0.70rem; padding: 2px 8px;">&#128465; Discard &amp; Link Hash</span>
-                            </div>
-                            <div style="display: flex; gap: 12px; margin-bottom: 10px;">
-                                <div id="mergeCompThumbB" style="width: 96px; height: 58px; background: #0f172a; border-radius: 6px; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center;">
-                                    <span style="font-size: 1.4rem;">&#127916;</span>
-                                </div>
-                                <div style="min-width: 0; flex: 1;">
-                                    <div id="mergeCompTitleB" style="font-size: 0.90rem; font-weight: 700; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</div>
-                                    <div id="mergeCompFolderB" style="font-size: 0.70rem; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px;">-</div>
-                                </div>
-                            </div>
-                            <div id="mergeCompBadgesB" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px;"></div>
-                            <button type="button" id="mergeBtnKeepB" onclick="event.stopPropagation(); setMergeKeepChoice('B')" class="btn btn-sm" style="width: 100%; background: rgba(255,255,255,0.1); color: #fff; font-weight: 700; padding: 7px 10px; border-radius: 6px;">
-                                Keep Video B Instead
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- Outcome Summary Box -->
-                    <div style="background: rgba(147, 51, 234, 0.08); border: 1px solid rgba(147, 51, 234, 0.28); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px;">
-                        <div style="font-size: 0.82rem; font-weight: 700; color: #d8b4fe; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
-                            <span>&#9889; Merge Outcome Summary</span>
-                        </div>
-                        <div id="mergeCompSummaryText" style="font-size: 0.78rem; color: #cbd5e1; line-height: 1.5; margin-bottom: 8px;"></div>
-                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: #e2e8f0; cursor: pointer;">
-                            <input type="checkbox" id="chkMergeDeleteRemote" checked>
-                            <span>Delete discarded video's encrypted files from Hugging Face dataset (reclaims cloud storage)</span>
-                        </label>
-                    </div>
-                </div>
-
+            <!-- Modal Body (Dynamic marked merge contents) -->
+            <div id="markedMergeModalBody" class="modal-body" style="padding: 18px 22px; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 280px;">
+                <!-- Populated dynamically via JS -->
             </div>
 
             <!-- Modal Footer -->
-            <div style="padding: 12px 22px; border-top: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255,255,255,0.02); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
+            <div id="markedMergeModalFooter" style="padding: 12px 22px; border-top: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255,255,255,0.02); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
                 <div style="font-size: 0.72rem; color: #64748b;">
-                    Linked hashes can be unlinked at any time from the Edit modal.
+                    Hashes can be unlinked at any time from the Edit modal.
                 </div>
-                <div style="display: flex; gap: 8px;">
-                    <button type="button" onclick="closeMergeVideosModal()" class="tool-btn">Cancel</button>
-                    <button type="button" id="btnConfirmMergeVideos" onclick="submitExecuteMergeVideos()" class="btn btn-play" style="background: #9333ea; border-color: #a855f7; padding: 8px 18px; display: none;">
+                <div style="display: flex; gap: 8px;" id="markedMergeFooterBtns">
+                    <button type="button" onclick="closeMergeVideosModal()" class="tool-btn">Close</button>
+                    <button type="button" id="btnSubmitMarkedMerge" onclick="submitExecuteMergeMarked()" class="btn btn-play" style="background: #9333ea; border-color: #a855f7; padding: 8px 18px; display: none;">
                         &#128256; Confirm &amp; Merge
                     </button>
                 </div>
@@ -8121,8 +8082,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
             const audioSizeStr = f.audio_size_str || 'Audio';
 
+            const isMarked = markedForMergeKeys.has(f.key);
             return `
-            <div class="video-card" data-key="${{escapeHtml(f.key)}}">
+            <div class="video-card ${{isMarked ? 'is-marked-for-merge' : ''}}" data-key="${{escapeHtml(f.key)}}">
                 <div class="video-card-thumb video-thumb-card" 
                      data-key="${{escapeHtml(f.key)}}" 
                      data-safeid="${{safeId}}"
@@ -8142,6 +8104,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
+                    <button type="button" class="thumb-mark-merge-btn ${{isMarked ? 'active' : ''}}" onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" title="${{isMarked ? 'Unmark from merge' : 'Mark for duplicate merge'}}">&#128256; ${{isMarked ? 'Marked' : 'Merge'}}</button>
                     ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmousemove="event.stopPropagation()" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens on card &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
                     <div class="card-size-badge" title="Video size: ${{escapeHtml(f.size_str)}}, Audio: ${{escapeHtml(audioSizeStr)}}">
                         <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
@@ -8177,7 +8140,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <a href="${{escapeHtml(f.hf_url)}}" target="_blank" class="card-icon-btn btn-card-hf" title="Open dataset on Hugging Face">&#129303;</a>
                     </div>
                     <div class="card-action-group-right">
-                        <button onclick="openMergeVideosModal('${{escapeHtml(f.key)}}', event)" class="card-icon-btn btn-card-merge" title="Merge Duplicates (Keep best, link hashes)" style="color: #c084fc;">&#128256;</button>
+                        <button onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" class="card-icon-btn btn-card-merge ${{isMarked ? 'active' : ''}}" title="${{isMarked ? 'Unmark from merge' : 'Mark for duplicate merge'}}" style="color: #c084fc;">&#128256;</button>
                         <button onclick="promptEditMetadata('${{escapeHtml(f.key)}}')" class="card-icon-btn btn-card-edit" title="Edit Tags, Categories &amp; Metadata">&#127991;</button>
                         <button onclick="promptDeleteFile('${{escapeHtml(f.key)}}')" class="card-icon-btn btn-card-delete" title="Delete Video Permanently">&#128465;</button>
                     </div>
@@ -8300,8 +8263,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
             const audioSizeStr = f.audio_size_str || 'Audio';
 
+            const isMarked = markedForMergeKeys.has(f.key);
             return `
-            <div class="file-row" data-key="${{escapeHtml(f.key)}}">
+            <div class="file-row ${{isMarked ? 'is-marked-for-merge' : ''}}" data-key="${{escapeHtml(f.key)}}">
                 <div class="video-thumb-card" 
                      data-key="${{escapeHtml(f.key)}}" 
                      data-safeid="${{safeId}}"
@@ -8345,6 +8309,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     ${{canViewScreens ? `<button type="button" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" class="btn btn-secondary btn-sm" title="View Full Contact Sheet Screenshots">&#128444;&#65039; Screens</button>` : ''}}
                     <a href="/stream/audio/${{f.key}}" download="${{escapeHtml(title)}}.m4a" target="_blank" class="btn btn-link btn-card-audio" title="Download / Stream Lightweight Audio (.m4a)">&#127925; Audio</a>
                     <a href="${{f.hf_url}}" target="_blank" class="btn btn-hf" title="Open file on Hugging Face">&#129303; View on HF</a>
+                    <button onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" class="btn btn-secondary btn-sm btn-mark-merge ${{isMarked ? 'active' : ''}}" title="${{isMarked ? 'Unmark from merge' : 'Mark for duplicate merge'}}" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); font-size: 0.75rem; padding: 4px 10px;">&#128256; ${{isMarked ? 'Marked' : 'Merge'}}</button>
                     <button onclick="promptEditMetadata('${{escapeHtml(f.key)}}')" class="btn btn-edit" title="Edit tags, categories, and Jellyfin metadata">&#127991; Edit Tags</button>
                     <button onclick="promptDeleteFile('${{escapeHtml(f.key)}}')" class="btn btn-delete" title="Delete video permanently">&#128465; Delete</button>
                 </div>
@@ -10655,9 +10620,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
-                let mergeVideoA = null;
-        let mergeVideoB = null;
-        let mergeKeepChoice = 'A';
+                        let markedForMergeKeys = new Set();
+        let mergeKeptKey = null;
+        let mergeTargetTitle = '';
 
         function cleanTitleForDedup(title) {{
             if (!title) return '';
@@ -10665,7 +10630,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             t = t.replace(/\.[a-z0-9]{{2,4}}$/i, '');
             t = t.replace(/\s*\(\d+\)|\s*\bcopy\b|\s*\[.*?\]|\s*\b(1080p|720p|480p|360p|4k|hd|sd|x264|h264|x265|hevc)\b/gi, '');
             t = t.replace(/[^a-z0-9]+/g, ' ').trim();
-            return t;
+            if (!t) return '';
+            return t.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
         }}
 
         function getFileThumbHtml(f, w = 76, h = 46) {{
@@ -10691,19 +10657,37 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return 0;
         }}
 
+        function pickBestVideoKey(filesList) {{
+            if (!filesList || filesList.length === 0) return null;
+            let best = filesList[0];
+            for (let i = 1; i < filesList.length; i++) {{
+                const f = filesList[i];
+                const scoreF = getFileResolutionScore(f);
+                const scoreBest = getFileResolutionScore(best);
+                if (scoreF > scoreBest) {{
+                    best = f;
+                }} else if (scoreF === scoreBest) {{
+                    if ((f.orig_size || 0) > (best.orig_size || 0)) {{
+                        best = f;
+                    }}
+                }}
+            }}
+            return best.key;
+        }}
+
         function findDetectedDuplicatePairs() {{
             const pairs = [];
             const seen = new Set();
             for (let i = 0; i < allFiles.length; i++) {{
                 const f1 = allFiles[i];
                 const t1 = (f1.metadata && f1.metadata.title) ? f1.metadata.title : PathLeaf(f1.key);
-                const c1 = cleanTitleForDedup(t1);
+                const c1 = cleanTitleForDedup(t1).toLowerCase();
                 if (!c1 || c1.length < 3) continue;
 
                 for (let j = i + 1; j < allFiles.length; j++) {{
                     const f2 = allFiles[j];
                     const t2 = (f2.metadata && f2.metadata.title) ? f2.metadata.title : PathLeaf(f2.key);
-                    const c2 = cleanTitleForDedup(t2);
+                    const c2 = cleanTitleForDedup(t2).toLowerCase();
                     if (!c2 || c2.length < 3) continue;
 
                     const pairKey = f1.key < f2.key ? `${{f1.key}}:::${{f2.key}}` : `${{f2.key}}:::${{f1.key}}`;
@@ -10718,27 +10702,119 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return pairs;
         }}
 
-        function handleMergeModalBackdropClick(event) {{
-            if (event.target && event.target.id === 'mergeVideosModal') {{
-                closeMergeVideosModal();
+        function toggleMarkForMerge(key, event) {{
+            if (event) event.stopPropagation();
+
+            if (markedForMergeKeys.has(key)) {{
+                markedForMergeKeys.delete(key);
+                showToast('Unmarked video from merge.', 'info');
+            }} else {{
+                markedForMergeKeys.add(key);
+                if (markedForMergeKeys.size === 1) {{
+                    showToast('Marked 1 video for merge. Mark another video to compare & merge!', 'info');
+                }} else {{
+                    showToast(`Marked ${{markedForMergeKeys.size}} videos for merge! Click "Merge Marked" at bottom to configure.`, 'success');
+                }}
+            }}
+
+            updateMarkedMergeUI();
+
+            // If modal is currently open, re-render it live
+            const modal = document.getElementById('mergeVideosModal');
+            if (modal && modal.style.display === 'flex') {{
+                renderMarkedMergeModal();
             }}
         }}
 
-        function openMergeVideosModal(initialKey, event) {{
-            if (event) event.stopPropagation();
+        function clearAllMergeMarks() {{
+            markedForMergeKeys.clear();
+            mergeKeptKey = null;
+            mergeTargetTitle = '';
+            updateMarkedMergeUI();
+            showToast('Cleared all merge marks.', 'info');
 
             const modal = document.getElementById('mergeVideosModal');
-            if (modal) modal.style.display = 'flex';
-
-            if (initialKey) {{
-                mergeVideoA = initialKey;
-                mergeVideoB = null;
-                showMergeView('selectB');
-            }} else {{
-                mergeVideoA = null;
-                mergeVideoB = null;
-                showMergeView('detect');
+            if (modal && modal.style.display === 'flex') {{
+                renderMarkedMergeModal();
             }}
+        }}
+
+        function updateMarkedMergeUI() {{
+            // Update cards in DOM
+            document.querySelectorAll('.video-card, .file-row').forEach(el => {{
+                const k = el.dataset.key;
+                if (!k) return;
+                const isMarked = markedForMergeKeys.has(k);
+                el.classList.toggle('is-marked-for-merge', isMarked);
+
+                const markBtns = el.querySelectorAll('.btn-mark-merge, .thumb-mark-merge-btn');
+                markBtns.forEach(btn => {{
+                    btn.classList.toggle('active', isMarked);
+                    if (btn.classList.contains('thumb-mark-merge-btn')) {{
+                        btn.innerHTML = isMarked ? '&#10003; Marked' : '&#128256; Merge';
+                    }}
+                    btn.title = isMarked ? 'Click to unmark from merge' : 'Mark for duplicate merge';
+                }});
+            }});
+
+            // Update floating merge bar
+            const floatBar = document.getElementById('floatingMergeBar');
+            if (floatBar) {{
+                if (markedForMergeKeys.size > 0) {{
+                    floatBar.style.display = 'flex';
+                    const countLabel = document.getElementById('floatingMergeCountLabel');
+                    if (countLabel) {{
+                        countLabel.textContent = `${{markedForMergeKeys.size}} Video${{markedForMergeKeys.size > 1 ? 's' : ''}} Marked`;
+                    }}
+                    const subLabel = document.getElementById('floatingMergeSubtitle');
+                    if (subLabel) {{
+                        const names = Array.from(markedForMergeKeys).map(k => {{
+                            const f = allFiles.find(x => x.key === k);
+                            return (f && f.metadata && f.metadata.title) || PathLeaf(k);
+                        }});
+                        subLabel.textContent = names.join(' • ');
+                    }}
+                    const btn = document.getElementById('floatingMergeBtn');
+                    if (btn) {{
+                        if (markedForMergeKeys.size >= 2) {{
+                            btn.innerHTML = `&#128256; Merge Marked (${{markedForMergeKeys.size}}) &rarr;`;
+                            btn.style.background = '#9333ea';
+                        }} else {{
+                            btn.innerHTML = `&#128256; Mark 1 More to Merge &rarr;`;
+                            btn.style.background = 'rgba(255,255,255,0.1)';
+                        }}
+                    }}
+                }} else {{
+                    floatBar.style.display = 'none';
+                }}
+            }}
+
+            // Update toolbar button badge
+            const tbBadge = document.getElementById('toolbarMergeBadge');
+            if (tbBadge) {{
+                if (markedForMergeKeys.size > 0) {{
+                    tbBadge.style.display = 'inline-block';
+                    tbBadge.textContent = markedForMergeKeys.size;
+                }} else {{
+                    tbBadge.style.display = 'none';
+                }}
+            }}
+        }}
+
+        function openMergeMarkedModal() {{
+            const modal = document.getElementById('mergeVideosModal');
+            if (modal) modal.style.display = 'flex';
+            renderMarkedMergeModal();
+        }}
+
+        // Backward compatibility alias: openMergeVideosModal
+        function openMergeVideosModal(initialKey, event) {{
+            if (event) event.stopPropagation();
+            if (initialKey) {{
+                markedForMergeKeys.add(initialKey);
+                updateMarkedMergeUI();
+            }}
+            openMergeMarkedModal();
         }}
 
         function closeMergeVideosModal() {{
@@ -10746,490 +10822,448 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (modal) modal.style.display = 'none';
         }}
 
-        function showMergeView(viewName) {{
-            const vDetect = document.getElementById('mergeViewDetect');
-            const vSelectB = document.getElementById('mergeViewSelectB');
-            const vCompare = document.getElementById('mergeViewCompare');
-            const btnConfirm = document.getElementById('btnConfirmMergeVideos');
-
-            if (vDetect) vDetect.style.display = (viewName === 'detect') ? 'block' : 'none';
-            if (vSelectB) vSelectB.style.display = (viewName === 'selectB') ? 'block' : 'none';
-            if (vCompare) vCompare.style.display = (viewName === 'compare') ? 'block' : 'none';
-
-            if (btnConfirm) btnConfirm.style.display = (viewName === 'compare') ? 'inline-flex' : 'none';
-
-            if (viewName === 'detect') {{
-                renderMergeDetectView();
-            }} else if (viewName === 'selectB') {{
-                renderMergeSelectBView();
-            }} else if (viewName === 'compare') {{
-                renderMergeComparison();
+        function handleMergeModalBackdropClick(event) {{
+            if (event.target && event.target.id === 'mergeVideosModal') {{
+                closeMergeVideosModal();
             }}
         }}
 
-        function renderMergeDetectView() {{
-            const pairs = findDetectedDuplicatePairs();
-            const badge = document.getElementById('mergeDetectedCountBadge');
-            const pairsList = document.getElementById('mergeAutoPairsList');
+        function renderMarkedMergeModal() {{
+            const body = document.getElementById('markedMergeModalBody');
+            const submitBtn = document.getElementById('btnSubmitMarkedMerge');
+            const headerBadge = document.getElementById('mergeModalHeaderBadge');
 
-            if (badge) badge.textContent = pairs.length;
+            if (!body) return;
 
-            if (pairsList) {{
-                if (pairs.length === 0) {{
-                    pairsList.innerHTML = `
-                        <div style="padding: 12px 14px; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); border-radius: 8px; color: #94a3b8; font-size: 0.8rem; text-align: center;">
-                            No automatic duplicate title pairs detected right now. Use the search box below to pick any video to merge.
-                        </div>`;
-                }} else {{
-                    pairsList.innerHTML = pairs.map(p => {{
-                        const f1 = p.file1;
-                        const f2 = p.file2;
-                        const mi1 = f1.media_info || {{}};
-                        const mi2 = f2.media_info || {{}};
-                        const res1 = mi1.resolution_label || (f1.metadata && f1.metadata.resolution) || '';
-                        const res2 = mi2.resolution_label || (f2.metadata && f2.metadata.resolution) || '';
-                        const sz1 = f1.orig_size ? formatBytes(f1.orig_size) : '';
-                        const sz2 = f2.orig_size ? formatBytes(f2.orig_size) : '';
-                        const folder = f1.key.includes('/') ? f1.key.substring(0, f1.key.lastIndexOf('/')) : '';
+            const markedFiles = Array.from(markedForMergeKeys).map(k => allFiles.find(f => f.key === k)).filter(Boolean);
 
-                        return `
-                        <div style="background: rgba(255,255,255,0.025); border: 1px solid rgba(168, 85, 247, 0.28); border-radius: 8px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
-                            <div style="min-width: 0; flex: 1;">
-                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap;">
-                                    <span style="font-weight: 700; font-size: 0.88rem; color: #f8fafc;">${{escapeHtml(p.title1)}}</span>
-                                    <span style="color: #a855f7; font-size: 0.8rem; font-weight: 700;">&#10231;</span>
-                                    <span style="font-weight: 700; font-size: 0.88rem; color: #f8fafc;">${{escapeHtml(p.title2)}}</span>
-                                </div>
-                                <div style="display: flex; gap: 8px; font-size: 0.72rem; color: #94a3b8; flex-wrap: wrap;">
-                                    ${{folder ? `<span>&#128193; ${{escapeHtml(folder)}}</span><span>&bull;</span>` : ''}}
-                                    <span>${{escapeHtml(res1 || 'Video')}} (${{escapeHtml(sz1)}})</span>
-                                    <span>vs</span>
-                                    <span>${{escapeHtml(res2 || 'Video')}} (${{escapeHtml(sz2)}})</span>
-                                </div>
-                            </div>
-                            <button type="button" onclick="selectMergePair('${{escapeHtml(f1.key)}}', '${{escapeHtml(f2.key)}}')" class="btn btn-sm btn-play" style="background: #9333ea; border-color: #a855f7; padding: 6px 14px; font-size: 0.78rem; white-space: nowrap; flex-shrink: 0;">
-                                &#128256; Compare &amp; Merge
-                            </button>
-                        </div>`;
-                    }}).join('');
+            if (headerBadge) {{
+                headerBadge.textContent = `${{markedFiles.length}} Marked`;
+            }}
+
+            // CASE 1: 0 Videos Marked -> Guide & Detected Pairs View
+            if (markedFiles.length === 0) {{
+                if (submitBtn) submitBtn.style.display = 'none';
+
+                const detectedPairs = findDetectedDuplicatePairs();
+
+                let pairsHtml = '';
+                if (detectedPairs.length > 0) {{
+                    pairsHtml = `
+                    <div style="margin-top: 18px; text-align: left;">
+                        <div style="font-size: 0.85rem; font-weight: 700; color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                            <span>&#10024; Detected Duplicate Candidates in Library (${{detectedPairs.length}}):</span>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto;">
+                            ${{detectedPairs.map(p => {{
+                                const f1 = p.file1;
+                                const f2 = p.file2;
+                                const res1 = (f1.media_info && f1.media_info.resolution_label) || (f1.metadata && f1.metadata.resolution) || 'Video';
+                                const res2 = (f2.media_info && f2.media_info.resolution_label) || (f2.metadata && f2.metadata.resolution) || 'Video';
+                                const sz1 = f1.orig_size ? formatBytes(f1.orig_size) : '';
+                                const sz2 = f2.orig_size ? formatBytes(f2.orig_size) : '';
+
+                                return `
+                                <div style="background: rgba(255,255,255,0.025); border: 1px solid rgba(168, 85, 247, 0.28); border-radius: 8px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                                    <div style="min-width: 0; flex: 1;">
+                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px; flex-wrap: wrap;">
+                                            <span style="font-weight: 700; font-size: 0.88rem; color: #f8fafc;">${{escapeHtml(p.title1)}}</span>
+                                            <span style="color: #a855f7; font-size: 0.8rem; font-weight: 700;">&#10231;</span>
+                                            <span style="font-weight: 700; font-size: 0.88rem; color: #f8fafc;">${{escapeHtml(p.title2)}}</span>
+                                        </div>
+                                        <div style="font-size: 0.72rem; color: #94a3b8;">
+                                            <span>${{escapeHtml(res1)}} (${{escapeHtml(sz1)}}) vs ${{escapeHtml(res2)}} (${{escapeHtml(sz2)}})</span>
+                                        </div>
+                                    </div>
+                                    <button type="button" onclick="markPairAndConfigureMerge('${{escapeHtml(f1.key)}}', '${{escapeHtml(f2.key)}}')" class="btn btn-sm btn-play" style="background: #9333ea; border-color: #a855f7; padding: 5px 12px; font-size: 0.76rem; white-space: nowrap;">
+                                        &#128256; Mark Pair &amp; Merge
+                                    </button>
+                                </div>`;
+                            }}).join('')}}
+                        </div>
+                    </div>`;
                 }}
-            }}
 
-            const searchInput = document.getElementById('mergeGlobalSearchInput');
-            if (searchInput) searchInput.value = '';
-            handleMergeGlobalSearch('');
-        }}
+                body.innerHTML = `
+                <div style="text-align: center; padding: 24px 12px;">
+                    <div style="width: 52px; height: 52px; border-radius: 50%; background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.4); display: flex; align-items: center; justify-content: center; font-size: 1.6rem; color: #c084fc; margin: 0 auto 14px auto;">
+                        &#128256;
+                    </div>
+                    <h3 style="margin: 0 0 8px 0; color: #f8fafc; font-size: 1.15rem;">No Videos Marked for Merge Yet</h3>
+                    <p style="margin: 0 auto 18px auto; max-width: 520px; color: #94a3b8; font-size: 0.86rem; line-height: 1.6;">
+                        You can easily merge duplicates: on any video cards in your library, click the <b>&#128256; Merge</b> button to mark them.
+                        Once 2 or more videos are marked, opening this popup allows you to pick which video version to keep, which title to save, and locks their hashes permanently.
+                    </p>
 
-        function handleMergeGlobalSearch(query) {{
-            const list = document.getElementById('mergeGlobalSearchResults');
-            if (!list) return;
+                    <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px; max-width: 540px; margin: 0 auto; text-align: left;">
+                        <div style="font-size: 0.80rem; font-weight: 700; color: #f8fafc; margin-bottom: 6px;">
+                            &#128269; Or Search Library to Mark a Video:
+                        </div>
+                        <input type="text" id="mergeModalSearchInput" class="form-input form-input-sm" placeholder="Type video name or folder..." oninput="handleMergeModalQuickSearch(this.value)">
+                        <div id="mergeModalSearchResults" style="max-height: 150px; overflow-y: auto; margin-top: 6px; display: flex; flex-direction: column; gap: 4px;"></div>
+                    </div>
 
-            const q = (query || '').toLowerCase().trim();
-            const filtered = allFiles.filter(f => {{
-                if (!q) return true;
-                const t = ((f.metadata && f.metadata.title) || PathLeaf(f.key)).toLowerCase();
-                return t.includes(q) || f.key.toLowerCase().includes(q);
-            }}).slice(0, 15);
-
-            if (filtered.length === 0) {{
-                list.innerHTML = `<div style="padding: 14px; text-align: center; color: #64748b; font-size: 0.8rem;">No matching videos found.</div>`;
+                    ${{pairsHtml}}
+                </div>`;
                 return;
             }}
 
-            list.innerHTML = filtered.map(f => {{
-                const title = (f.metadata && f.metadata.title) || PathLeaf(f.key);
-                const mi = f.media_info || {{}};
-                const res = mi.resolution_label || (f.metadata && f.metadata.resolution) || '';
-                const sizeStr = f.orig_size ? formatBytes(f.orig_size) : '';
+            // CASE 2: 1 Video Marked -> Prompt to mark 1 more video
+            if (markedFiles.length === 1) {{
+                if (submitBtn) submitBtn.style.display = 'none';
 
-                return `
-                <div onclick="selectMergeVideoA('${{escapeHtml(f.key)}}')" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; cursor: pointer; transition: background 0.15s ease;" onmouseenter="this.style.background='rgba(168,85,247,0.1)'" onmouseleave="this.style.background='rgba(0,0,0,0.25)'">
-                    <div style="display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; margin-right: 10px;">
-                        ${{getFileThumbHtml(f, 54, 34)}}
-                        <div style="min-width: 0; flex: 1;">
-                            <div style="font-size: 0.84rem; font-weight: 600; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                ${{escapeHtml(title)}}
-                            </div>
-                            <div style="font-size: 0.70rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                ${{escapeHtml(f.key)}}
+                const f1 = markedFiles[0];
+                const t1 = (f1.metadata && f1.metadata.title) || PathLeaf(f1.key);
+                const mi1 = f1.media_info || {{}};
+                const res1 = mi1.resolution_label || (f1.metadata && f1.metadata.resolution) || 'Video';
+                const sz1 = f1.orig_size ? formatBytes(f1.orig_size) : '';
+
+                // Look for smart suggestions matching f1
+                const clean1 = cleanTitleForDedup(t1).toLowerCase();
+                const smartSuggestions = allFiles.filter(f => f.key !== f1.key).map(f => {{
+                    const t = (f.metadata && f.metadata.title) || PathLeaf(f.key);
+                    const c = cleanTitleForDedup(t).toLowerCase();
+                    let score = 0;
+                    if (c && clean1 && c === clean1) score += 50;
+                    else if (c && clean1 && (c.includes(clean1) || clean1.includes(c))) score += 25;
+                    return {{ file: f, title: t, score }};
+                }}).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+
+                body.innerHTML = `
+                <div>
+                    <div style="background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.35); border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 14px;">
+                        <div style="display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1;">
+                            ${{getFileThumbHtml(f1, 76, 46)}}
+                            <div style="min-width: 0; flex: 1;">
+                                <div style="font-size: 0.70rem; font-weight: 700; color: #c084fc; text-transform: uppercase;">1 Video Marked for Merge</div>
+                                <div style="font-size: 0.95rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${{escapeHtml(t1)}}</div>
+                                <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 2px;">
+                                    <span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(res1)}}</span>
+                                    ${{sz1 ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1; font-size: 0.65rem;">${{escapeHtml(sz1)}}</span>` : ''}}
+                                    <span style="margin-left: 6px;">&#128193; ${{escapeHtml(f1.key)}}</span>
+                                </div>
                             </div>
                         </div>
+                        <button type="button" onclick="clearAllMergeMarks()" class="tool-btn btn-xs" style="white-space: nowrap; padding: 4px 10px; font-size: 0.75rem;">
+                            Unmark &amp; Clear
+                        </button>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
-                        ${{res ? `<span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(res)}}</span>` : ''}}
-                        ${{sizeStr ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeStr)}}</span>` : ''}}
-                        <button type="button" class="tool-btn btn-xs" style="color: #c084fc; font-size: 0.72rem; padding: 3px 8px;">Select &rarr;</button>
+
+                    <div style="font-size: 0.88rem; font-weight: 700; color: #f8fafc; margin-bottom: 8px;">
+                        👉 Please mark or select a 2nd duplicate video to merge with "${{escapeHtml(t1)}}":
+                    </div>
+
+                    ${{smartSuggestions.length > 0 ? `
+                        <div style="margin-bottom: 16px;">
+                            <div style="font-size: 0.74rem; font-weight: 600; color: #34d399; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
+                                &#11088; Suggested Duplicate Matches in Library:
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 6px;">
+                                ${{smartSuggestions.slice(0, 4).map(s => {{
+                                    const f = s.file;
+                                    const res = (f.media_info && f.media_info.resolution_label) || (f.metadata && f.metadata.resolution) || 'Video';
+                                    const sz = f.orig_size ? formatBytes(f.orig_size) : '';
+
+                                    return `
+                                    <div onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}')" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onmouseenter="this.style.borderColor='#10b981'" onmouseleave="this.style.borderColor='rgba(16, 185, 129, 0.35)'">
+                                        <div style="display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; margin-right: 10px;">
+                                            ${{getFileThumbHtml(f, 60, 36)}}
+                                            <div style="min-width: 0; flex: 1;">
+                                                <div style="font-size: 0.86rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                                    ${{escapeHtml(s.title)}}
+                                                </div>
+                                                <div style="font-size: 0.70rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                                    ${{escapeHtml(f.key)}}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                                            <span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(res)}}</span>
+                                            ${{sz ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sz)}}</span>` : ''}}
+                                            <button type="button" class="btn btn-sm btn-play" style="background: #10b981; border-color: #34d399; font-size: 0.75rem; padding: 4px 10px; font-weight: 700;">
+                                                + Mark This &rarr;
+                                            </button>
+                                        </div>
+                                    </div>`;
+                                }}).join('')}}
+                            </div>
+                        </div>
+                    ` : ''}}
+
+                    <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px;">
+                        <div style="font-size: 0.80rem; font-weight: 700; color: #f8fafc; margin-bottom: 6px;">
+                            &#128269; Or Search Library for 2nd Video:
+                        </div>
+                        <input type="text" id="mergeModalSearchInput" class="form-input form-input-sm" placeholder="Type title or filename to find and mark 2nd video..." oninput="handleMergeModalQuickSearch(this.value)">
+                        <div id="mergeModalSearchResults" style="max-height: 160px; overflow-y: auto; margin-top: 6px; display: flex; flex-direction: column; gap: 4px;"></div>
                     </div>
                 </div>`;
-            }}).join('');
-        }}
-
-        function selectMergePair(keyA, keyB) {{
-            mergeVideoA = keyA;
-            mergeVideoB = keyB;
-
-            const fileA = allFiles.find(f => f.key === keyA);
-            const fileB = allFiles.find(f => f.key === keyB);
-
-            const scoreA = getFileResolutionScore(fileA);
-            const scoreB = getFileResolutionScore(fileB);
-
-            if (scoreB > scoreA) {{
-                mergeKeepChoice = 'B';
-            }} else if (scoreA > scoreB) {{
-                mergeKeepChoice = 'A';
-            }} else {{
-                const szA = (fileA && fileA.orig_size) || 0;
-                const szB = (fileB && fileB.orig_size) || 0;
-                mergeKeepChoice = (szB > szA) ? 'B' : 'A';
-            }}
-
-            showMergeView('compare');
-        }}
-
-        function selectMergeVideoA(key) {{
-            mergeVideoA = key;
-            mergeVideoB = null;
-            showMergeView('selectB');
-        }}
-
-        function renderMergeSelectBView() {{
-            if (!mergeVideoA) {{
-                showMergeView('detect');
                 return;
             }}
 
-            const fileA = allFiles.find(f => f.key === mergeVideoA);
-            if (!fileA) {{
-                showMergeView('detect');
-                return;
+            // CASE 3: 2 or More Videos Marked -> Full Interactive Merge Configuration!
+            if (submitBtn) submitBtn.style.display = 'inline-flex';
+
+            // Ensure valid kept key
+            if (!mergeKeptKey || !markedForMergeKeys.has(mergeKeptKey)) {{
+                mergeKeptKey = pickBestVideoKey(markedFiles);
             }}
 
-            const metaA = fileA.metadata || {{}};
-            const miA = fileA.media_info || {{}};
-            const titleA = metaA.title || PathLeaf(mergeVideoA);
-            const resA = miA.resolution_label || metaA.resolution || 'Video';
-            const sizeA = fileA.orig_size ? formatBytes(fileA.orig_size) : '';
-            const durA = miA.duration_str || metaA.duration || '';
+            const keptFile = markedFiles.find(f => f.key === mergeKeptKey) || markedFiles[0];
+            const discardedFiles = markedFiles.filter(f => f.key !== mergeKeptKey);
 
-            const bannerTitle = document.getElementById('mergeBannerTitleA');
-            if (bannerTitle) bannerTitle.textContent = titleA;
-
-            const bannerThumb = document.getElementById('mergeBannerThumbA');
-            if (bannerThumb) bannerThumb.innerHTML = getFileThumbHtml(fileA, 76, 46);
-
-            const bannerBadges = document.getElementById('mergeBannerBadgesA');
-            if (bannerBadges) {{
-                bannerBadges.innerHTML = `
-                    <span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(resA)}}</span>
-                    ${{sizeA ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeA)}}</span>` : ''}}
-                    ${{durA ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(durA)}}</span>` : ''}}
-                    <span style="font-size: 0.70rem; color: #94a3b8; margin-left: 4px;">&#128193; ${{escapeHtml(mergeVideoA)}}</span>
-                `;
-            }}
-
-            // Populate Smart Suggestions for Video A
-            const cleanA = cleanTitleForDedup(titleA);
-            const wordsA = cleanA.split(/\s+/).filter(w => w.length >= 3);
-            const smartSuggestions = [];
-
-            allFiles.forEach(f => {{
-                if (f.key === mergeVideoA) return;
-                const m = f.metadata || {{}};
-                const t = m.title || PathLeaf(f.key);
-                const c = cleanTitleForDedup(t);
-                let score = 0;
-
-                if (c && cleanA && c === cleanA) {{
-                    score += 50;
-                }} else if (c && cleanA && (c.includes(cleanA) || cleanA.includes(c))) {{
-                    score += 25;
-                }} else {{
-                    for (const w of wordsA) {{
-                        if (c.includes(w)) score += 5;
-                    }}
-                }}
-
-                if (score >= 20) {{
-                    smartSuggestions.push({{ file: f, title: t, score }});
-                }}
+            // Candidate titles
+            const candidateTitlesMap = new Map();
+            markedFiles.forEach(f => {{
+                const t = (f.metadata && f.metadata.title) || PathLeaf(f.key);
+                if (t) candidateTitlesMap.set(t, `From ${{PathLeaf(f.key)}}`);
             }});
 
-            smartSuggestions.sort((a, b) => b.score - a.score);
+            // Also add clean base title
+            const baseClean = cleanTitleForDedup((keptFile.metadata && keptFile.metadata.title) || PathLeaf(keptFile.key));
+            if (baseClean && !candidateTitlesMap.has(baseClean)) {{
+                candidateTitlesMap.set(baseClean, 'Cleaned title (No copy markers / numbers)');
+            }}
 
-            const suggBox = document.getElementById('mergeSmartSuggestionsBBox');
-            const suggList = document.getElementById('mergeSmartSuggestionsBList');
+            if (!mergeTargetTitle) {{
+                mergeTargetTitle = baseClean || (keptFile.metadata && keptFile.metadata.title) || PathLeaf(keptFile.key);
+            }}
 
-            if (suggBox && suggList) {{
-                if (smartSuggestions.length > 0) {{
-                    suggBox.style.display = 'block';
-                    suggList.innerHTML = smartSuggestions.slice(0, 4).map(s => {{
-                        const f = s.file;
+            // Find best resolution score among marked files
+            let maxResScore = -1;
+            markedFiles.forEach(f => {{
+                const sc = getFileResolutionScore(f);
+                if (sc > maxResScore) maxResScore = sc;
+            }});
+
+            const cardsGridCols = (markedFiles.length === 2) ? '1fr 1fr' : 'repeat(auto-fit, minmax(260px, 1fr))';
+
+            body.innerHTML = `
+            <div>
+                <!-- Step 1: Select which video file to keep -->
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                    <div>
+                        <div style="font-size: 0.88rem; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 6px;">
+                            <span>1. Select Which Video File to KEEP (Media &amp; Quality)</span>
+                        </div>
+                        <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 1px;">
+                            Click any card to designate it as the canonical video file to keep in Jellyfin.
+                        </div>
+                    </div>
+                    <button type="button" onclick="clearAllMergeMarks()" class="tool-btn btn-xs" style="padding: 3px 8px; font-size: 0.72rem;">
+                        Clear Marks
+                    </button>
+                </div>
+
+                <!-- Marked Cards Grid -->
+                <div style="display: grid; grid-template-columns: ${{cardsGridCols}}; gap: 12px; margin-bottom: 18px;">
+                    ${{markedFiles.map(f => {{
+                        const isKept = (f.key === mergeKeptKey);
+                        const m = f.metadata || {{}};
                         const mi = f.media_info || {{}};
-                        const res = mi.resolution_label || (f.metadata && f.metadata.resolution) || '';
-                        const sizeStr = f.orig_size ? formatBytes(f.orig_size) : '';
+                        const t = m.title || PathLeaf(f.key);
+                        const res = mi.resolution_label || m.resolution || 'Video';
+                        const sz = f.orig_size ? formatBytes(f.orig_size) : '';
+                        const dur = mi.duration_str || m.duration || '';
+                        const codec = mi.video_codec || '';
+                        const resScore = getFileResolutionScore(f);
+                        const isBestRes = (resScore === maxResScore && maxResScore > 0);
 
                         return `
-                        <div onclick="selectMergeVideoB('${{escapeHtml(f.key)}}')" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onmouseenter="this.style.borderColor='#10b981'" onmouseleave="this.style.borderColor='rgba(16, 185, 129, 0.35)'">
-                            <div style="display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; margin-right: 10px;">
-                                ${{getFileThumbHtml(f, 60, 36)}}
+                        <div onclick="setMergeKeptKey('${{escapeHtml(f.key)}}')" style="background: rgba(15, 23, 42, 0.75); border: 2px solid ${{isKept ? '#10b981' : 'rgba(239, 68, 68, 0.35)'}}; border-radius: 10px; padding: 12px; cursor: pointer; transition: all 0.2s ease; position: relative; box-shadow: ${{isKept ? '0 0 16px rgba(16, 185, 129, 0.25)' : 'none'}};">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <span class="badge ${{isKept ? 'badge-success' : 'badge-danger'}}" style="font-size: 0.70rem; padding: 2px 8px;">
+                                    ${{isKept ? '&#128081; KEEP THIS FILE (Canonical)' : '&#128465; DISCARD FILE (Hash Kept)'}}
+                                </span>
+                                <button type="button" onclick="unmarkSingleVideoInModal('${{escapeHtml(f.key)}}', event)" class="tool-btn btn-xs" style="font-size: 0.68rem; padding: 1px 6px; color: #94a3b8;" title="Remove this video from merge">
+                                    &times; Remove
+                                </button>
+                            </div>
+
+                            <div style="display: flex; gap: 10px; margin-bottom: 8px;">
+                                ${{getFileThumbHtml(f, 84, 52)}}
                                 <div style="min-width: 0; flex: 1;">
-                                    <div style="font-size: 0.86rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                        ${{escapeHtml(s.title)}}
+                                    <div style="font-size: 0.88rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                        ${{escapeHtml(t)}}
                                     </div>
-                                    <div style="font-size: 0.70rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                        ${{escapeHtml(f.key)}}
+                                    <div style="font-size: 0.68rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">
+                                        &#128193; ${{escapeHtml(f.key)}}
                                     </div>
                                 </div>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
-                                ${{res ? `<span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(res)}}</span>` : ''}}
-                                ${{sizeStr ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeStr)}}</span>` : ''}}
-                                <button type="button" class="btn btn-sm btn-play" style="background: #10b981; border-color: #34d399; font-size: 0.75rem; padding: 4px 10px; font-weight: 700;">
-                                    Select Duplicate &rarr;
-                                </button>
-                            </div>
-                        </div>`;
-                    }}).join('');
-                }} else {{
-                    suggBox.style.display = 'none';
-                }}
-            }}
 
-            const searchInput = document.getElementById('mergeSearchInputB');
-            if (searchInput) searchInput.value = '';
-            handleMergeSearchB('');
+                            <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px;">
+                                <span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(res)}}</span>
+                                ${{sz ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sz)}}</span>` : ''}}
+                                ${{dur ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(dur)}}</span>` : ''}}
+                                ${{codec ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.06); color: #94a3b8;">${{escapeHtml(codec)}}</span>` : ''}}
+                                ${{isBestRes ? `<span class="badge badge-success" style="font-size: 0.65rem;">&#11088; Highest Quality</span>` : ''}}
+                            </div>
+
+                            <button type="button" onclick="event.stopPropagation(); setMergeKeptKey('${{escapeHtml(f.key)}}')" class="btn btn-sm" style="width: 100%; background: ${{isKept ? '#10b981' : 'rgba(255,255,255,0.08)'}}; color: #fff; font-weight: 700; padding: 6px 10px; border-radius: 6px; font-size: 0.78rem;">
+                                ${{isKept ? '&#10003; Keeping This Video File' : 'Keep This Video Instead'}}
+                            </button>
+                        </div>`;
+                    }}).join('')}}
+                </div>
+
+                <!-- Step 2: Choose Which Title to Keep for Jellyfin -->
+                <div style="background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.28); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;">
+                    <div style="font-size: 0.88rem; font-weight: 700; color: #d8b4fe; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+                        <span>2. &#127991; Choose Which Title to Keep for Jellyfin:</span>
+                    </div>
+                    <div style="font-size: 0.74rem; color: #cbd5e1; margin-bottom: 10px;">
+                        Select which title will be saved in your Jellyfin library and updated in the <code>.nfo</code> XML file:
+                    </div>
+
+                    <!-- Title Options -->
+                    <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;">
+                        ${{Array.from(candidateTitlesMap.entries()).map(([candTitle, sourceDesc], idx) => {{
+                            const isChecked = (candTitle === mergeTargetTitle);
+                            return `
+                            <label style="display: flex; align-items: center; gap: 10px; background: rgba(0,0,0,0.3); border: 1px solid ${{isChecked ? '#a855f7' : 'rgba(255,255,255,0.08)'}}; border-radius: 6px; padding: 8px 12px; cursor: pointer; transition: all 0.15s ease;">
+                                <input type="radio" name="mergeTitleRadio" value="${{escapeHtml(candTitle)}}" ${{isChecked ? 'checked' : ''}} onchange="setMergeTargetTitle(this.value, true)" style="cursor: pointer;">
+                                <div style="min-width: 0; flex: 1;">
+                                    <div style="font-size: 0.86rem; font-weight: 700; color: #f8fafc;">${{escapeHtml(candTitle)}}</div>
+                                    <div style="font-size: 0.68rem; color: #94a3b8;">${{escapeHtml(sourceDesc)}}</div>
+                                </div>
+                            </label>`;
+                        }}).join('')}}
+                    </div>
+
+                    <!-- Custom Title Editable Input -->
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 0.75rem; color: #94a3b8; white-space: nowrap;">Or type custom title:</span>
+                        <input type="text" id="mergeTargetTitleInput" class="form-input form-input-sm" style="font-weight: 700; font-size: 0.86rem; flex: 1;" value="${{escapeHtml(mergeTargetTitle)}}" oninput="setMergeTargetTitle(this.value, false)">
+                    </div>
+                </div>
+
+                <!-- Step 3: Merge Outcome Summary & Fingerprint Lock -->
+                <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 14px 16px; margin-bottom: 8px;">
+                    <div style="font-size: 0.84rem; font-weight: 700; color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                        <span>3. &#9889; Merge Outcome &amp; Fingerprint Lock:</span>
+                    </div>
+
+                    <div style="font-size: 0.80rem; color: #cbd5e1; line-height: 1.6;">
+                        <div>
+                            &#128081; <b>Keeping Media File</b>: <span style="color: #34d399; font-weight: 700;">${{escapeHtml((keptFile.metadata && keptFile.metadata.title) || PathLeaf(keptFile.key))}}</span> (<span style="color: #94a3b8; font-size: 0.70rem;">${{escapeHtml(keptFile.key)}}</span>)
+                        </div>
+                        <div style="margin-top: 3px;">
+                            &#127991; <b>Final Jellyfin Title</b>: <span id="summaryTargetTitleDisplay" style="color: #c084fc; font-weight: 700;">${{escapeHtml(mergeTargetTitle)}}</span>
+                        </div>
+                        <div style="margin-top: 3px;">
+                            &#128465; <b>Deleting Duplicate File(s)</b>: <span style="color: #f87171; font-weight: 600;">${{escapeHtml(discardedFiles.map(f => PathLeaf(f.key)).join(', '))}}</span>
+                        </div>
+                        <div style="margin-top: 6px; font-size: 0.74rem; color: #94a3b8;">
+                            &#128274; <b>Permanent Duplicate Protection</b>: Discarded sparse hashes will be permanently saved into the kept video's <code>extra_media_hashes</code> and registered in <code>manifest["media_hashes"]</code>. Discarded duplicates can never re-upload!
+                        </div>
+                    </div>
+
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.76rem; color: #e2e8f0; cursor: pointer; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
+                        <input type="checkbox" id="chkMergeDeleteRemote" checked>
+                        <span>Delete discarded video's encrypted files from Hugging Face dataset (reclaims cloud storage)</span>
+                    </label>
+                </div>
+            </div>`;
         }}
 
-        function handleMergeSearchB(query) {{
-            const list = document.getElementById('mergeSearchResultsB');
+        function setMergeKeptKey(key) {{
+            mergeKeptKey = key;
+            const file = allFiles.find(f => f.key === key);
+            if (file) {{
+                mergeTargetTitle = cleanTitleForDedup((file.metadata && file.metadata.title) || PathLeaf(key));
+            }}
+            renderMarkedMergeModal();
+        }}
+
+        function setMergeTargetTitle(title, updateInput = false) {{
+            mergeTargetTitle = title;
+            const summaryDisplay = document.getElementById('summaryTargetTitleDisplay');
+            if (summaryDisplay) summaryDisplay.textContent = title;
+            if (updateInput) {{
+                const inp = document.getElementById('mergeTargetTitleInput');
+                if (inp) inp.value = title;
+            }}
+        }}
+
+        function unmarkSingleVideoInModal(key, event) {{
+            if (event) event.stopPropagation();
+            markedForMergeKeys.delete(key);
+            if (mergeKeptKey === key) mergeKeptKey = null;
+            updateMarkedMergeUI();
+            renderMarkedMergeModal();
+        }}
+
+        function markPairAndConfigureMerge(key1, key2) {{
+            markedForMergeKeys.add(key1);
+            markedForMergeKeys.add(key2);
+            updateMarkedMergeUI();
+            renderMarkedMergeModal();
+        }}
+
+        function handleMergeModalQuickSearch(query) {{
+            const list = document.getElementById('mergeModalSearchResults');
             if (!list) return;
 
             const q = (query || '').toLowerCase().trim();
+            if (!q) {{
+                list.innerHTML = '';
+                return;
+            }}
+
             const filtered = allFiles.filter(f => {{
-                if (f.key === mergeVideoA) return false;
-                if (!q) return true;
                 const t = ((f.metadata && f.metadata.title) || PathLeaf(f.key)).toLowerCase();
                 return t.includes(q) || f.key.toLowerCase().includes(q);
-            }}).slice(0, 15);
+            }}).slice(0, 10);
 
             if (filtered.length === 0) {{
-                list.innerHTML = `<div style="padding: 14px; text-align: center; color: #64748b; font-size: 0.8rem;">No other videos found.</div>`;
+                list.innerHTML = `<div style="padding: 6px; color: #64748b; font-size: 0.75rem;">No matching videos found.</div>`;
                 return;
             }}
 
             list.innerHTML = filtered.map(f => {{
-                const title = (f.metadata && f.metadata.title) || PathLeaf(f.key);
-                const mi = f.media_info || {{}};
-                const res = mi.resolution_label || (f.metadata && f.metadata.resolution) || '';
-                const sizeStr = f.orig_size ? formatBytes(f.orig_size) : '';
+                const t = (f.metadata && f.metadata.title) || PathLeaf(f.key);
+                const isMarked = markedForMergeKeys.has(f.key);
+                const res = (f.media_info && f.media_info.resolution_label) || (f.metadata && f.metadata.resolution) || '';
 
                 return `
-                <div onclick="selectMergeVideoB('${{escapeHtml(f.key)}}')" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; cursor: pointer; transition: background 0.15s ease;" onmouseenter="this.style.background='rgba(168,85,247,0.1)'" onmouseleave="this.style.background='rgba(0,0,0,0.25)'">
-                    <div style="display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; margin-right: 10px;">
-                        ${{getFileThumbHtml(f, 54, 34)}}
-                        <div style="min-width: 0; flex: 1;">
-                            <div style="font-size: 0.84rem; font-weight: 600; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                ${{escapeHtml(title)}}
-                            </div>
-                            <div style="font-size: 0.70rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                ${{escapeHtml(f.key)}}
-                            </div>
-                        </div>
+                <div onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}')" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; background: rgba(0,0,0,0.3); border-radius: 4px; cursor: pointer;">
+                    <div style="font-size: 0.80rem; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; margin-right: 8px;">
+                        ${{escapeHtml(t)}} ${{res ? `<span class="badge badge-info" style="font-size: 0.60rem;">${{escapeHtml(res)}}</span>` : ''}}
                     </div>
-                    <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
-                        ${{res ? `<span class="badge badge-info" style="font-size: 0.65rem;">${{escapeHtml(res)}}</span>` : ''}}
-                        ${{sizeStr ? `<span class="badge" style="font-size: 0.65rem; background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeStr)}}</span>` : ''}}
-                        <button type="button" class="tool-btn btn-xs" style="color: #c084fc; font-size: 0.72rem; padding: 3px 8px;">Select &rarr;</button>
-                    </div>
+                    <button type="button" class="tool-btn btn-xs" style="color: ${{isMarked ? '#34d399' : '#c084fc'}}; font-size: 0.70rem; padding: 1px 6px;">
+                        ${{isMarked ? '&#10003; Marked' : '+ Mark'}}
+                    </button>
                 </div>`;
             }}).join('');
         }}
 
-        function selectMergeVideoB(key) {{
-            mergeVideoB = key;
-
-            const fileA = allFiles.find(f => f.key === mergeVideoA);
-            const fileB = allFiles.find(f => f.key === key);
-
-            const scoreA = getFileResolutionScore(fileA);
-            const scoreB = getFileResolutionScore(fileB);
-
-            if (scoreB > scoreA) {{
-                mergeKeepChoice = 'B';
-            }} else if (scoreA > scoreB) {{
-                mergeKeepChoice = 'A';
-            }} else {{
-                const szA = (fileA && fileA.orig_size) || 0;
-                const szB = (fileB && fileB.orig_size) || 0;
-                mergeKeepChoice = (szB > szA) ? 'B' : 'A';
-            }}
-
-            showMergeView('compare');
-        }}
-
-        function setMergeKeepChoice(choice) {{
-            mergeKeepChoice = choice;
-            updateMergeCardStyles();
-            updateMergeSummary();
-        }}
-
-        function renderMergeComparison() {{
-            const fileA = allFiles.find(f => f.key === mergeVideoA);
-            const fileB = allFiles.find(f => f.key === mergeVideoB);
-
-            if (!fileA || !fileB) {{
-                showMergeView('detect');
+        async function submitExecuteMergeMarked() {{
+            const markedFiles = Array.from(markedForMergeKeys).map(k => allFiles.find(f => f.key === k)).filter(Boolean);
+            if (markedFiles.length < 2) {{
+                alert('Please mark at least 2 videos to merge.');
                 return;
             }}
 
-            const metaA = fileA.metadata || {{}};
-            const miA = fileA.media_info || {{}};
-            const titleA = metaA.title || PathLeaf(mergeVideoA);
-            const resA = miA.resolution_label || metaA.resolution || 'Video';
-            const sizeA = fileA.orig_size ? formatBytes(fileA.orig_size) : '';
-            const durA = miA.duration_str || metaA.duration || '';
-            const codecA = miA.video_codec || '';
-
-            const metaB = fileB.metadata || {{}};
-            const miB = fileB.media_info || {{}};
-            const titleB = metaB.title || PathLeaf(mergeVideoB);
-            const resB = miB.resolution_label || metaB.resolution || 'Video';
-            const sizeB = fileB.orig_size ? formatBytes(fileB.orig_size) : '';
-            const durB = miB.duration_str || metaB.duration || '';
-            const codecB = miB.video_codec || '';
-
-            const scoreA = getFileResolutionScore(fileA);
-            const scoreB = getFileResolutionScore(fileB);
-
-            // Populate Card A
-            document.getElementById('mergeCompTitleA').textContent = titleA;
-            document.getElementById('mergeCompFolderA').textContent = mergeVideoA;
-            document.getElementById('mergeCompThumbA').innerHTML = getFileThumbHtml(fileA, 96, 58);
-            document.getElementById('mergeCompBadgesA').innerHTML = `
-                <span class="badge badge-info">${{escapeHtml(resA)}}</span>
-                ${{sizeA ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeA)}}</span>` : ''}}
-                ${{durA ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(durA)}}</span>` : ''}}
-                ${{codecA ? `<span class="badge" style="background: rgba(255,255,255,0.08); color: #94a3b8;">${{escapeHtml(codecA)}}</span>` : ''}}
-                ${{(scoreA > scoreB) ? `<span class="badge badge-success" style="font-size: 0.65rem;">&#11088; Higher Resolution</span>` : ''}}
-            `;
-
-            // Populate Card B
-            document.getElementById('mergeCompTitleB').textContent = titleB;
-            document.getElementById('mergeCompFolderB').textContent = mergeVideoB;
-            document.getElementById('mergeCompThumbB').innerHTML = getFileThumbHtml(fileB, 96, 58);
-            document.getElementById('mergeCompBadgesB').innerHTML = `
-                <span class="badge badge-info">${{escapeHtml(resB)}}</span>
-                ${{sizeB ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(sizeB)}}</span>` : ''}}
-                ${{durB ? `<span class="badge" style="background: rgba(255,255,255,0.1); color: #cbd5e1;">${{escapeHtml(durB)}}</span>` : ''}}
-                ${{codecB ? `<span class="badge" style="background: rgba(255,255,255,0.08); color: #94a3b8;">${{escapeHtml(codecB)}}</span>` : ''}}
-                ${{(scoreB > scoreA) ? `<span class="badge badge-success" style="font-size: 0.65rem;">&#11088; Higher Resolution</span>` : ''}}
-            `;
-
-            updateMergeCardStyles();
-            updateMergeSummary();
-        }}
-
-        function updateMergeCardStyles() {{
-            const cardA = document.getElementById('mergeCompCardA');
-            const cardB = document.getElementById('mergeCompCardB');
-            const badgeA = document.getElementById('mergeCompBadgeA');
-            const badgeB = document.getElementById('mergeCompBadgeB');
-            const btnA = document.getElementById('mergeBtnKeepA');
-            const btnB = document.getElementById('mergeBtnKeepB');
-
-            if (!cardA || !cardB) return;
-
-            if (mergeKeepChoice === 'A') {{
-                cardA.style.borderColor = '#10b981';
-                cardA.style.boxShadow = '0 0 15px rgba(16, 185, 129, 0.25)';
-                badgeA.className = 'badge badge-success';
-                badgeA.innerHTML = '&#128081; Keep This Video';
-                if (btnA) {{
-                    btnA.style.background = '#10b981';
-                    btnA.innerHTML = '&#10003; Keeping Video A (Canonical)';
-                }}
-
-                cardB.style.borderColor = 'rgba(239, 68, 68, 0.4)';
-                cardB.style.boxShadow = 'none';
-                badgeB.className = 'badge badge-danger';
-                badgeB.innerHTML = '&#128465; Discard &amp; Link Hash';
-                if (btnB) {{
-                    btnB.style.background = 'rgba(255,255,255,0.08)';
-                    btnB.innerHTML = 'Keep Video B Instead';
-                }}
-            }} else {{
-                cardB.style.borderColor = '#10b981';
-                cardB.style.boxShadow = '0 0 15px rgba(16, 185, 129, 0.25)';
-                badgeB.className = 'badge badge-success';
-                badgeB.innerHTML = '&#128081; Keep This Video';
-                if (btnB) {{
-                    btnB.style.background = '#10b981';
-                    btnB.innerHTML = '&#10003; Keeping Video B (Canonical)';
-                }}
-
-                cardA.style.borderColor = 'rgba(239, 68, 68, 0.4)';
-                cardA.style.boxShadow = 'none';
-                badgeA.className = 'badge badge-danger';
-                badgeA.innerHTML = '&#128465; Discard &amp; Link Hash';
-                if (btnA) {{
-                    btnA.style.background = 'rgba(255,255,255,0.08)';
-                    btnA.innerHTML = 'Keep Video A Instead';
-                }}
-            }}
-        }}
-
-        function updateMergeSummary() {{
-            const summary = document.getElementById('mergeCompSummaryText');
-            if (!summary) return;
-
-            const fileA = allFiles.find(f => f.key === mergeVideoA);
-            const fileB = allFiles.find(f => f.key === mergeVideoB);
-            if (!fileA || !fileB) return;
-
-            const keepFile = (mergeKeepChoice === 'A') ? fileA : fileB;
-            const discFile = (mergeKeepChoice === 'A') ? fileB : fileA;
-
-            const keepTitle = (keepFile.metadata && keepFile.metadata.title) ? keepFile.metadata.title : PathLeaf(keepFile.key);
-            const discTitle = (discFile.metadata && discFile.metadata.title) ? discFile.metadata.title : PathLeaf(discFile.key);
-
-            const keepRes = (keepFile.media_info && keepFile.media_info.resolution_label) || (keepFile.metadata && keepFile.metadata.resolution) || '';
-            const discRes = (discFile.media_info && discFile.media_info.resolution_label) || (discFile.metadata && discFile.metadata.resolution) || '';
-            const discHash = discFile.media_hash || '';
-
-            summary.innerHTML = `
-                <div>
-                    &#128081; <b>Keeping</b>: <span style="color: #34d399; font-weight: 700;">${{escapeHtml(keepTitle)}}</span> ${{keepRes ? `(${{escapeHtml(keepRes)}})` : ''}} (<span style="color: #94a3b8; font-size: 0.72rem;">${{escapeHtml(keepFile.key)}}</span>)
-                </div>
-                <div style="margin-top: 4px;">
-                    &#128465; <b>Discarding</b>: <span style="color: #f87171; font-weight: 600;">${{escapeHtml(discTitle)}}</span> ${{discRes ? `(${{escapeHtml(discRes)}})` : ''}} (<span style="color: #94a3b8; font-size: 0.72rem;">${{escapeHtml(discFile.key)}}</span>)
-                </div>
-                <div style="margin-top: 6px; font-size: 0.74rem; color: #94a3b8;">
-                    &#128274; <b>Permanent Fingerprint Lock</b>: Discarded sparse hash <code style="color: #38bdf8;">${{escapeHtml(discHash.substring(0, 16))}}...</code> will be saved into the kept video's record and registered in the duplicate index. Any future sync of this file will be automatically skipped!
-                </div>
-            `;
-        }}
-
-        async function submitExecuteMergeVideos() {{
-            if (!mergeVideoA || !mergeVideoB) {{
-                alert('Please select both videos to merge.');
-                return;
+            if (!mergeKeptKey || !markedForMergeKeys.has(mergeKeptKey)) {{
+                mergeKeptKey = pickBestVideoKey(markedFiles);
             }}
 
-            const keepKey = (mergeKeepChoice === 'A') ? mergeVideoA : mergeVideoB;
-            const discKey = (mergeKeepChoice === 'A') ? mergeVideoB : mergeVideoA;
-            const delRemote = document.getElementById('chkMergeDeleteRemote').checked;
+            const keepKey = mergeKeptKey;
+            const discardKeys = markedFiles.filter(f => f.key !== keepKey).map(f => f.key);
+            const targetTitle = (mergeTargetTitle || '').trim() || PathLeaf(keepKey);
+            const delRemote = document.getElementById('chkMergeDeleteRemote') ? document.getElementById('chkMergeDeleteRemote').checked : true;
 
             const keepName = PathLeaf(keepKey);
-            const discName = PathLeaf(discKey);
+            const discNames = discardKeys.map(k => PathLeaf(k)).join(', ');
 
-            if (!confirm(`Are you sure you want to merge these duplicate videos?\n\nKEEP: ${{keepName}}\nDISCARD: ${{discName}}\n\nThe discarded video's media hash will be permanently linked to "${{keepName}}" so it can never be uploaded again.`)) {{
+            if (!confirm(`Are you sure you want to merge these duplicate videos?\n\n👑 KEEP VIDEO FILE: ${{keepName}}\n🏷️ FINAL TITLE: "${{targetTitle}}"\n🗑️ DISCARD FILE(S): ${{discNames}}\n\nAll discarded files will have their media hashes permanently linked so they can never be uploaded again.`)) {{
                 return;
             }}
 
             try {{
-                showToast(`Merging duplicate videos into "${{keepName}}"...`, 'info');
-                const btn = document.getElementById('btnConfirmMergeVideos');
+                showToast(`Merging duplicate videos into "${{targetTitle}}"...`, 'info');
+                const btn = document.getElementById('btnSubmitMarkedMerge');
                 if (btn) btn.disabled = true;
 
                 const resp = await fetch('/api/videos/merge', {{
@@ -11237,7 +11271,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
                         keep_key: keepKey,
-                        discard_keys: [discKey],
+                        discard_keys: discardKeys,
+                        target_title: targetTitle,
                         delete_remote: delRemote
                     }})
                 }});
@@ -11245,12 +11280,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const res = await resp.json();
                 if (res.success) {{
                     showToast(res.message || 'Videos merged successfully!', 'success');
+                    clearAllMergeMarks();
                     closeMergeVideosModal();
                     if (typeof reloadFilesList === 'function') {{
                         await reloadFilesList();
-                    }}
-                    if (typeof editingKey !== 'undefined' && editingKey === keepKey && typeof promptEditMetadata === 'function') {{
-                        promptEditMetadata(keepKey);
                     }}
                 }} else {{
                     alert('Merge failed: ' + (res.error || 'Unknown error'));
@@ -11258,7 +11291,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
             }} catch (e) {{
                 alert('Merge request error: ' + e);
-                const btn = document.getElementById('btnConfirmMergeVideos');
+                const btn = document.getElementById('btnSubmitMarkedMerge');
                 if (btn) btn.disabled = false;
             }}
         }}
