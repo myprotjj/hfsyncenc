@@ -5806,39 +5806,39 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             position: relative;
             top: auto;
             left: auto;
-            background: rgba(10, 15, 30, 0.88);
-            backdrop-filter: blur(6px);
+            background: rgba(10, 15, 30, 0.95);
+            backdrop-filter: blur(10px);
             color: #93c5fd;
-            font-size: 0.64rem;
-            font-weight: 600;
+            font-size: 0.65rem;
+            font-weight: 700;
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            padding: 2.5px 7px;
-            border-radius: 4px;
+            padding: 2.5px 7.5px;
+            border-radius: 6px;
             pointer-events: none;
-            border: 1px solid rgba(255, 255, 255, 0.18);
+            border: 1px solid rgba(255, 255, 255, 0.22);
             display: inline-flex;
             align-items: center;
             gap: 5px;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.75);
             transition: opacity 0.15s ease;
             white-space: nowrap;
             line-height: 1.25;
         }}
         .card-size-badge .badge-vsize {{
             color: #93c5fd;
-            font-weight: 600;
+            font-weight: 700;
             display: inline-flex;
             align-items: center;
             gap: 3px;
         }}
         .card-size-badge .badge-sep {{
-            color: rgba(255, 255, 255, 0.35);
+            color: rgba(255, 255, 255, 0.4);
             font-size: 0.6rem;
             user-select: none;
         }}
         .card-size-badge .badge-asize {{
             color: #6ee7b7;
-            font-weight: 600;
+            font-weight: 700;
             display: inline-flex;
             align-items: center;
             gap: 3px;
@@ -6424,70 +6424,114 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             border-color: rgba(168, 85, 247, 0.35);
         }}
         .cache-pill {{
-            background: rgba(56, 189, 248, 0.12);
+            background: rgba(10, 25, 45, 0.95);
             color: #38bdf8;
-            border: 1px solid rgba(56, 189, 248, 0.35);
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            font-weight: 700;
         }}
         .cache-pill-full {{
-            background: rgba(34, 197, 94, 0.15);
+            background: rgba(6, 32, 20, 0.95);
             color: #4ade80;
-            border: 1px solid rgba(34, 197, 94, 0.45);
-            font-weight: 600;
+            border: 1px solid rgba(74, 222, 128, 0.6);
+            font-weight: 700;
         }}
         .card-cache-pill {{
             position: relative;
             top: auto;
             left: auto;
-            font-size: 0.64rem;
-            font-weight: 600;
+            font-size: 0.65rem;
+            font-weight: 700;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            padding: 2px 8px;
-            border-radius: 12px;
+            padding: 2.5px 8px;
+            border-radius: 6px;
             display: inline-flex;
             align-items: center;
             gap: 4.5px;
-            backdrop-filter: blur(8px);
+            backdrop-filter: blur(10px);
             pointer-events: none;
             transition: all 0.2s ease;
             white-space: nowrap;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.75);
             line-height: 1.25;
+            background: rgba(10, 15, 30, 0.95);
         }}
         .card-cache-pill.is-pinned {{
-            background: rgba(16, 185, 129, 0.22);
-            color: #34d399;
-            border: 1px solid rgba(16, 185, 129, 0.55);
-            box-shadow: 0 0 8px rgba(16, 185, 129, 0.25);
+            background: rgba(6, 32, 20, 0.96);
+            color: #4ade80;
+            border: 1px solid rgba(74, 222, 128, 0.75);
+            box-shadow: 0 0 10px rgba(34, 197, 94, 0.4), 0 3px 8px rgba(0, 0, 0, 0.75);
+        }}
+        .card-cache-pill.is-downloading {{
+            background: rgba(35, 24, 6, 0.96);
+            color: #fbbf24;
+            border: 1px solid rgba(251, 191, 36, 0.8);
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.4), 0 3px 8px rgba(0, 0, 0, 0.75);
         }}
         .card-cache-pill.is-cached {{
-            background: rgba(14, 165, 233, 0.22);
+            background: rgba(10, 25, 45, 0.96);
             color: #38bdf8;
-            border: 1px solid rgba(14, 165, 233, 0.5);
+            border: 1px solid rgba(56, 189, 248, 0.75);
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.35), 0 3px 8px rgba(0, 0, 0, 0.75);
         }}
         .card-cache-pill.is-cloud {{
-            background: rgba(15, 23, 42, 0.85);
+            background: rgba(15, 23, 42, 0.95);
+            color: #cbd5e1;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.7);
+        }}
+        .card-cache-pill .cache-pill-size {{
+            color: #f8fafc;
+            font-weight: 700;
+        }}
+        .card-cache-pill .cache-pill-exp {{
             color: #94a3b8;
-            border: 1px solid rgba(255, 255, 255, 0.15);
+            font-size: 0.6rem;
+            font-weight: 600;
+            margin-left: 2px;
+        }}
+        @keyframes cachePulse {{
+            0%, 100% {{ opacity: 1; transform: scale(1); }}
+            50% {{ opacity: 0.55; transform: scale(0.92); }}
+        }}
+        .cache-pulse-icon {{
+            display: inline-block;
+            animation: cachePulse 1.2s infinite ease-in-out;
         }}
         .thumb-cache-track {{
             position: absolute;
             bottom: 0;
             left: 0;
             width: 100%;
-            height: 3px;
-            background: rgba(0, 0, 0, 0.4);
+            height: 3.5px;
+            background: rgba(0, 0, 0, 0.6);
             z-index: 8;
             overflow: hidden;
             pointer-events: none;
         }}
         .thumb-cache-fill {{
             height: 100%;
-            background: #38bdf8;
+            background: linear-gradient(90deg, #0284c7, #38bdf8);
+            box-shadow: 0 0 6px rgba(56, 189, 248, 0.8);
             transition: width 0.3s ease;
         }}
         .thumb-cache-fill.is-pinned-fill {{
-            background: #22c55e;
-            box-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
+            background: linear-gradient(90deg, #059669, #4ade80);
+            box-shadow: 0 0 8px rgba(74, 222, 128, 0.9);
+        }}
+        .thumb-cache-fill.is-downloading-fill {{
+            background: linear-gradient(90deg, #d97706, #fbbf24);
+            box-shadow: 0 0 8px rgba(251, 191, 36, 0.9);
+        }}
+        .card-icon-btn.btn-card-offline.is-downloading-active {{
+            color: #fbbf24;
+            border-color: rgba(251, 191, 36, 0.6);
+            background: rgba(245, 158, 11, 0.2);
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+        }}
+        .card-offline-tag-btn.downloading {{
+            background: rgba(245, 158, 11, 0.22);
+            color: #fbbf24;
+            border-color: rgba(251, 191, 36, 0.6);
         }}
         .btn-card-offline.is-pinned-active {{
             color: #4ade80 !important;
@@ -9517,17 +9561,21 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const cachedSizeStr = f.cached_size_str || '0 B';
             const isPinned = !!f.pinned_offline;
             const isDownloading = !!f.is_downloading;
+            const isFullyOffline = isPinned && cachePct >= 99.5;
+            const isProcessingOffline = (isPinned && cachePct < 99.5) || isDownloading;
 
             let cachePillHtml = '';
-            if (isPinned) {{
+            if (isFullyOffline) {{
                 cachePillHtml = `<div class="card-cache-pill is-pinned" id="cachePill_${{safeId}}" title="📌 Offline Ready: 100% saved locally forever (${{cachedSizeStr}})"><span class="cache-pill-icon">📌</span> <span class="cache-pill-text">Offline Ready</span> <span class="cache-pill-size">(${{cachedSizeStr}})</span></div>`;
+            }} else if (isProcessingOffline) {{
+                cachePillHtml = `<div class="card-cache-pill is-downloading" id="cachePill_${{safeId}}" title="⏳ Downloading Offline: ${{cachePct}}% (${{cachedSizeStr}}) • Saving full video locally"><span class="cache-pulse-icon">⏳</span> <span class="cache-pill-text">Downloading ${{cachePct}}%</span> <span class="cache-pill-size">(${{cachedSizeStr}})</span></div>`;
             }} else if (cachePct > 0) {{
                 cachePillHtml = `<div class="card-cache-pill is-cached" id="cachePill_${{safeId}}" title="💾 Local Encrypted Cache: ${{cachePct}}% (${{cachedSizeStr}}) • Expires 24h after last play"><span class="cache-pill-icon">💾</span> <span class="cache-pill-text">${{cachePct}}%</span> <span class="cache-pill-size">(${{cachedSizeStr}})</span> <span class="cache-pill-exp">⏱️ 24h</span></div>`;
             }} else {{
                 cachePillHtml = `<div class="card-cache-pill is-cloud" id="cachePill_${{safeId}}" title="☁️ Cloud Stream: 0% cached locally"><span class="cache-pill-icon">☁️</span> <span class="cache-pill-text">Cloud Stream</span></div>`;
             }}
 
-            const cacheTrackHtml = `<div class="thumb-cache-track" title="Local Cache Buffer: ${{cachePct}}% (${{cachedSizeStr}})"><div class="thumb-cache-fill ${{isPinned ? 'is-pinned-fill' : ''}}" id="cacheFill_${{safeId}}" style="width: ${{Math.min(100, cachePct)}}%;"></div></div>`;
+            const cacheTrackHtml = `<div class="thumb-cache-track" title="Local Cache Buffer: ${{cachePct}}% (${{cachedSizeStr}})"><div class="thumb-cache-fill ${{isFullyOffline ? 'is-pinned-fill' : (isProcessingOffline ? 'is-downloading-fill' : '')}}" id="cacheFill_${{safeId}}" style="width: ${{Math.min(100, cachePct)}}%;"></div></div>`;
 
             const isMarked = markedForMergeKeys.has(f.key);
             return `
@@ -9572,8 +9620,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             ${{escapeHtml(title)}}
                         </div>
                         <div class="video-card-title-actions">
-                            <button type="button" class="card-offline-tag-btn ${{isPinned ? 'active' : ''}}" id="tagOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isPinned ? '📌 Pinned offline forever (Click to unpin)' : '📥 Make offline available (Caches 100% & keeps forever)'}}">
-                                ${{isPinned ? '📌 Offline' : '📥 Offline'}}
+                            <button type="button" class="card-offline-tag-btn ${{isFullyOffline ? 'active' : (isProcessingOffline ? 'downloading' : '')}}" id="tagOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isFullyOffline ? '📌 Pinned offline forever (Click to unpin)' : (isProcessingOffline ? `⏳ Downloading offline: ${{cachePct}}% (${{cachedSizeStr}})` : '📥 Make offline available (Caches 100% & keeps forever)')}}">
+                                ${{isFullyOffline ? '📌 Offline' : (isProcessingOffline ? `⏳ ${{cachePct}}%` : '📥 Offline')}}
                             </button>
                             <button type="button" class="card-mark-merge-pill ${{isMarked ? 'active' : ''}}" onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" title="${{isMarked ? 'Unmark from merge' : 'Mark this video for duplicate merge'}}">
                                 &#128256; ${{isMarked ? 'Marked' : 'Merge'}}
@@ -9593,8 +9641,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 <div class="video-card-actions">
                     <div class="card-action-group-left">
-                        <button type="button" class="card-icon-btn btn-card-offline ${{isPinned ? 'is-pinned-active' : ''}}" id="btnOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isPinned ? '📌 Offline Available (Pinned Forever). Click to unpin and allow 24h auto-expiry.' : '📥 Make Offline Available: Download & save full video offline forever'}}">
-                            ${{isPinned ? '📌' : '📥'}}
+                        <button type="button" class="card-icon-btn btn-card-offline ${{isFullyOffline ? 'is-pinned-active' : (isProcessingOffline ? 'is-downloading-active' : '')}}" id="btnOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isFullyOffline ? '📌 Offline Ready (Pinned Forever). Click to unpin and allow 24h auto-expiry.' : (isProcessingOffline ? `⏳ Downloading Offline: ${{cachePct}}% (${{cachedSizeStr}}). Click to cancel.` : '📥 Make Offline Available: Download & save full video offline forever')}}">
+                            ${{isFullyOffline ? '📌' : (isProcessingOffline ? '⏳' : '📥')}}
                         </button>
                         <a href="/stream/${{escapeHtml(f.key)}}" target="_blank" class="card-icon-btn btn-card-link" title="Direct Stream URL">&#128279;</a>
                         ${{canViewScreens ? `<button type="button" class="card-icon-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet Screenshots">&#128444;&#65039;</button>` : ''}}
@@ -11178,7 +11226,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const nextPinned = !fileObj.pinned_offline;
             fileObj.pinned_offline = nextPinned;
-            updateCardOfflineUI(safeId, nextPinned, fileObj.cache_pct || 0, fileObj.cached_size_str || '0 B');
+            fileObj.is_downloading = nextPinned && ((fileObj.cache_pct || 0) < 99.5);
+            updateCardOfflineUI(safeId, nextPinned, fileObj.cache_pct || 0, fileObj.cached_size_str || '0 B', fileObj.is_downloading);
 
             try {{
                 const res = await fetch('/api/cache/offline', {{
@@ -11188,80 +11237,160 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }});
                 const data = await res.json();
                 if (data.success) {{
-                    showToast(nextPinned ? '📌 Video marked Offline Available! Downloading remaining encrypted chunks in background...' : '⏱️ Offline pin removed. Cache will auto-expire 24h after last play.');
+                    showToast(nextPinned ? '📌 Video queued for offline caching! Downloading in background...' : '⏱️ Offline pin removed. Cache will auto-expire 24h after last play.');
                     if (nextPinned) {{
-                        pollOfflineDownloadProgress(safeId);
+                        startCacheStatsPolling();
+                    }} else {{
+                        pollCacheStats();
                     }}
                 }} else {{
                     showToast('⚠️ ' + (data.message || 'Operation failed'));
+                    fileObj.pinned_offline = !nextPinned;
+                    fileObj.is_downloading = false;
+                    updateCardOfflineUI(safeId, !nextPinned, fileObj.cache_pct || 0, fileObj.cached_size_str || '0 B', false);
                 }}
             }} catch (err) {{
                 showToast('⚠️ Request error: ' + err);
+                fileObj.pinned_offline = !nextPinned;
+                fileObj.is_downloading = false;
+                updateCardOfflineUI(safeId, !nextPinned, fileObj.cache_pct || 0, fileObj.cached_size_str || '0 B', false);
             }}
         }}
 
-        const offlinePollTimers = {{}};
-        function pollOfflineDownloadProgress(safeId) {{
-            if (offlinePollTimers[safeId]) return;
-            const poll = async () => {{
-                try {{
-                    const res = await fetch('/api/cache/stats');
-                    const stats = await res.json();
-                    const fileStat = (stats.files || {{}})[safeId];
-                    if (fileStat) {{
-                        const fileObj = (allFiles || []).find(f => f.safe_id === safeId);
-                        if (fileObj) {{
-                            fileObj.cache_pct = fileStat.percentage;
-                            fileObj.cached_bytes = fileStat.cached_bytes;
-                            fileObj.cached_size_str = fileStat.cached_size_str;
-                            fileObj.pinned_offline = fileStat.pinned_offline;
-                        }}
-                        updateCardOfflineUI(safeId, fileStat.pinned_offline, fileStat.percentage, fileStat.cached_size_str);
-                        const statCacheEl = document.getElementById('statCache');
-                        if (statCacheEl && stats.total_cached_size_str) {{
-                            statCacheEl.textContent = stats.total_cached_size_str;
-                        }}
+        let cacheStatsPollTimer = null;
+        let isPollingCacheStats = false;
 
-                        if (fileStat.percentage >= 100 || !fileStat.is_downloading) {{
-                            delete offlinePollTimers[safeId];
-                            if (fileStat.percentage >= 100) {{
-                                showToast('✅ Offline Ready: 100% of video is now saved locally!');
-                            }}
-                            return;
+        async function pollCacheStats() {{
+            if (isPollingCacheStats) return false;
+            isPollingCacheStats = true;
+            let hasActiveWork = false;
+            try {{
+                const res = await fetch('/api/cache/stats');
+                if (!res.ok) return false;
+                const stats = await res.json();
+
+                // Update total cache size display in header
+                const statCacheEl = document.getElementById('statCache');
+                if (statCacheEl && stats.total_cached_size_str) {{
+                    statCacheEl.textContent = stats.total_cached_size_str;
+                }}
+
+                const fileStats = stats.files || {{}};
+                for (const [sId, fStat] of Object.entries(fileStats)) {{
+                    if (fStat.is_downloading) {{
+                        hasActiveWork = true;
+                    }}
+                    const fileObj = (allFiles || []).find(f => f.safe_id === sId);
+                    if (fileObj) {{
+                        const wasDownloading = !!fileObj.is_downloading;
+                        fileObj.cache_pct = fStat.percentage;
+                        fileObj.cached_bytes = fStat.cached_bytes;
+                        fileObj.cached_size_str = fStat.cached_size_str;
+                        fileObj.pinned_offline = fStat.pinned_offline;
+                        fileObj.is_downloading = fStat.is_downloading;
+
+                        if (wasDownloading && !fStat.is_downloading && fStat.percentage >= 99.5) {{
+                            showToast(`✅ Offline Ready: "${{fileObj.title || fileObj.key}}" is 100% saved locally!`);
                         }}
                     }}
-                }} catch (e) {{}}
-                offlinePollTimers[safeId] = setTimeout(poll, 1500);
-            }};
-            offlinePollTimers[safeId] = setTimeout(poll, 1000);
+                    updateCardOfflineUI(sId, fStat.pinned_offline, fStat.percentage, fStat.cached_size_str, fStat.is_downloading);
+                }}
+
+                // Check if currently playing video is active and needs polling
+                const player = document.getElementById('videoPlayer');
+                const isPlaying = player && !player.paused && !player.ended && player.readyState > 1;
+                if (isPlaying && currentPlayingSafeId) {{
+                    hasActiveWork = true;
+                }}
+            }} catch (err) {{
+            }} finally {{
+                isPollingCacheStats = false;
+            }}
+            return hasActiveWork;
         }}
 
-        function updateCardOfflineUI(safeId, isPinned, pct, sizeStr) {{
+        function startCacheStatsPolling() {{
+            pollCacheStats();
+            if (cacheStatsPollTimer) return;
+            cacheStatsPollTimer = setInterval(async () => {{
+                const active = await pollCacheStats();
+                const player = document.getElementById('videoPlayer');
+                const isPlaying = player && !player.paused && !player.ended && player.readyState > 1;
+                if (!active && !isPlaying) {{
+                    clearInterval(cacheStatsPollTimer);
+                    cacheStatsPollTimer = null;
+                }}
+            }}, 1500);
+        }}
+
+        function pollOfflineDownloadProgress(safeId) {{
+            startCacheStatsPolling();
+        }}
+
+        function updateCardOfflineUI(safeId, isPinned, pct, sizeStr, isDownloading) {{
+            const numPct = typeof pct === 'number' ? Math.round(pct) : (parseFloat(pct) || 0);
+            const isFullyOffline = isPinned && numPct >= 99.5;
+            const isProcessing = (isPinned && numPct < 99.5) || !!isDownloading;
+
             const pill = document.getElementById(`cachePill_${{safeId}}`);
             if (pill) {{
-                pill.className = `card-cache-pill ${{isPinned ? 'is-pinned' : (pct > 0 ? 'is-cached' : 'is-cloud')}}`;
-                pill.innerHTML = `<span class="cache-pill-icon">${{isPinned ? '📌' : (pct > 0 ? '💾' : '☁️')}}</span><span class="cache-pill-text">${{isPinned ? 'Offline Ready' : (pct > 0 ? Math.round(pct) + '%' : 'Cloud Stream')}}</span>${{pct > 0 ? `<span class="cache-pill-size">(${{sizeStr}})</span>` : ''}}`;
-                pill.title = isPinned ? `📌 Offline Available: 100% saved locally forever (${{sizeStr}})` : (pct > 0 ? `💾 Local Encrypted Cache: ${{Math.round(pct)}}% (${{sizeStr}}) • Expires 24h after last play` : '☁️ Cloud Stream: 0% cached locally');
+                if (isFullyOffline) {{
+                    pill.className = 'card-cache-pill is-pinned';
+                    pill.innerHTML = `<span class="cache-pill-icon">📌</span> <span class="cache-pill-text">Offline Ready</span> <span class="cache-pill-size">(${{sizeStr}})</span>`;
+                    pill.title = `📌 Offline Ready: 100% saved locally forever (${{sizeStr}})`;
+                }} else if (isProcessing) {{
+                    pill.className = 'card-cache-pill is-downloading';
+                    pill.innerHTML = `<span class="cache-pulse-icon">⏳</span> <span class="cache-pill-text">Downloading ${{numPct}}%</span> <span class="cache-pill-size">(${{sizeStr}})</span>`;
+                    pill.title = `⏳ Downloading Offline: ${{numPct}}% (${{sizeStr}}) • Saving full video locally`;
+                }} else if (numPct > 0) {{
+                    pill.className = 'card-cache-pill is-cached';
+                    pill.innerHTML = `<span class="cache-pill-icon">💾</span> <span class="cache-pill-text">${{numPct}}%</span> <span class="cache-pill-size">(${{sizeStr}})</span> <span class="cache-pill-exp">⏱️ 24h</span>`;
+                    pill.title = `💾 Local Encrypted Cache: ${{numPct}}% (${{sizeStr}}) • Expires 24h after last play`;
+                }} else {{
+                    pill.className = 'card-cache-pill is-cloud';
+                    pill.innerHTML = `<span class="cache-pill-icon">☁️</span> <span class="cache-pill-text">Cloud Stream</span>`;
+                    pill.title = '☁️ Cloud Stream: 0% cached locally';
+                }}
             }}
 
             const fill = document.getElementById(`cacheFill_${{safeId}}`);
             if (fill) {{
-                fill.className = `thumb-cache-fill ${{isPinned ? 'is-pinned-fill' : ''}}`;
-                fill.style.width = Math.min(100, Math.round(pct)) + '%';
+                fill.className = `thumb-cache-fill ${{isFullyOffline ? 'is-pinned-fill' : (isProcessing ? 'is-downloading-fill' : '')}}`;
+                fill.style.width = Math.min(100, Math.max(0, numPct)) + '%';
             }}
 
             const btn = document.getElementById(`btnOffline_${{safeId}}`);
             if (btn) {{
-                btn.className = `card-icon-btn btn-card-offline ${{isPinned ? 'is-pinned-active' : ''}}`;
-                btn.innerHTML = isPinned ? '📌' : '📥';
-                btn.title = isPinned ? '📌 Offline Available (Pinned Forever). Click to unpin and allow 24h auto-expiry.' : '📥 Make Offline Available: Download & save full video offline forever';
+                if (isFullyOffline) {{
+                    btn.className = 'card-icon-btn btn-card-offline is-pinned-active';
+                    btn.innerHTML = '📌';
+                    btn.title = '📌 Offline Ready (Pinned Forever). Click to unpin and allow 24h auto-expiry.';
+                }} else if (isProcessing) {{
+                    btn.className = 'card-icon-btn btn-card-offline is-downloading-active';
+                    btn.innerHTML = '⏳';
+                    btn.title = `⏳ Downloading Offline: ${{numPct}}% (${{sizeStr}}). Click to cancel.`;
+                }} else {{
+                    btn.className = 'card-icon-btn btn-card-offline';
+                    btn.innerHTML = '📥';
+                    btn.title = '📥 Make Offline Available: Download & save full video offline forever';
+                }}
             }}
 
             const tagBtn = document.getElementById(`tagOffline_${{safeId}}`);
             if (tagBtn) {{
-                tagBtn.className = `card-offline-tag-btn ${{isPinned ? 'active' : ''}}`;
-                tagBtn.innerHTML = isPinned ? '📌 Offline' : '📥 Offline';
-                tagBtn.title = isPinned ? '📌 Pinned offline forever (Click to unpin)' : '📥 Make offline available (Caches 100% & keeps forever)';
+                if (isFullyOffline) {{
+                    tagBtn.className = 'card-offline-tag-btn active';
+                    tagBtn.innerHTML = '📌 Offline';
+                    tagBtn.title = '📌 Pinned offline forever (Click to unpin)';
+                }} else if (isProcessing) {{
+                    tagBtn.className = 'card-offline-tag-btn downloading';
+                    tagBtn.innerHTML = `⏳ ${{numPct}}%`;
+                    tagBtn.title = `⏳ Downloading offline: ${{numPct}}% (${{sizeStr}})`;
+                }} else {{
+                    tagBtn.className = 'card-offline-tag-btn';
+                    tagBtn.innerHTML = '📥 Offline';
+                    tagBtn.title = '📥 Make offline available (Caches 100% & keeps forever)';
+                }}
             }}
         }}
 
@@ -11460,6 +11589,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             currentVideoKey = fileObj ? fileObj.key : rawKey;
             const safeId = fileObj ? fileObj.safe_id : (currentPlayingSafeId || currentVideoKey);
             currentPlayingSafeId = safeId;
+            startCacheStatsPolling();
 
             highlightAndPromotePlayingVideo(currentVideoKey);
             playerTitle.textContent = title || "Decrypted Stream";
@@ -11729,7 +11859,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             player.addEventListener('play', () => {{
                 if (playIcon) playIcon.style.display = 'none';
                 if (pauseIcon) pauseIcon.style.display = 'block';
+                startCacheStatsPolling();
                 resetControlsTimer();
+            }});
+            player.addEventListener('playing', () => {{
+                startCacheStatsPolling();
+            }});
+            player.addEventListener('progress', () => {{
+                if (!cacheStatsPollTimer) startCacheStatsPolling();
             }});
             player.addEventListener('pause', () => {{
                 if (playIcon) playIcon.style.display = 'block';
@@ -14568,11 +14705,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         applyHideTagsState();
         updateSystemStatusIndicators(true, 'idle');
         updateQuickResumeUI();
-        (allFiles || []).forEach(f => {{
-            if (f.is_downloading && f.safe_id) {{
-                pollOfflineDownloadProgress(f.safe_id);
-            }}
-        }});
+        startCacheStatsPolling();
 
         /* Privacy Blur Mode Controller */
         function isPrivacyBlurActive() {{
