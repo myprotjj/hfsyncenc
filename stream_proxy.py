@@ -2475,9 +2475,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         deleted_count = 0
 
+        affected_repos = set()
         for key in matching_keys:
             info = manifest["files"].get(key, {})
             repo_id = info.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+            affected_repos.add(repo_id)
             blob_path = info.get("blob_path") or info.get("remote_path")
             media_hash = info.get("media_hash") or info.get("content_hash") or info.get("fingerprint")
             api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
@@ -2486,16 +2488,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
             elif blob_path:
                 try:
-                    api.delete_file(
-                        path_in_repo=blob_path,
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                        commit_message=commit_helper.get_human_commit_message("delete")
-                    )
+                    metadata_helper.delete_video_and_sidecars_from_hf(api, repo_id, info)
                 except Exception as e:
                     print(f"[!] Warning deleting from HF ({blob_path}): {e}")
-
-                metadata_helper.delete_item_metadata_from_hf(api, repo_id, blob_path)
 
             strm_path = Path("jellyfin_library") / f"{key}.strm"
             if strm_path.exists():
@@ -2524,6 +2519,21 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         remove_empty_folders("jellyfin_library")
         save_manifest(manifest)
+
+        # Re-sync cloud indexes for affected repos so no ghost indexes remain
+        for rep in affected_repos:
+            try:
+                rep_api = self.acc_mgr.get_api_for_repo(rep) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                if hasattr(self, "acc_mgr") and self.acc_mgr and self.acc_mgr.can_write_to_repo(rep):
+                    remaining_rep_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == rep}
+                    metadata_helper.sync_repo_manifest_to_hf(rep_api, rep, remaining_rep_files, self.password)
+                    if not remaining_rep_files and rep.split("/")[-1].startswith("vault-"):
+                        rem = [f for f in rep_api.list_repo_files(repo_id=rep, repo_type="dataset") if f.endswith(".enc")]
+                        if not rem:
+                            rep_api.delete_repo(repo_id=rep, repo_type="dataset")
+                            logger.info("Deleted empty HF vault repository %s", rep)
+            except Exception as e:
+                logger.warning("Could not sync repo manifest after folder delete for %s: %s", rep, e)
 
         resp_body = json.dumps({
             "success": True,
@@ -2590,18 +2600,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if media_hash and "media_hashes" in manifest:
                 manifest["media_hashes"][media_hash] = manifest["files"][other_files_using_blob[0]]
         else:
-            # Last reference: delete cloud blob on Hugging Face
+            # Last reference: delete cloud blob and all sidecars on Hugging Face
             try:
                 if blob_path and hasattr(self, "acc_mgr") and self.acc_mgr and not self.acc_mgr.can_write_to_repo(repo_id):
                     logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
                 elif blob_path:
-                    api.delete_file(
-                        path_in_repo=blob_path,
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                        commit_message=commit_helper.get_human_commit_message("delete")
-                    )
-                    metadata_helper.delete_item_metadata_from_hf(api, repo_id, blob_path)
+                    metadata_helper.delete_video_and_sidecars_from_hf(api, repo_id, info)
                 hf_deleted = True
             except Exception as e:
                 print(f"[!] Warning deleting from HF ({blob_path}): {e}")
@@ -2627,6 +2631,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         manifest["files"].pop(key_to_delete, None)
 
         save_manifest(manifest)
+
+        # Synchronize remote repository vault_index.enc so cloud never keeps ghost references
+        try:
+            if hasattr(self, "acc_mgr") and self.acc_mgr and self.acc_mgr.can_write_to_repo(repo_id):
+                remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
+                metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
+                if not remaining_repo_files and repo_id.split("/")[-1].startswith("vault-"):
+                    rem = [f for f in api.list_repo_files(repo_id=repo_id, repo_type="dataset") if f.endswith(".enc")]
+                    if not rem:
+                        api.delete_repo(repo_id=repo_id, repo_type="dataset")
+                        logger.info("Deleted empty HF vault repository %s", repo_id)
+        except Exception as e:
+            logger.warning("Could not sync repo manifest after delete for %s: %s", repo_id, e)
 
         resp_body = json.dumps({
             "success": True,
@@ -2668,13 +2685,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 logger.info("Skipping HF cloud deletion for %s: Token lacks write permissions.", repo_id)
             elif blob_path:
                 try:
-                    api.delete_file(
-                        path_in_repo=blob_path,
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                        commit_message=commit_helper.get_human_commit_message("delete")
-                    )
-                    metadata_helper.delete_item_metadata_from_hf(api, repo_id, blob_path)
+                    metadata_helper.delete_video_and_sidecars_from_hf(api, repo_id, info)
                 except Exception as e:
                     print(f"[!] Warning deleting from HF ({blob_path}): {e}")
 

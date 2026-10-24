@@ -599,13 +599,74 @@ def delete_item_metadata_from_hf(api: HfApi, repo_id: str, blob_path: str):
         pass
 
 
+def delete_video_and_sidecars_from_hf(api: HfApi, repo_id: str, info: dict) -> list:
+    """
+    Deletes the primary encrypted video blob and all associated sidecars
+    (.meta.enc, .audio.m4a.enc, .storyboard.jpg.enc, .screens.jpg.enc, subtitles)
+    from Hugging Face.
+    """
+    deleted_paths = []
+    blob_path = info.get("blob_path") or info.get("remote_path")
+    if not blob_path:
+        return deleted_paths
+
+    targets = [blob_path]
+    base_no_enc = blob_path[:-4] if blob_path.endswith(".enc") else blob_path
+
+    # Standard sidecar paths
+    targets.append(f"{base_no_enc}.meta.enc")
+    targets.append(f"{base_no_enc}.audio.m4a.enc")
+    targets.append(f"{base_no_enc}.storyboard.jpg.enc")
+    targets.append(f"{base_no_enc}.screens.jpg.enc")
+
+    # Audio obj
+    if isinstance(info.get("audio"), dict) and info["audio"].get("blob_path"):
+        targets.append(info["audio"]["blob_path"])
+    # Storyboard obj
+    if isinstance(info.get("storyboard"), dict) and info["storyboard"].get("blob_path"):
+        targets.append(info["storyboard"]["blob_path"])
+    # Screens obj
+    if isinstance(info.get("screens"), dict) and info["screens"].get("blob_path"):
+        targets.append(info["screens"]["blob_path"])
+    # Subtitles
+    for sub in info.get("subtitles", []):
+        if isinstance(sub, dict) and sub.get("blob_path"):
+            targets.append(sub["blob_path"])
+
+    unique_targets = list(dict.fromkeys(targets))
+
+    for target in unique_targets:
+        try:
+            api.delete_file(
+                path_in_repo=target,
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=commit_helper.get_human_commit_message("delete")
+            )
+            deleted_paths.append(target)
+        except Exception:
+            pass
+
+    return deleted_paths
+
+
 def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, password: str):
     """
     Encrypts all file records belonging to a repository and uploads
     it as 'vault_index.enc' in the dataset root.
+    If repo_files is empty, deletes 'vault_index.enc' from the dataset root.
     """
     if not repo_files:
-        return False
+        try:
+            api.delete_file(
+                path_in_repo="vault_index.enc",
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=commit_helper.get_human_commit_message("delete")
+            )
+            return True
+        except Exception:
+            return False
     for r in repo_files.values():
         if "verifier" not in r:
             r["verifier"] = crypto_engine.create_verifier(password)
@@ -722,7 +783,14 @@ def restore_library_from_hf(api: HfApi, password: str, hf_username: str, library
                 })
 
         # 3. Rebuild local files
+        files_set = set(files_in_repo)
         for key, rec in repo_records.items():
+            # Check if primary blob actually exists in repo (prevent ghost files)
+            blob = rec.get("blob_path")
+            if blob and blob not in files_set:
+                print(f"[!] Skipping ghost file {key}: blob {blob} not found in {repo_id}")
+                continue
+
             # Verify password
             verifier = rec.get("verifier")
             if verifier and not crypto_engine.verify_password(verifier, password):

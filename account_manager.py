@@ -333,6 +333,7 @@ class AccountManager:
                 repo_id = ds.id
                 repo_records = {}
                 vault_index_failed = False
+                files_in_repo = None
 
                 # 1. Fast Path: Try direct vault_index.enc download first (Instant 1-request restore, avoids listing 100k files)
                 if self.password:
@@ -395,6 +396,38 @@ class AccountManager:
                                 "blob": emf,
                                 "reason": "Failed to decrypt vault index with current master encryption key"
                             })
+
+                # 2.5 Ghost verification: Verify that all records correspond to actual blobs in HF
+                if repo_records:
+                    if files_in_repo is None:
+                        try:
+                            files_in_repo = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+                        except Exception:
+                            files_in_repo = []
+
+                    files_set = set(files_in_repo)
+                    valid_records = {}
+                    ghost_found = False
+                    for key, rec in repo_records.items():
+                        blob = rec.get("blob_path")
+                        if blob and blob in files_set:
+                            valid_records[key] = rec
+                        else:
+                            ghost_found = True
+                            print(f"[!] Pruning ghost record {key} (blob {blob} missing in {repo_id})")
+
+                    if ghost_found and self.can_write_to_repo(repo_id):
+                        metadata_helper.sync_repo_manifest_to_hf(api, repo_id, valid_records, self.password)
+                        if not valid_records and repo_id.split("/")[-1].startswith("vault-"):
+                            rem_enc = [f for f in files_set if f.endswith(".enc")]
+                            if not rem_enc:
+                                try:
+                                    api.delete_repo(repo_id=repo_id, repo_type="dataset")
+                                    print(f"[*] Cleaned up empty vault repo {repo_id}")
+                                except Exception:
+                                    pass
+
+                    repo_records = valid_records
 
                 # 3. Merge records into manifest
                 for key, rec in repo_records.items():
