@@ -133,14 +133,6 @@ def slice_poster_thumbnail(safe_id: str, overwrite: bool = False) -> str:
     clean_id = clean_key(safe_id)
     out_thumb = os.path.join(THUMBS_DIR, f"{clean_id}.jpg")
 
-    # If a companion screens/poster image already provided a thumbnail, do NOT overwrite it!
-    try:
-        import screens_helper
-        if screens_helper.has_screens(clean_id) and os.path.exists(out_thumb) and os.path.getsize(out_thumb) > 1000:
-            return out_thumb
-    except Exception:
-        pass
-
     if not overwrite and os.path.exists(out_thumb) and os.path.getsize(out_thumb) > 1000:
         return out_thumb
 

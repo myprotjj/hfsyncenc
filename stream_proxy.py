@@ -2985,39 +2985,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         if not safe_id and key:
             safe_id = storyboard_helper.get_safe_id(key)
 
-        # 1. Primary Priority: Thumbnail cropped from custom screens.jpg / contact sheet
-        thumb_path = screens_helper.get_screens_thumb_path(safe_id) if safe_id else None
-
-        # 2. If screens.jpg exists on disk, process it into a thumbnail
+        # 1. Primary: Thumbnail sliced from generated 100-frame storyboard
+        thumb_path = storyboard_helper.get_poster_thumb_path(safe_id) if safe_id else None
         if not thumb_path or not os.path.exists(thumb_path):
-            screens_path = screens_helper.get_screens_path(safe_id) if safe_id else None
-            if screens_path and os.path.exists(screens_path):
-                screens_helper.process_screens_image(Path(screens_path), safe_id)
-                thumb_path = screens_helper.get_screens_thumb_path(safe_id)
+            sb_img = storyboard_helper.get_storyboard_image_path(safe_id) if safe_id else None
+            if sb_img and os.path.exists(sb_img):
+                try:
+                    storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=False)
+                    thumb_path = storyboard_helper.get_poster_thumb_path(safe_id)
+                except Exception:
+                    pass
 
-        # 3. If screens.jpg is stored in Hugging Face dataset, download and process it on demand
+        # 2. Legacy fallback: screens_thumb if already present
         if not thumb_path or not os.path.exists(thumb_path):
-            manifest = load_manifest()
-            for k, info in manifest.get("files", {}).items():
-                if storyboard_helper.get_safe_id(k) == safe_id or k == key:
-                    screens_info = (info or {}).get("screens")
-                    if screens_info and screens_info.get("blob_path"):
-                        try:
-                            repo_id = screens_info.get("repo_id")
-                            blob_path = screens_info.get("blob_path")
-                            api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
-                            local_downloaded = api.hf_hub_download(repo_id=repo_id, filename=blob_path, repo_type="dataset")
-                            temp_plain = os.path.join(screens_helper.SCREENS_DIR, f"{safe_id}.jpg")
-                            crypto_engine.decrypt_file(local_downloaded, temp_plain, self.password)
-                            screens_helper.process_screens_image(Path(temp_plain), safe_id)
-                            thumb_path = screens_helper.get_screens_thumb_path(safe_id)
-                        except Exception as e:
-                            logger.warning("Could not restore cloud screens for thumb: %s", e)
-                    break
-
-        # 4. Only if NO screens.jpg exists at all: fallback to storyboard-generated poster thumbnail
-        if not thumb_path or not os.path.exists(thumb_path):
-            thumb_path = storyboard_helper.get_poster_thumb_path(safe_id) if safe_id else None
+            thumb_path = screens_helper.get_screens_thumb_path(safe_id) if safe_id else None
 
         if not thumb_path or not os.path.exists(thumb_path):
             sb_img = storyboard_helper.get_storyboard_image_path(safe_id) if safe_id else None
@@ -8120,14 +8101,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
             let url = '';
-            // 1. Companion screen image ALWAYS takes top priority!
-            if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
-                url = fileObj.screens_url || `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
-            }} else if (fileObj && fileObj.has_storyboard) {{
+            // 1. Generated 100-frame storyboard sheet serves all purposes
+            if (fileObj && fileObj.has_storyboard) {{
                 const sb = storyboardCache[safeId];
                 url = (sb && sb.sprite_url) ? sb.sprite_url : `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{fileObj.sb_version || Date.now()}}`;
+            }} else if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
+                url = fileObj.screens_url || `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }} else {{
-                url = `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
+                url = `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }}
 
             img.src = url;
@@ -8194,14 +8175,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
             let screensUrl = '';
-            // 1. Companion screen image ALWAYS takes top priority!
-            if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
-                screensUrl = fileObj.screens_url || `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
-            }} else if (fileObj && fileObj.has_storyboard) {{
+            // 1. Generated 100-frame storyboard sheet serves all purposes
+            if (fileObj && fileObj.has_storyboard) {{
                 const sb = storyboardCache[safeId];
                 screensUrl = (sb && sb.sprite_url) ? sb.sprite_url : `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{fileObj.sb_version || Date.now()}}`;
+            }} else if (fileObj && (fileObj.has_screens || fileObj.screens_url)) {{
+                screensUrl = fileObj.screens_url || `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }} else {{
-                screensUrl = `/api/screens/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
+                screensUrl = `/api/storyboard/image?id=${{encodeURIComponent(safeId)}}&v=${{Date.now()}}`;
             }}
 
             overlay.style.backgroundImage = `url('${{screensUrl}}')`;

@@ -627,16 +627,13 @@ def process_file_pipeline(
             return
 
         if file_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
-            process_standalone_screens(
-                file_path=file_path,
-                base_dir=base_dir,
-                library_dir=library_dir,
-                api=api,
-                hf_username=hf_username,
-                password=password,
-                delete_local=delete_local,
-                acc_mgr=acc_mgr
-            )
+            if delete_local and os.path.exists(str_path):
+                try:
+                    os.remove(str_path)
+                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Discarded External Image] Removed: {file_path.name}")
+                    remove_empty_folders(base_dir)
+                except Exception:
+                    pass
             return
 
         if file_path.suffix.lower() in {".nfo"}:
@@ -796,45 +793,14 @@ def process_file_pipeline(
         upload_speed_mbps = (enc_size * 8 / (1024 * 1024)) / max(0.01, up_time)
         safe_print(f"[{time.strftime('%H:%M:%S')}] [Upload Complete] {rel_to_base} in {up_time:.2f}s ({upload_speed_mbps:.1f} Mbps)")
 
-        # 4a. Detect and Process Companion Screens / Poster from Watch Folder
-        # Established BEFORE storyboard generation so companion covers are preserved without ffmpeg overwrite
+        # 4a. Discard external companion thumbnail/screen if found (generated 100-frame storyboard serves all purposes)
         screens_record = None
         try:
             matched_screen = screens_helper.find_matching_screens_file(file_path, base_dir=base_dir)
             if matched_screen and matched_screen.is_file():
-                safe_id = storyboard_helper.get_safe_id(full_key)
-                screens_helper.process_screens_image(
-                    screen_path=matched_screen,
-                    safe_id=safe_id,
-                    library_dir=library_dir,
-                    video_rel_path=full_key
-                )
-                temp_screen_enc = f"{str(matched_screen)}.enc"
-                enc_sc_size = crypto_engine.encrypt_file(str(matched_screen), temp_screen_enc, password)
-                screens_blob = obfuscated_blob_path.replace(".enc", ".screens.jpg.enc")
-                api.upload_file(
-                    path_or_fileobj=temp_screen_enc,
-                    path_in_repo=screens_blob,
-                    repo_id=repo_id,
-                    repo_type="dataset",
-                    commit_message=commit_helper.get_human_commit_message("upload")
-                )
-                screens_record = {
-                    "blob_path": screens_blob,
-                    "repo_id": repo_id,
-                    "account": hf_username,
-                    "orig_size": os.path.getsize(str(matched_screen)),
-                    "enc_size": enc_sc_size,
-                    "format": "jpg",
-                    "safe_id": safe_id,
-                    "verifier": crypto_engine.create_verifier(password)
-                }
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Companion Screens Live] ({matched_screen.name}) -> {screens_blob}")
-                if os.path.exists(temp_screen_enc):
-                    os.remove(temp_screen_enc)
                 if delete_local and os.path.exists(str(matched_screen)):
                     os.remove(str(matched_screen))
-                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned screens image: {matched_screen.name}")
+                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Discarded Original Thumb] Removed {matched_screen.name} (using generated 100-frame storyboard)")
                     remove_empty_folders(base_dir)
         except Exception as sc_err:
             safe_print(f"[!] Companion screens check warning: {sc_err}")
@@ -867,6 +833,10 @@ def process_file_pipeline(
                         "total_frames": 100,
                         "verifier": crypto_engine.create_verifier(password)
                     }
+                    try:
+                        storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=True)
+                    except Exception:
+                        pass
                     safe_print(f"[{time.strftime('%H:%M:%S')}] [100-Screen Storyboard Live] -> {sb_blob} ({os.path.getsize(sb_jpg)/(1024*1024):.2f} MB)")
                     if os.path.exists(temp_sb_enc):
                         os.remove(temp_sb_enc)
