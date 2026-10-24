@@ -1,0 +1,54 @@
+# ==========================================
+# CREDENTIALS & SECRETS (STRICTLY PRIVATE)
+# ==========================================
+env.txt
+.env
+.env.*
+*.key
+*.token
+*.pem
+
+# ==========================================
+# PRIVATE VAULT MANIFEST & RUNTIME STATE
+# ==========================================
+upload_manifest.json
+live_activity.json
+
+# ==========================================
+# MEDIA FILES & LOCAL JELLYFIN CONTENT
+# ==========================================
+videos_to_sync/*
+!videos_to_sync/.gitkeep
+test_videos/*
+!test_videos/.gitkeep
+jellyfin_library/*
+!jellyfin_library/.gitkeep
+storyboards/*
+!storyboards/.gitkeep
+archive/*
+!archive/.gitkeep
+*.mp4
+*.m4a
+*.mkv
+*.avi
+*.mov
+*.enc
+*.strm
+*.nfo
+*.srt
+*.vtt
+
+# ==========================================
+# PYTHON COMPILED & SYSTEM TEMPORARIES
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+*.tmp
+temp_*
+tmp_*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
