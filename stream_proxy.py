@@ -8301,7 +8301,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
 
             if (meta.title) addCandidate(meta.title);
-            const keyStem = key.split('/').pop().split('\\').pop();
+            let keyStem = key || '';
+            if (keyStem.indexOf('/') !== -1) keyStem = keyStem.substring(keyStem.lastIndexOf('/') + 1);
+            if (keyStem.indexOf(String.fromCharCode(92)) !== -1) keyStem = keyStem.substring(keyStem.lastIndexOf(String.fromCharCode(92)) + 1);
             addCandidate(keyStem);
 
             (file.aliases || []).forEach(a => addCandidate(a));
