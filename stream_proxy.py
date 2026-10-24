@@ -1577,6 +1577,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_api_screens_thumb()
         elif path == "/api/screens/image":
             self.handle_api_screens_image()
+        elif path == "/api/test/screens100":
+            test_path = "test_screens_100_Variant_4K_384x216_q2.jpg"
+            if os.path.exists(test_path):
+                with open(test_path, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
         elif path.startswith("/stream/subtitle"):
             self.handle_stream_subtitle()
         elif path.startswith("/stream/audio/"):
@@ -4558,9 +4569,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const dlBtn = document.getElementById('screensModalDownloadBtn');
             if (!modal || !img) return;
 
-            const url = '/api/screens/image?id=' + encodeURIComponent(safeId);
+            const fileObj = (allFiles || []).find(f => (f.safe_id === safeId));
+            let url = '/api/screens/image?id=' + encodeURIComponent(safeId);
+            if (fileObj && !fileObj.has_screens && fileObj.has_storyboard) {{
+                url = '/api/storyboard/image?id=' + encodeURIComponent(safeId);
+            }}
+
             img.src = url;
-            if (titleEl) titleEl.textContent = title ? '🖼️ ' + title : 'Contact Sheet Preview';
+            if (titleEl) titleEl.textContent = title ? '🖼️ ' + title : '100-Screen Contact Sheet Preview';
             if (dlBtn) dlBtn.href = url;
             modal.style.display = 'flex';
         }}
@@ -4719,10 +4735,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const safeId = f.safe_id || '';
             const hasStoryboard = !!f.has_storyboard;
             const hasScreens = !!f.has_screens;
+            const canViewScreens = hasScreens || hasStoryboard;
             let thumbBgStyle = '';
             let fallbackHtml = '';
             if (hasStoryboard && safeId) {{
-                thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 500%; background-position: 22.2222% 0%;";
+                thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 1000%; background-position: 22.2222% 0%;";
             }} else if (hasScreens && safeId) {{
                 thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "'); background-size: cover; background-position: center;";
             }} else {{
@@ -4751,8 +4768,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    <div class="thumb-badge">${{hasStoryboard ? 'HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
-                    ${{hasScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
+                    <div class="thumb-badge">${{hasStoryboard ? '100 HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
+                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res 100-Screen Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
                     <div class="card-size-badge">${{escapeHtml(f.size_str)}}</div>
                     ${{durationHtml}}
                 </div>
@@ -4778,7 +4795,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <div class="video-card-actions">
                     <div class="card-action-group-left">
                         <a href="/stream/${{escapeHtml(f.key)}}" target="_blank" class="card-icon-btn btn-card-link" title="Direct Stream URL">&#128279;</a>
-                        ${{hasScreens ? `<button type="button" class="card-icon-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet Screenshots">&#128444;&#65039;</button>` : ''}}
+                        ${{canViewScreens ? `<button type="button" class="card-icon-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet Screenshots">&#128444;&#65039;</button>` : ''}}
                         <a href="/stream/audio/${{escapeHtml(f.key)}}" download="${{escapeHtml(title)}}.m4a" target="_blank" class="card-icon-btn btn-card-audio" title="Download / Stream Lightweight Audio (.m4a)">&#127925;</a>
                         <a href="${{escapeHtml(f.hf_url)}}" target="_blank" class="card-icon-btn btn-card-hf" title="Open dataset on Hugging Face">&#129303;</a>
                     </div>
@@ -4862,10 +4879,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const safeId = f.safe_id || '';
             const hasStoryboard = !!f.has_storyboard;
             const hasScreens = !!f.has_screens;
+            const canViewScreens = hasScreens || hasStoryboard;
             let thumbBgStyle = '';
             let fallbackHtml = '';
             if (hasStoryboard && safeId) {{
-                thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 500%; background-position: 22.2222% 0%;";
+                thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 1000%; background-position: 22.2222% 0%;";
             }} else if (hasScreens && safeId) {{
                 thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "'); background-size: cover; background-position: center;";
             }} else {{
@@ -4894,8 +4912,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    <div class="thumb-badge">${{hasStoryboard ? 'HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
-                    ${{hasScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
+                    <div class="thumb-badge">${{hasStoryboard ? '100 HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
+                    ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
                     ${{durationHtml}}
                 </div>
                 <div style="flex: 1; min-width: 0;">
@@ -4914,7 +4932,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </div>
                 <div class="file-actions">
                     <a href="/stream/${{f.key}}" target="_blank" class="btn btn-link" title="Direct Stream URL">&#128279; Direct</a>
-                    ${{hasScreens ? `<button type="button" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" class="btn btn-secondary btn-sm" title="View Full Contact Sheet Screenshots">&#128444;&#65039; Screens</button>` : ''}}
+                    ${{canViewScreens ? `<button type="button" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" class="btn btn-secondary btn-sm" title="View Full Contact Sheet Screenshots">&#128444;&#65039; Screens</button>` : ''}}
                     <a href="/stream/audio/${{f.key}}" download="${{escapeHtml(title)}}.m4a" target="_blank" class="btn btn-link btn-card-audio" title="Download / Stream Lightweight Audio (.m4a)">&#127925; Audio</a>
                     <a href="${{f.hf_url}}" target="_blank" class="btn btn-hf" title="Open file on Hugging Face">&#129303; View on HF</a>
                     <button onclick="promptEditMetadata('${{escapeHtml(f.key)}}')" class="btn btn-edit" title="Edit tags, categories, and Jellyfin metadata">&#127991; Edit Tags</button>
@@ -5590,9 +5608,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         let thumbManualScrubTimeout = null;
         let thumbSequenceIdx = 0;
 
-        // 17 sample frames across the 50-frame storyboard (steps of 3 frames)
+        // 25 sample frames across the 100-frame storyboard (steps of 4 frames)
         const THUMB_SAMPLE_FRAMES = [
-            1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46, 49
+            2, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62, 66, 70, 74, 78, 82, 86, 90, 94, 98
         ];
 
         function setThumbCardFrame(card, frameIndex) {{
@@ -5603,13 +5621,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const col = frameIndex % 10;
             const row = Math.floor(frameIndex / 10);
             const posX = (col / 9) * 100;
-            const posY = (row / 4) * 100;
+            const posY = (row / 9) * 100;
             
             canvas.style.backgroundPosition = `${{posX}}% ${{posY}}%`;
             
             const fill = card.querySelector('.thumb-scrub-fill');
             if (fill) {{
-                fill.style.width = `${{((frameIndex + 1) / 50) * 100}}%`;
+                fill.style.width = `${{((frameIndex + 1) / 100) * 100}}%`;
             }}
         }}
 
@@ -5653,6 +5671,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         img.src = data.sprite_url;
                         img.onload = () => {{
                             canvas.style.backgroundImage = `url('${{data.sprite_url}}')`;
+                            canvas.style.backgroundSize = '1000% 1000%';
                             const fb = card.querySelector('.thumb-fallback');
                             if (fb) fb.remove();
                             if (activeHoveredThumb === card) {{
@@ -5679,6 +5698,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                                         img.src = d2.sprite_url;
                                         img.onload = () => {{
                                             canvas.style.backgroundImage = `url('${{d2.sprite_url}}')`;
+                                            canvas.style.backgroundSize = '1000% 1000%';
                                             const fb = card.querySelector('.thumb-fallback');
                                             if (fb) fb.remove();
                                             if (activeHoveredThumb === card) {{
@@ -5706,7 +5726,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const rect = card.getBoundingClientRect();
             const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-            const frameIndex = Math.min(49, Math.floor(pct * 50));
+            const frameIndex = Math.min(99, Math.floor(pct * 100));
             
             setThumbCardFrame(card, frameIndex);
 

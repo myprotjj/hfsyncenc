@@ -616,11 +616,39 @@ def process_file_pipeline(
         upload_speed_mbps = (enc_size * 8 / (1024 * 1024)) / max(0.01, up_time)
         safe_print(f"[{time.strftime('%H:%M:%S')}] [Upload Complete] {rel_to_base} in {up_time:.2f}s ({upload_speed_mbps:.1f} Mbps)")
 
-        # Pre-generate seekbar storyboard sprite sheet before deleting local video
+        # Pre-generate 100-screen HD storyboard sprite sheet before deleting local video
+        storyboard_record = None
         try:
-            storyboard_helper.generate_storyboard(full_key, duration=0, local_path=str_path)
-        except Exception:
-            pass
+            if storyboard_helper.generate_storyboard(full_key, duration=0, local_path=str_path):
+                safe_id = storyboard_helper.get_safe_id(full_key)
+                sb_jpg = os.path.join(storyboard_helper.STORYBOARD_DIR, f"{safe_id}.jpg")
+                if os.path.exists(sb_jpg):
+                    temp_sb_enc = f"{sb_jpg}.enc"
+                    sb_enc_size = crypto_engine.encrypt_file(sb_jpg, temp_sb_enc, password)
+                    sb_blob = obfuscated_blob_path.replace(".enc", ".storyboard.jpg.enc")
+                    api.upload_file(
+                        path_or_fileobj=temp_sb_enc,
+                        path_in_repo=sb_blob,
+                        repo_id=repo_id,
+                        repo_type="dataset",
+                        commit_message=commit_helper.get_human_commit_message("upload")
+                    )
+                    storyboard_record = {
+                        "blob_path": sb_blob,
+                        "repo_id": repo_id,
+                        "account": hf_username,
+                        "orig_size": os.path.getsize(sb_jpg),
+                        "enc_size": sb_enc_size,
+                        "format": "jpg",
+                        "safe_id": safe_id,
+                        "total_frames": 100,
+                        "verifier": crypto_engine.create_verifier(password)
+                    }
+                    safe_print(f"[{time.strftime('%H:%M:%S')}] [100-Screen Storyboard Live] -> {sb_blob} ({os.path.getsize(sb_jpg)/(1024*1024):.2f} MB)")
+                    if os.path.exists(temp_sb_enc):
+                        os.remove(temp_sb_enc)
+        except Exception as sb_err:
+            safe_print(f"[!] Storyboard upload warning: {sb_err}")
 
         # 5. Extract Companion Audio (Instant Stream-Copy / AAC fallback)
         audio_record = None
@@ -786,6 +814,8 @@ def process_file_pipeline(
             record["subtitles"] = subtitles_record
         if screens_record:
             record["screens"] = screens_record
+        if storyboard_record:
+            record["storyboard"] = storyboard_record
         update_manifest_record(record, media_hash)
 
         # 11. Generate Jellyfin pointer (.strm) & metadata (.nfo)

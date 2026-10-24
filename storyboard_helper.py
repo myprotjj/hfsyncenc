@@ -144,8 +144,10 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
             input_source = f"http://127.0.0.1:{port}/stream/{encoded_key}?full=1"
 
         cols = 10
-        rows = 5
-        total_frames = cols * rows  # 50 frames
+        rows = 10
+        total_frames = cols * rows  # 100 frames
+        thumb_width = 384
+        thumb_height = 216
 
         dur = float(duration) if duration and duration > 5 else 0.0
         if dur <= 5:
@@ -158,8 +160,8 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
         temp_jpg = f"{jpg_path}.tmp.jpg"
         filter_str = (
             f"fps={fps_val:.4f},"
-            f"scale=160:90:force_original_aspect_ratio=decrease,"
-            f"pad=160:90:(ow-iw)/2:(oh-ih)/2:black,"
+            f"scale={thumb_width}:{thumb_height}:force_original_aspect_ratio=decrease,"
+            f"pad={thumb_width}:{thumb_height}:(ow-iw)/2:(oh-ih)/2:black,"
             f"tile={cols}x{rows}"
         )
 
@@ -170,11 +172,11 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
             "-i", input_source,
             "-vf", filter_str,
             "-frames:v", "1",
-            "-q:v", "4",
+            "-q:v", "2",
             temp_jpg
         ]
 
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
         if res.returncode == 0 and os.path.exists(temp_jpg) and os.path.getsize(temp_jpg) > 1000:
             os.replace(temp_jpg, jpg_path)
             meta = {
@@ -182,8 +184,8 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
                 "safe_id": safe_id,
                 "cols": cols,
                 "rows": rows,
-                "thumb_width": 160,
-                "thumb_height": 90,
+                "thumb_width": thumb_width,
+                "thumb_height": thumb_height,
                 "total_frames": total_frames,
                 "duration": dur,
                 "interval": round(dur / total_frames, 2)
