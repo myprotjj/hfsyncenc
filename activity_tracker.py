@@ -188,6 +188,12 @@ class ActivityTracker:
                 state["recent_events"] = state["recent_events"][:MAX_EVENTS]
             _save_activity_raw(state)
 
+    def clear_events(self):
+        with self._lock:
+            state = _load_activity_raw()
+            state["recent_events"] = []
+            _save_activity_raw(state)
+
     def set_idle(self):
         with self._lock:
             state = _load_activity_raw()

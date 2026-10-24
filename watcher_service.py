@@ -865,6 +865,7 @@ def watch_and_sync(
     archive_dir: str = "archive",
     max_workers: int = 4
 ):
+    global RATE_LIMIT_PAUSE_UNTIL, CONSECUTIVE_RATE_LIMITS, THROTTLED_ACCOUNTS
     acc_mgr = account_manager.AccountManager()
     upload_acc = acc_mgr.get_upload_account()
     if not upload_acc:

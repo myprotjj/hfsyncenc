@@ -323,6 +323,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_subtitles_delete()
         elif path == "/api/purge-history":
             self.handle_purge_history()
+        elif path == "/api/activity/clear":
+            self.handle_activity_clear()
         elif path == "/api/scan-tech-tags":
             self.handle_scan_tech_tags()
         else:
@@ -409,6 +411,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             res = {"success": False, "error": str(e)}
 
         resp_body = json.dumps(res).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_activity_clear(self):
+        activity_tracker.tracker.clear_events()
+        resp_body = json.dumps({"success": True}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(resp_body)))
@@ -8601,11 +8613,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (panel) panel.style.display = activityLogVisible ? 'block' : 'none';
         }}
 
-        function clearActivityEvents() {{
+        async function clearActivityEvents() {{
             const list = document.getElementById('activityEventsList');
-            if (list) list.innerHTML = '<div style="color: #6b7280; font-style: italic;">Log cleared.</div>';
-            const badge = document.getElementById('eventCountBadge');
-            if (badge) badge.textContent = '0';
+            if (list) {{
+                list.dataset.lastFp = 'empty';
+                list.innerHTML = '<div style="color: #6b7280; font-style: italic; padding: 12px; text-align: center;">Log cleared.</div>';
+            }}
+            const badges = [document.getElementById('eventCountBadge'), document.getElementById('headerEventCountBadge')];
+            badges.forEach(b => {{ if (b) b.textContent = '0'; }});
+
+            try {{
+                await fetch('/api/activity/clear', {{ method: 'POST' }});
+            }} catch (e) {{}}
         }}
 
         async function pollActivity() {{
@@ -8734,26 +8753,33 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
 
             // Render Events Stream without unnecessary DOM flicker
-            if (eventsList && events.length > 0) {{
-                const fp = events.map(e => `${{e.time}}:${{e.type}}:${{e.title}}:${{e.message}}`).join('|');
-                if (eventsList.dataset.lastFp !== fp) {{
-                    eventsList.dataset.lastFp = fp;
-                    eventsList.innerHTML = events.map(e => {{
-                        let badgeClass = 'badge-info';
-                        if (e.type === 'success') badgeClass = 'badge-success';
-                        else if (e.type === 'upload') badgeClass = 'badge-upload';
-                        else if (e.type === 'skip') badgeClass = 'badge-skip';
-                        else if (e.type === 'error') badgeClass = 'badge-error';
+            if (eventsList) {{
+                if (events.length > 0) {{
+                    const fp = events.map(e => `${{e.time}}:${{e.type}}:${{e.title}}:${{e.message}}`).join('|');
+                    if (eventsList.dataset.lastFp !== fp) {{
+                        eventsList.dataset.lastFp = fp;
+                        eventsList.innerHTML = events.map(e => {{
+                            let badgeClass = 'badge-info';
+                            if (e.type === 'success') badgeClass = 'badge-success';
+                            else if (e.type === 'upload') badgeClass = 'badge-upload';
+                            else if (e.type === 'skip') badgeClass = 'badge-skip';
+                            else if (e.type === 'error') badgeClass = 'badge-error';
 
-                        return `
-                        <div class="activity-event-row">
-                            <span class="event-time">${{escapeHtml(e.time)}}</span>
-                            <span class="event-badge ${{badgeClass}}">${{escapeHtml(e.type)}}</span>
-                            <span style="font-weight: 600; color: #e5e7eb;">${{escapeHtml(e.title)}}</span>
-                            <span style="color: #9ca3af;">${{escapeHtml(e.message)}}</span>
-                            ${{e.speed ? `<span style="color: #38bdf8; font-size: 0.75rem;">(${{escapeHtml(e.speed)}})</span>` : ''}}
-                        </div>`;
-                    }}).join('');
+                            return `
+                            <div class="activity-event-row">
+                                <span class="event-time">${{escapeHtml(e.time)}}</span>
+                                <span class="event-badge ${{badgeClass}}">${{escapeHtml(e.type)}}</span>
+                                <span style="font-weight: 600; color: #e5e7eb;">${{escapeHtml(e.title)}}</span>
+                                <span style="color: #9ca3af;">${{escapeHtml(e.message)}}</span>
+                                ${{e.speed ? `<span style="color: #38bdf8; font-size: 0.75rem;">(${{escapeHtml(e.speed)}})</span>` : ''}}
+                            </div>`;
+                        }}).join('');
+                    }}
+                }} else {{
+                    if (eventsList.dataset.lastFp !== 'empty') {{
+                        eventsList.dataset.lastFp = 'empty';
+                        eventsList.innerHTML = '<div style="color: #6b7280; font-style: italic; padding: 12px; text-align: center;">No activity events logged.</div>';
+                    }}
                 }}
             }}
 
