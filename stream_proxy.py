@@ -6635,6 +6635,144 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             align-items: center;
             justify-content: center;
         }}
+        /* Global Active States for Tool Buttons & Icon Buttons */
+        .tool-btn.is-active,
+        .tool-btn.active,
+        .tool-btn-icon.is-active,
+        .tool-btn-icon.active {{
+            background: rgba(56, 189, 248, 0.22) !important;
+            border-color: #38bdf8 !important;
+            color: #38bdf8 !important;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.45), inset 0 0 6px rgba(56, 189, 248, 0.2) !important;
+        }}
+
+        /* Glowing accent dot indicator on top-right of active icon buttons */
+        .tool-btn-icon.is-active::after,
+        .tool-btn-icon.active::after {{
+            content: '';
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            width: 7px;
+            height: 7px;
+            background: #38bdf8;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #38bdf8;
+            border: 1px solid rgba(15, 23, 42, 0.8);
+            animation: pulse-dot 1.8s infinite ease-in-out;
+            pointer-events: none;
+        }}
+
+        /* Amber Active State (e.g. Tags Hidden) */
+        .tool-btn.is-active-amber,
+        .tool-btn.active-amber,
+        .tool-btn-icon.is-active-amber,
+        .tool-btn-icon.active-amber {{
+            background: rgba(245, 158, 11, 0.22) !important;
+            border-color: #f59e0b !important;
+            color: #fbbf24 !important;
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.45), inset 0 0 6px rgba(245, 158, 11, 0.2) !important;
+        }}
+        .tool-btn-icon.is-active-amber::after,
+        .tool-btn-icon.active-amber::after {{
+            background: #f59e0b !important;
+            box-shadow: 0 0 8px #f59e0b !important;
+        }}
+
+        /* Purple Active State (Merge Videos, etc.) */
+        .tool-btn.is-active-purple,
+        .tool-btn.active-purple,
+        .tool-btn-icon.is-active-purple,
+        .tool-btn-icon.active-purple {{
+            background: rgba(168, 85, 247, 0.25) !important;
+            border-color: #a855f7 !important;
+            color: #c084fc !important;
+            box-shadow: 0 0 12px rgba(168, 85, 247, 0.5), inset 0 0 6px rgba(168, 85, 247, 0.2) !important;
+        }}
+        .tool-btn-icon.is-active-purple::after,
+        .tool-btn-icon.active-purple::after {{
+            background: #a855f7 !important;
+            box-shadow: 0 0 8px #a855f7 !important;
+        }}
+
+        /* Emerald/Green Active State (Expand All, etc.) */
+        .tool-btn.is-active-green,
+        .tool-btn.active-green,
+        .tool-btn-icon.is-active-green,
+        .tool-btn-icon.active-green {{
+            background: rgba(16, 185, 129, 0.22) !important;
+            border-color: #10b981 !important;
+            color: #34d399 !important;
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.45), inset 0 0 6px rgba(16, 185, 129, 0.2) !important;
+        }}
+        .tool-btn-icon.is-active-green::after,
+        .tool-btn-icon.active-green::after {{
+            background: #10b981 !important;
+            box-shadow: 0 0 8px #10b981 !important;
+        }}
+
+        @keyframes pulse-dot {{
+            0%, 100% {{ transform: scale(1); opacity: 1; }}
+            50% {{ transform: scale(1.35); opacity: 0.75; }}
+        }}
+
+        /* View Toggle Group Active State */
+        .view-toggle-btn.active,
+        .view-toggle-btn.is-active {{
+            background: linear-gradient(135deg, #0284c7, #0369a1) !important;
+            border-color: #38bdf8 !important;
+            color: #ffffff !important;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+            transform: scale(1.06);
+            position: relative;
+        }}
+        .view-toggle-btn.active::after,
+        .view-toggle-btn.is-active::after {{
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 20%;
+            right: 20%;
+            height: 2px;
+            background: #38bdf8;
+            border-radius: 2px;
+            box-shadow: 0 0 6px #38bdf8;
+        }}
+
+        /* Mark for Merge Buttons on Cards and Rows */
+        .btn-mark-merge {{
+            color: #c084fc !important;
+            border-color: rgba(168, 85, 247, 0.4) !important;
+            background: rgba(168, 85, 247, 0.1) !important;
+            font-size: 0.75rem !important;
+            padding: 4px 10px !important;
+            border-radius: 6px !important;
+            cursor: pointer;
+            transition: all 0.18s ease !important;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }}
+        .btn-mark-merge:hover {{
+            background: rgba(168, 85, 247, 0.22) !important;
+            border-color: #c084fc !important;
+            color: #fff !important;
+            transform: translateY(-1px);
+        }}
+        .btn-mark-merge.active,
+        .btn-mark-merge.is-active,
+        .card-mark-merge-pill.active,
+        .card-mark-merge-pill.is-active,
+        .btn-card-merge.active,
+        .btn-card-merge.is-active {{
+            background: #9333ea !important;
+            border-color: #d8b4fe !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            box-shadow: 0 0 12px rgba(168, 85, 247, 0.7) !important;
+            transform: scale(1.04) !important;
+        }}
+
         .folder-action-icon-btn:hover {{
             transform: scale(1.1);
         }}
@@ -7007,11 +7145,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn tool-btn-icon" title="Merge Marked Duplicate Videos">&#128256;<span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.58rem; padding: 1px 4px; position: absolute; top: -3px; right: -3px;">0</span></button>
                 <button onclick="openSyncFolderInExplorer('', event)" class="tool-btn tool-btn-icon" title="Open root sync folder (videos_to_sync) in Windows Explorer">&#128194;</button>
                 <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn tool-btn-icon" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039;</button>
-                <button onclick="expandVisible()" class="tool-btn tool-btn-icon" title="Expand what is currently visible on screen (Folders & Cards)">&#128065;</button>
-                <button onclick="expandAll()" class="tool-btn tool-btn-icon" title="Expand All Folders in Library">&#9660;</button>
-                <button onclick="collapseAll()" class="tool-btn tool-btn-icon" title="Collapse All Folders in Library">&#9654;</button>
+                <button onclick="expandVisible()" id="btnExpandVisible" class="tool-btn tool-btn-icon" title="Expand what is currently visible on screen (Folders & Cards)">&#128065;</button>
+                <button onclick="expandAll()" id="btnExpandAll" class="tool-btn tool-btn-icon" title="Expand All Folders in Library">&#9660;</button>
+                <button onclick="collapseAll()" id="btnCollapseAll" class="tool-btn tool-btn-icon" title="Collapse All Folders in Library">&#9654;</button>
                 <div class="view-toggle-group">
-                    <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon" title="Switch to Cards Grid View">&#127183;</button>
+                    <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon active is-active" title="Switch to Cards Grid View">&#127183;</button>
                     <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">&#9776;</button>
                 </div>
 
@@ -7834,15 +7972,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (container) container.classList.add('cards-hide-tags');
                 if (label) label.textContent = 'Hidden';
                 if (btn) {{
-                    btn.classList.add('is-active-filter');
-                    btn.title = 'Tags are hidden on cards (Click card arrow ▼ to see tags, or click here to show all)';
+                    btn.classList.add('is-active', 'is-active-amber', 'active');
+                    btn.title = '🏷️ Tag Badges: Hidden on cards (Click to Show)';
                 }}
             }} else {{
                 if (container) container.classList.remove('cards-hide-tags');
                 if (label) label.textContent = 'Shown';
                 if (btn) {{
-                    btn.classList.remove('is-active-filter');
-                    btn.title = 'Tags are visible on cards (Click here to hide)';
+                    btn.classList.remove('is-active', 'is-active-amber', 'active');
+                    btn.title = '🏷️ Tag Badges: Shown on cards (Click to Hide)';
                 }}
             }}
         }}
@@ -8049,8 +8187,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         function updateViewToggleButtons() {{
             const btnCard = document.getElementById('btnViewCard');
             const btnList = document.getElementById('btnViewList');
-            if (btnCard) btnCard.classList.toggle('active', currentViewMode === 'card');
-            if (btnList) btnList.classList.toggle('active', currentViewMode === 'list');
+            if (btnCard) {{
+                btnCard.classList.toggle('active', currentViewMode === 'card');
+                btnCard.classList.toggle('is-active', currentViewMode === 'card');
+            }}
+            if (btnList) {{
+                btnList.classList.toggle('active', currentViewMode === 'list');
+                btnList.classList.toggle('is-active', currentViewMode === 'list');
+            }}
         }}
 
         function setViewMode(mode) {{
@@ -8911,7 +9055,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     ${{canViewScreens ? `<button type="button" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" class="btn btn-secondary btn-sm" title="View Full Contact Sheet Screenshots">&#128444;&#65039; Screens</button>` : ''}}
                     <a href="/stream/audio/${{f.key}}" download="${{escapeHtml(title)}}.m4a" target="_blank" class="btn btn-link btn-card-audio" title="Download / Stream Lightweight Audio (.m4a)">&#127925; Audio</a>
                     <a href="${{f.hf_url}}" target="_blank" class="btn btn-hf" title="Open file on Hugging Face">&#129303; View on HF</a>
-                    <button onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" class="btn btn-secondary btn-sm btn-mark-merge ${{isMarked ? 'active' : ''}}" title="${{isMarked ? 'Unmark from merge' : 'Mark for duplicate merge'}}" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4); font-size: 0.75rem; padding: 4px 10px;">&#128256; ${{isMarked ? 'Marked' : 'Merge'}}</button>
+                    <button onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" class="btn btn-secondary btn-sm btn-mark-merge ${{isMarked ? 'active is-active' : ''}}" title="${{isMarked ? 'Unmark from merge' : 'Mark for duplicate merge'}}">&#128256; ${{isMarked ? 'Marked' : 'Merge'}}</button>
                     <button onclick="promptEditMetadata('${{escapeHtml(f.key)}}')" class="btn btn-edit" title="Edit tags, categories, and Jellyfin metadata">&#127991; Edit Tags</button>
                     <button onclick="promptDeleteFile('${{escapeHtml(f.key)}}')" class="btn btn-delete" title="Delete video permanently">&#128465; Delete</button>
                 </div>
@@ -9449,6 +9593,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function toggleFolder(header) {{
+            const btnExp = document.getElementById('btnExpandAll');
+            const btnCol = document.getElementById('btnCollapseAll');
+            if (btnExp) btnExp.classList.remove('is-active', 'is-active-green');
+            if (btnCol) btnCol.classList.remove('is-active');
+
             const folderGroup = header.closest('.folder-group');
             if (!folderGroup) return;
             const folderPath = folderGroup.getAttribute('data-folder');
@@ -9479,6 +9628,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         let userExplicitExpandAll = false;
 
         function expandVisible() {{
+            const btnVis = document.getElementById('btnExpandVisible');
+            if (btnVis) {{
+                btnVis.classList.add('is-active');
+                setTimeout(() => btnVis.classList.remove('is-active'), 1500);
+            }}
+
             const visibleFolders = Array.from(document.querySelectorAll('.folder-group')).filter(fg => {{
                 const rect = fg.getBoundingClientRect();
                 return rect.top < window.innerHeight && rect.bottom > 0;
@@ -9506,6 +9661,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         function expandAll() {{
             userExplicitExpandAll = true;
             document.querySelectorAll('.folder-group').forEach(fg => openFolderElement(fg));
+            const btnExp = document.getElementById('btnExpandAll');
+            const btnCol = document.getElementById('btnCollapseAll');
+            if (btnExp) btnExp.classList.add('is-active', 'is-active-green');
+            if (btnCol) btnCol.classList.remove('is-active', 'is-active-green');
+            showToast('&#9660; Expanded all folders in library', 'info');
         }}
 
         function collapseAll() {{
@@ -9513,6 +9673,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             document.querySelectorAll('.folder-group').forEach(fg => closeFolderElement(fg));
             openedTreesQueue = [];
             saveOpenedTrees();
+            const btnExp = document.getElementById('btnExpandAll');
+            const btnCol = document.getElementById('btnCollapseAll');
+            if (btnCol) btnCol.classList.add('is-active');
+            if (btnExp) btnExp.classList.remove('is-active', 'is-active-green');
+            showToast('&#9654; Collapsed all folders in library', 'info');
         }}
 
         function highlightAndPromotePlayingVideo(videoKey) {{
@@ -11479,15 +11644,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
             }}
 
-            // Update toolbar button badge
+            // Update toolbar button badge and active state
             const tbBadge = document.getElementById('toolbarMergeBadge');
+            const tbBtn = document.getElementById('btnToolbarMerge');
+            const isMergeActive = markedForMergeKeys.size > 0;
             if (tbBadge) {{
-                if (markedForMergeKeys.size > 0) {{
+                if (isMergeActive) {{
                     tbBadge.style.display = 'inline-block';
                     tbBadge.textContent = markedForMergeKeys.size;
                 }} else {{
                     tbBadge.style.display = 'none';
                 }}
+            }}
+            if (tbBtn) {{
+                tbBtn.classList.toggle('is-active', isMergeActive);
+                tbBtn.classList.toggle('is-active-purple', isMergeActive);
+                tbBtn.classList.toggle('active', isMergeActive);
+                tbBtn.title = isMergeActive ? `Merge Marked Videos (${{markedForMergeKeys.size}} marked - click to configure merge)` : 'Merge Marked Duplicate Videos';
             }}
         }}
 
