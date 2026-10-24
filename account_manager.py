@@ -240,28 +240,27 @@ class AccountManager:
 
             for ds in datasets:
                 repo_id = ds.id
-                try:
-                    files_in_repo = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
-                except Exception:
-                    continue
-
                 repo_records = {}
                 vault_index_failed = False
 
-                # 1. Try vault_index.enc
-                if "vault_index.enc" in files_in_repo and self.password:
+                # 1. Fast Path: Try direct vault_index.enc download first (Instant 1-request restore, avoids listing 100k files)
+                if self.password:
                     try:
                         url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
-                        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
                         if resp.status_code == 200:
                             dec = crypto_engine.decrypt_bytes(resp.content, self.password).decode("utf-8")
                             repo_records = json.loads(dec)
                     except Exception as e:
                         vault_index_failed = True
-                        print(f"[*] Note: Could not decrypt vault_index.enc in {repo_id}: {e}")
 
-                # 2. Try individual .meta.enc sidecars only if vault_index was missing/failed
+                # 2. Fallback: Only if vault_index was missing/corrupt, list repo files for individual .meta.enc sidecars
                 if not repo_records:
+                    try:
+                        files_in_repo = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+                    except Exception:
+                        files_in_repo = []
+
                     meta_files = [f for f in files_in_repo if f.endswith(".meta.enc")]
                     if meta_files:
                         from concurrent.futures import ThreadPoolExecutor
@@ -293,18 +292,18 @@ class AccountManager:
                                     skipped_count += 1
                                     skipped_items.append(err)
 
-                # If vault_index failed and no individual records could be decrypted,
-                # record all encrypted media blobs as skipped so the user gets accurate clues
-                if vault_index_failed and not repo_records:
-                    enc_media_files = [f for f in files_in_repo if f.endswith(".enc") and f != "vault_index.enc" and not f.endswith(".meta.enc")]
-                    for emf in enc_media_files:
-                        skipped_count += 1
-                        skipped_items.append({
-                            "key": emf,
-                            "repo_id": repo_id,
-                            "blob": emf,
-                            "reason": "Failed to decrypt vault index with current master encryption key"
-                        })
+                    # If vault_index failed and no individual records could be decrypted,
+                    # record all encrypted media blobs as skipped so the user gets accurate clues
+                    if vault_index_failed and not repo_records:
+                        enc_media_files = [f for f in files_in_repo if f.endswith(".enc") and f != "vault_index.enc" and not f.endswith(".meta.enc")]
+                        for emf in enc_media_files:
+                            skipped_count += 1
+                            skipped_items.append({
+                                "key": emf,
+                                "repo_id": repo_id,
+                                "blob": emf,
+                                "reason": "Failed to decrypt vault index with current master encryption key"
+                            })
 
                 # 3. Merge records into manifest
                 for key, rec in repo_records.items():
