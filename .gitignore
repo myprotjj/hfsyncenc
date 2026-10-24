@@ -25,6 +25,8 @@ jellyfin_library/*
 !jellyfin_library/.gitkeep
 storyboards/*
 !storyboards/.gitkeep
+encrypted_cache/*
+!encrypted_cache/.gitkeep
 archive/*
 !archive/.gitkeep
 *.mp4

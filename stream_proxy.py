@@ -24,6 +24,7 @@ import account_manager
 import activity_tracker
 import companion_helper
 import screens_helper
+from encrypted_stream_cache import stream_cache
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -148,8 +149,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 return k
         return clean
 
-    def get_file_metadata(self, path_after_stream: str, repo_id: str = None, blob_path: str = None):
+    def get_file_metadata(self, path_after_stream: str, repo_id: str = None, blob_path: str = None, custom_content_type: str = None):
         is_custom_blob = bool(repo_id and blob_path)
+        clean_key = path_after_stream.strip("/").replace(b"\\".decode("ascii"), "/")
         if is_custom_blob:
             cache_key = f"{repo_id}:{blob_path}"
             if cache_key in FILE_CACHE:
@@ -157,7 +159,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if blob_path in FILE_CACHE:
                 return FILE_CACHE[blob_path]
         else:
-            clean_key = path_after_stream.strip("/").replace(b"\\".decode("ascii"), "/")
             if clean_key in FILE_CACHE:
                 return FILE_CACHE[clean_key]
             if path_after_stream in FILE_CACHE:
@@ -167,10 +168,52 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if cache_key in FILE_CACHE:
                 return FILE_CACHE[cache_key]
 
+        manifest = load_manifest()
+        file_info = manifest.get("files", {}).get(clean_key)
+        if not file_info:
+            for k, v in manifest.get("files", {}).items():
+                if clean_key in (v.get("file_names") or []) or Path(clean_key).name in (v.get("aliases") or []):
+                    file_info = v
+                    break
+
+        safe_id = file_info.get("safe_id") if file_info else None
+        if not safe_id:
+            safe_id = storyboard_helper.get_safe_id(clean_key)
+
+        is_audio = bool(custom_content_type and "audio" in custom_content_type)
+        cache_id = f"{safe_id}_audio" if is_audio else safe_id
+
         hf_url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{blob_path}"
+        repo_token = self.acc_mgr.get_token_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.token
+
+        # Check local encrypted sparse cache for header
+        if stream_cache.has_cached_header(cache_id):
+            hdr_bytes = stream_cache.read_header_bytes(cache_id)
+            if hdr_bytes and len(hdr_bytes) == crypto_engine.HEADER_SIZE:
+                try:
+                    hdr = crypto_engine.read_header(hdr_bytes)
+                    key = crypto_engine.derive_key(self.password, hdr["salt"])
+                    aesgcm = AESGCM(key)
+                    metadata = {
+                        "header": hdr,
+                        "key": key,
+                        "aesgcm": aesgcm,
+                        "url": hf_url,
+                        "repo_id": repo_id,
+                        "repo_token": repo_token,
+                        "cache_id": cache_id
+                    }
+                    FILE_CACHE[cache_key] = metadata
+                    if blob_path:
+                        FILE_CACHE[blob_path] = metadata
+                    if not is_custom_blob:
+                        FILE_CACHE[path_after_stream] = metadata
+                        FILE_CACHE[clean_key] = metadata
+                    return metadata
+                except Exception:
+                    pass
 
         headers = {}
-        repo_token = self.acc_mgr.get_token_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.token
         if repo_token:
             headers["Authorization"] = f"Bearer {repo_token}"
         headers["Range"] = f"bytes=0-{crypto_engine.HEADER_SIZE - 1}"
@@ -196,6 +239,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             hdr = crypto_engine.read_header(resp.content)
             key = crypto_engine.derive_key(self.password, hdr["salt"])
             aesgcm = AESGCM(key)
+            stream_cache.write_header_bytes(cache_id, resp.content, hdr["total_size"], hdr["chunk_size"])
         except Exception as e:
             print(f"[!] Header parsing error: {e}")
             return None
@@ -206,13 +250,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "aesgcm": aesgcm,
             "url": hf_url,
             "repo_id": repo_id,
-            "repo_token": repo_token
+            "repo_token": repo_token,
+            "cache_id": cache_id
         }
         FILE_CACHE[cache_key] = metadata
         if blob_path:
             FILE_CACHE[blob_path] = metadata
         if not is_custom_blob:
-            clean_key = path_after_stream.strip("/").replace(b"\\".decode("ascii"), "/")
             FILE_CACHE[path_after_stream] = metadata
             FILE_CACHE[clean_key] = metadata
         return metadata
@@ -349,6 +393,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_open_sync_folder()
         elif path == "/api/videos/unlink-hash":
             self.handle_unlink_video_hash()
+
+        elif path == "/api/cache/clear":
+            data = self.read_json_body()
+            cache_id = data.get("safe_id") if data else None
+            stream_cache.clear_cache(cache_id=cache_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "message": "Encrypted cache cleared"}).encode("utf-8"))
+            return
         else:
             self.send_error(404, "Not Found")
 
@@ -3156,6 +3211,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_api_screens_thumb()
         elif path == "/api/screens/image":
             self.handle_api_screens_image()
+
+        elif path == "/api/cache/stats":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            stats = stream_cache.get_overall_stats()
+            self.wfile.write(json.dumps(stats).encode("utf-8"))
+            return
         elif path == "/api/test/screens100":
             test_path = "test_screens_100_Variant_4K_384x216_q2.jpg"
             if os.path.exists(test_path):
@@ -3422,6 +3486,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if can_decrypt:
                     seen_blobs[dedup_id] = len(files_data)
                     total_bytes += size_bytes
+                    c_info = stream_cache.get_cache_info(safe_id, total_size=size_bytes, chunk_size=crypto_engine.DEFAULT_CHUNK_SIZE)
+                    item["cache_pct"] = c_info["percentage"]
+                    item["cached_bytes"] = c_info["cached_bytes"]
+                    item["is_cached"] = c_info["cached"]
                     repos_set.add(repo)
                     files_data.append(item)
                 else:
@@ -3440,6 +3508,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         files_json_str = json.dumps(files_data)
         skipped_json_str = json.dumps(skipped_files)
         total_size_mb = total_bytes / (1024 * 1024)
+        c_stats = stream_cache.get_overall_stats()
+        tot_c_bytes = c_stats.get("total_cached_bytes", 0)
+        if tot_c_bytes > 1024 * 1024 * 1024:
+            total_cached_mb_str = f"{tot_c_bytes / (1024 * 1024 * 1024):.1f} GB"
+        elif tot_c_bytes > 1024 * 1024:
+            total_cached_mb_str = f"{tot_c_bytes / (1024 * 1024):.1f} MB"
+        else:
+            total_cached_mb_str = f"{tot_c_bytes / 1024:.0f} KB"
+
         skipped_count = len(skipped_files)
 
         all_accounts = [a["username"] for a in self.acc_mgr.get_all_accounts()] if (hasattr(self, "acc_mgr") and self.acc_mgr) else [self.hf_username]
@@ -6246,6 +6323,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             color: #c084fc;
             border-color: rgba(168, 85, 247, 0.35);
         }}
+        .cache-pill {{
+            background: rgba(56, 189, 248, 0.12);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.35);
+        }}
+        .cache-pill-full {{
+            background: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+            border: 1px solid rgba(34, 197, 94, 0.45);
+            font-weight: 600;
+        }}
 
         .file-actions {{ display: flex; gap: 6px; flex-shrink: 0; }}
         .btn {{
@@ -7203,6 +7291,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <span>&#127916;</span>
                 <span class="metric-val" id="statVideos">{len(files_data)}</span>
                 <span>Videos</span>
+            </div>
+            <div class="metric-chip" title="Encrypted stream chunks cached locally on disk (Zero-cloud playback for cached parts)">
+                <span>&#128190;</span>
+                <span class="metric-val" id="statCache">{total_cached_mb_str}</span>
+                <span>Cached</span>
             </div>
             <span class="metric-divider">&bull;</span>
             <div class="metric-chip" title="Total cloud storage across datasets">
@@ -8651,6 +8744,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const accountOwner = f.account || primaryAccount;
             const isPrimary = (accountOwner === primaryAccount);
             badgesHtml += `<span class="account-pill ${{isPrimary ? 'is-primary' : ''}}" onclick="event.stopPropagation(); addQuickFilter('account', '${{escapeHtml(accountOwner)}}')" title="Click to filter by account: ${{escapeHtml(accountOwner)}}">${{isPrimary ? '&#128081;' : '&#128100;'}} ${{escapeHtml(accountOwner)}}</span>`;
+
+            if (f.cache_pct && f.cache_pct > 0) {{
+                const pct = Math.round(f.cache_pct);
+                const isFull = pct >= 99;
+                badgesHtml += `<span class="meta-pill ${{isFull ? 'cache-pill-full' : 'cache-pill'}}" title="Encrypted Local Cache: ${{pct}}% cached on disk (Instant zero-cloud playback for cached parts)">&#128190; ${{isFull ? 'Cached' : pct + '% Cached'}}</span>`;
+            }}
 
             if (meta.year) badgesHtml += `<span class="meta-pill year-pill">&#128197; ${{escapeHtml(meta.year)}}</span>`;
             if (meta.rating) badgesHtml += `<span class="meta-pill rating-pill">&#11088; ${{escapeHtml(meta.rating)}}</span>`;
@@ -14488,7 +14587,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 self.send_error(403, "Forbidden: Video cannot be decrypted with current master password.")
                 return
 
-        meta = self.get_file_metadata(path_after_stream, repo_id=repo_id, blob_path=blob_path)
+        meta = self.get_file_metadata(path_after_stream, repo_id=repo_id, blob_path=blob_path, custom_content_type=custom_content_type)
         if not meta:
             self.send_error(404, f"File {path_after_stream} not found in Hugging Face dataset")
             return
@@ -14498,6 +14597,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         chunk_size = hdr["chunk_size"]
         aesgcm = meta["aesgcm"]
         hf_url = meta["url"]
+        cache_id = meta.get("cache_id") or storyboard_helper.get_safe_id(clean_key)
 
         if custom_content_type:
             content_type = custom_content_type
@@ -14506,6 +14606,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             content_type = mime or "video/mp4"
 
         repo_token = meta.get("repo_token") or (self.acc_mgr.get_token_for_repo(meta.get("repo_id")) if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.token)
+
+        def read_exact_bytes(raw_stream, num_bytes):
+            buf = bytearray()
+            while len(buf) < num_bytes:
+                part = raw_stream.read(num_bytes - len(buf))
+                if not part:
+                    break
+                buf.extend(part)
+            return bytes(buf)
 
         range_header = self.headers.get("Range")
         if range_header:
@@ -14521,8 +14630,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
-            # Open-ended range (e.g. bytes=0- or bytes=X- without specified end byte):
-            # Stream in responsive 4MB bursts so initial loading and seeking start in milliseconds!
             STREAM_BURST = 4 * 1024 * 1024
             is_audio_stream = bool(custom_content_type and "audio" in custom_content_type) or "/stream/audio/" in self.path
             is_full_stream = ('full=1' in self.path or 'no_burst=1' in self.path or is_audio_stream or 'download' in self.path)
@@ -14535,67 +14642,76 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             range_info = crypto_engine.calculate_byte_range_chunks(total_size, chunk_size, start, end)
             req_len = range_info["req_length"]
+            first_chunk = range_info["first_chunk"]
+            last_chunk = range_info["last_chunk"]
 
-            hf_headers = {}
-            if repo_token:
-                hf_headers["Authorization"] = f"Bearer {repo_token}"
-            hf_headers["Range"] = f"bytes={range_info['enc_start']}-{range_info['enc_end']}"
+            # Query the encrypted chunk cache for contiguous spans (cached vs missing)
+            spans = stream_cache.get_chunk_spans(cache_id, first_chunk, last_chunk, total_size, chunk_size)
+
+            # Send 206 Partial Content response headers
+            self.send_response(206)
+            self.send_header("Content-Type", content_type)
+            if custom_content_type and "audio" in custom_content_type:
+                self.send_header("Content-Disposition", f'attachment; filename="{Path(clean_key).stem}.m4a"')
+            else:
+                self.send_header("Content-Disposition", "inline")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
+            self.send_header("Content-Length", str(req_len))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
 
             try:
-                # Stream on-the-fly directly from Hugging Face
-                resp = self.hf_session.get(hf_url, headers=hf_headers, stream=True, timeout=25)
-                if resp.status_code not in (200, 206):
-                    self.send_error(502, f"HF upstream error {resp.status_code}")
-                    return
+                for is_cached, span_start, span_end in spans:
+                    if is_cached:
+                        # 100% Cache hit: read encrypted chunks directly from local disk (ZERO cloud download!)
+                        for c_idx in range(span_start, span_end + 1):
+                            chunk_cipher = stream_cache.read_chunk_ciphertext(cache_id, c_idx, total_size, chunk_size)
+                            if not chunk_cipher:
+                                break
+                            nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
+                            decrypted_block = aesgcm.decrypt(nonce, chunk_cipher, None)
 
-                # Send 206 headers IMMEDIATELY so client starts playback right away
-                self.send_response(206)
-                self.send_header("Content-Type", content_type)
-                if custom_content_type and "audio" in custom_content_type:
-                    self.send_header("Content-Disposition", f'attachment; filename="{Path(clean_key).stem}.m4a"')
-                else:
-                    self.send_header("Content-Disposition", "inline")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
-                self.send_header("Content-Length", str(req_len))
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-
-                total_chunks = (total_size + chunk_size - 1) // chunk_size
-                enc_chunk_payload = chunk_size + crypto_engine.TAG_SIZE
-                stream_raw = resp.raw
-
-                def read_exact_bytes(raw_stream, num_bytes):
-                    buf = bytearray()
-                    while len(buf) < num_bytes:
-                        part = raw_stream.read(num_bytes - len(buf))
-                        if not part:
-                            break
-                        buf.extend(part)
-                    return bytes(buf)
-
-                # Decrypt chunk-by-chunk on the fly and write immediately to socket
-                for c_idx in range(range_info["first_chunk"], range_info["last_chunk"] + 1):
-                    nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
-                    if c_idx == total_chunks - 1:
-                        c_len = (total_size - c_idx * chunk_size) + crypto_engine.TAG_SIZE
+                            chunk_start_plain = c_idx * chunk_size
+                            slice_start = max(0, start - chunk_start_plain)
+                            slice_end = min(len(decrypted_block), end - chunk_start_plain + 1)
+                            if slice_start < slice_end:
+                                self.wfile.write(decrypted_block[slice_start:slice_end])
+                                self.wfile.flush()
                     else:
-                        c_len = enc_chunk_payload
+                        # Cache miss: fetch ONLY missing chunks from Hugging Face and dynamically save to local encrypted cache!
+                        span_range = crypto_engine.calculate_byte_range_chunks(
+                            total_size, chunk_size, span_start * chunk_size, min(total_size - 1, (span_end + 1) * chunk_size - 1)
+                        )
+                        hf_headers = {}
+                        if repo_token:
+                            hf_headers["Authorization"] = f"Bearer {repo_token}"
+                        hf_headers["Range"] = f"bytes={span_range['enc_start']}-{span_range['enc_end']}"
 
-                    chunk_cipher = read_exact_bytes(stream_raw, c_len)
-                    if not chunk_cipher:
-                        break
+                        resp = self.hf_session.get(hf_url, headers=hf_headers, stream=True, timeout=25)
+                        if resp.status_code not in (200, 206):
+                            break
+                        stream_raw = resp.raw
 
-                    decrypted_block = aesgcm.decrypt(nonce, chunk_cipher, None)
+                        for c_idx in range(span_start, span_end + 1):
+                            c_len = stream_cache.get_chunk_cipher_length(total_size, chunk_size, c_idx)
+                            chunk_cipher = read_exact_bytes(stream_raw, c_len)
+                            if not chunk_cipher or len(chunk_cipher) < c_len:
+                                break
 
-                    chunk_start_plain = c_idx * chunk_size
-                    slice_start = max(0, start - chunk_start_plain)
-                    slice_end = min(len(decrypted_block), end - chunk_start_plain + 1)
+                            nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
+                            decrypted_block = aesgcm.decrypt(nonce, chunk_cipher, None)
 
-                    if slice_start < slice_end:
-                        self.wfile.write(decrypted_block[slice_start:slice_end])
-                        self.wfile.flush()
+                            # Save verified encrypted chunk dynamically to local sparse cache
+                            stream_cache.write_chunk_ciphertext(cache_id, c_idx, chunk_cipher, total_size, chunk_size)
+
+                            chunk_start_plain = c_idx * chunk_size
+                            slice_start = max(0, start - chunk_start_plain)
+                            slice_end = min(len(decrypted_block), end - chunk_start_plain + 1)
+                            if slice_start < slice_end:
+                                self.wfile.write(decrypted_block[slice_start:slice_end])
+                                self.wfile.flush()
 
             except (BrokenPipeError, ConnectionResetError):
                 return
@@ -14603,7 +14719,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 return
 
         else:
-            # Non-range request: stream full file progressively with on-the-fly decryption
+            # Non-range request: stream full file using chunk spans (local cache first, cloud for missing)
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             if custom_content_type and "audio" in custom_content_type:
@@ -14617,39 +14733,44 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
             total_chunks = (total_size + chunk_size - 1) // chunk_size
-            enc_chunk_payload = chunk_size + crypto_engine.TAG_SIZE
-            total_enc_size = crypto_engine.HEADER_SIZE + total_size + (total_chunks * crypto_engine.TAG_SIZE)
-
-            hf_headers = {"Range": f"bytes={crypto_engine.HEADER_SIZE}-{total_enc_size - 1}"}
-            if repo_token:
-                hf_headers["Authorization"] = f"Bearer {repo_token}"
+            spans = stream_cache.get_chunk_spans(cache_id, 0, total_chunks - 1, total_size, chunk_size)
 
             try:
-                resp = self.hf_session.get(hf_url, headers=hf_headers, stream=True, timeout=30)
-                stream_raw = resp.raw
-
-                def read_exact_bytes(raw_stream, num_bytes):
-                    buf = bytearray()
-                    while len(buf) < num_bytes:
-                        part = raw_stream.read(num_bytes - len(buf))
-                        if not part:
-                            break
-                        buf.extend(part)
-                    return bytes(buf)
-
-                for c_idx in range(total_chunks):
-                    nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
-                    if c_idx == total_chunks - 1:
-                        c_len = (total_size - c_idx * chunk_size) + crypto_engine.TAG_SIZE
+                for is_cached, span_start, span_end in spans:
+                    if is_cached:
+                        for c_idx in range(span_start, span_end + 1):
+                            chunk_cipher = stream_cache.read_chunk_ciphertext(cache_id, c_idx, total_size, chunk_size)
+                            if not chunk_cipher:
+                                break
+                            nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
+                            decrypted = aesgcm.decrypt(nonce, chunk_cipher, None)
+                            self.wfile.write(decrypted)
+                            self.wfile.flush()
                     else:
-                        c_len = enc_chunk_payload
+                        span_range = crypto_engine.calculate_byte_range_chunks(
+                            total_size, chunk_size, span_start * chunk_size, min(total_size - 1, (span_end + 1) * chunk_size - 1)
+                        )
+                        hf_headers = {}
+                        if repo_token:
+                            hf_headers["Authorization"] = f"Bearer {repo_token}"
+                        hf_headers["Range"] = f"bytes={span_range['enc_start']}-{span_range['enc_end']}"
 
-                    chunk_cipher = read_exact_bytes(stream_raw, c_len)
-                    if not chunk_cipher:
-                        break
-                    decrypted = aesgcm.decrypt(nonce, chunk_cipher, None)
-                    self.wfile.write(decrypted)
-                    self.wfile.flush()
+                        resp = self.hf_session.get(hf_url, headers=hf_headers, stream=True, timeout=30)
+                        if resp.status_code not in (200, 206):
+                            break
+                        stream_raw = resp.raw
+
+                        for c_idx in range(span_start, span_end + 1):
+                            c_len = stream_cache.get_chunk_cipher_length(total_size, chunk_size, c_idx)
+                            chunk_cipher = read_exact_bytes(stream_raw, c_len)
+                            if not chunk_cipher or len(chunk_cipher) < c_len:
+                                break
+
+                            nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
+                            decrypted = aesgcm.decrypt(nonce, chunk_cipher, None)
+                            stream_cache.write_chunk_ciphertext(cache_id, c_idx, chunk_cipher, total_size, chunk_size)
+                            self.wfile.write(decrypted)
+                            self.wfile.flush()
 
             except (BrokenPipeError, ConnectionResetError):
                 return
