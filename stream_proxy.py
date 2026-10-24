@@ -593,9 +593,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.wfile.write(resp_body)
 
     def handle_restore_hf(self):
+        deep_scan = ("deep=1" in self.path or "deep=true" in self.path.lower())
         manifest = load_manifest()
         if hasattr(self, "acc_mgr") and self.acc_mgr:
-            res = self.acc_mgr.scan_and_merge_all_accounts(manifest, library_dir="jellyfin_library")
+            res = self.acc_mgr.scan_and_merge_all_accounts(manifest, library_dir="jellyfin_library", deep_scan=deep_scan)
             save_manifest(manifest)
             self.sync_master_index_to_cloud(async_mode=True)
             recovered_count = res.get("discovered_count", 0)
@@ -7670,7 +7671,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span style="font-weight: 600;">Jellyfin Sync</span>
                     <span class="jellyfin-sync-badge is-on" id="jellyfinSyncBadge">ON</span>
                 </div>
-                <button onclick="recheckCloudSync()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Deep scan all connected Hugging Face accounts, reconstruct library, and update Master Index">
+                <button onclick="recheckCloudSync(event)" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Click: Fast Resync (<0.5s) | Shift+Click: Deep Parallel Sidecar Scan across all repositories">
                     &#9889; Resync All Accounts
                 </button>
                 <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" title="Extract resolution, audio, and video codecs">
@@ -9003,20 +9004,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
-        async function recheckCloudSync() {{
+        async function recheckCloudSync(ev) {{
+            const isDeep = Boolean(ev && ev.shiftKey);
             const btn = document.getElementById('btnRecheckCloud');
             const origHtml = btn ? btn.innerHTML : '&#9889; Resync All Accounts';
             if (btn) {{
                 btn.disabled = true;
-                btn.innerHTML = '<span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> Resyncing Cloud...';
+                const label = isDeep ? 'Deep Parallel Scan...' : 'Resyncing Cloud...';
+                btn.innerHTML = `<span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> ${{label}}`;
             }}
             try {{
-                const res = await fetch('/api/recheck-cloud', {{ method: 'POST' }});
+                const url = isDeep ? '/api/recheck-cloud?deep=1' : '/api/recheck-cloud';
+                const res = await fetch(url, {{ method: 'POST' }});
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
                 const total = data.total_files || data.recovered_count || 0;
                 const accs = data.total_accounts || 1;
-                flashCenterFeedback(`&#9989; Resync complete: ${{total}} video(s) active across ${{accs}} HF account(s)! Master Index updated.`);
+                const prefix = isDeep ? '&#9889; Deep Parallel Scan complete' : '&#9989; Resync complete';
+                flashCenterFeedback(`${{prefix}}: ${{total}} video(s) active across ${{accs}} HF account(s)! Master Index updated.`);
                 await reloadFilesList();
             }} catch (err) {{
                 flashCenterFeedback('Cloud resync error: ' + err.message);

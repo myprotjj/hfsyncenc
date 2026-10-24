@@ -301,6 +301,64 @@ class AccountManager:
             shutil.rmtree(temp_dir, ignore_errors=True)
         return records
 
+    def batch_fetch_all_repos_parallel(self, repo_targets: list, max_workers: int = 4) -> tuple:
+        """
+        Fetches .meta.enc sidecars across multiple repositories in parallel using
+        a bounded worker pool (default 4 workers) with staggered dispatch to prevent
+        Hugging Face connection limits.
+        Returns: (all_records: dict, errors: list)
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        all_records = {}
+        errors = []
+        if not repo_targets:
+            return all_records, errors
+
+        workers = max(1, min(len(repo_targets), max_workers))
+
+        def _fetch_worker(target):
+            repo_id, token, user = target
+            try:
+                # 1. Quick check: does repo have a local vault_index.enc?
+                if self.password and token:
+                    try:
+                        url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
+                        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=8)
+                        if resp.status_code == 200:
+                            dec = crypto_engine.decrypt_bytes(resp.content, self.password)
+                            try:
+                                import zlib
+                                recs = json.loads(zlib.decompress(dec).decode("utf-8"))
+                            except Exception:
+                                recs = json.loads(dec.decode("utf-8"))
+                            if recs:
+                                return repo_id, recs, None
+                    except Exception:
+                        pass
+
+                # 2. Method 3: Parallel Git Batch Fetch for all .meta.enc sidecars
+                recs = self.fetch_repo_sidecars_via_git(repo_id, token)
+                return repo_id, recs, None
+            except Exception as e:
+                return repo_id, {}, str(e)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = []
+            for t in repo_targets:
+                futures.append(pool.submit(_fetch_worker, t))
+                time.sleep(0.08)  # Staggered dispatch avoids TLS thundering-herd
+
+            for f in as_completed(futures):
+                r_id, recs, err = f.result()
+                if recs:
+                    all_records.update(recs)
+                if err:
+                    errors.append({"repo_id": r_id, "error": err})
+
+        return all_records, errors
+
     def can_write_to_repo(self, repo_id: str) -> bool:
         """
         Returns True if the designated account for repo_id has verified write/delete permissions.
@@ -440,6 +498,50 @@ class AccountManager:
                 except Exception as e:
                     print(f"[!] Master index fast path fallback: {e}")
 
+        # Deep Fallback or deep_scan=True: Parallel Git Batch Fetch across all accounts & repos
+        repo_targets = []
+        for user, acc in self.accounts.items():
+            if not acc.get("enabled", True):
+                continue
+            api = acc["api"]
+            token = acc["token"]
+            try:
+                datasets = list(api.list_datasets(author=user))
+                for ds in datasets:
+                    if ds.id != master_repo:
+                        repo_targets.append((ds.id, token, user))
+            except Exception as e:
+                print(f"[!] Error listing datasets for user {user}: {e}")
+
+        # Execute parallel sidecar fetch across all targets with 4 bounded workers
+        parallel_records, fetch_errors = self.batch_fetch_all_repos_parallel(repo_targets, max_workers=4)
+
+        files = manifest.setdefault("files", {})
+        media_hashes = manifest.setdefault("media_hashes", {})
+        for k, rec in parallel_records.items():
+            if k in tombstones:
+                continue
+            if k not in files:
+                files[k] = rec
+                discovered_count += 1
+            else:
+                r_ts = float(rec.get("updated_at") or 0.0)
+                l_ts = float(files[k].get("updated_at") or 0.0)
+                if r_ts > l_ts:
+                    files[k] = rec
+            m_hash = rec.get("media_hash")
+            if m_hash:
+                media_hashes[m_hash] = rec
+
+        print(f"[*] Parallel Deep Resync complete: Discovered {discovered_count} new video(s) across {len(repo_targets)} repositories.")
+        return {
+            "discovered_count": discovered_count,
+            "skipped_count": len(fetch_errors),
+            "skipped_items": fetch_errors,
+            "total_accounts": len(self.accounts)
+        }
+
+        # Legacy sequential loop fallback (retained for reference)
         for user, acc in self.accounts.items():
             if not acc.get("enabled", True):
                 continue
