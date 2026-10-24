@@ -253,26 +253,38 @@ class AccountManager:
                         vault_index_failed = True
                         print(f"[*] Note: Could not decrypt vault_index.enc in {repo_id}: {e}")
 
-                # 2. Try individual .meta.enc sidecars
-                meta_files = [f for f in files_in_repo if f.endswith(".meta.enc")]
-                for mf in meta_files:
-                    try:
-                        url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{mf}"
-                        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
-                        if resp.status_code == 200:
-                            dec = crypto_engine.decrypt_bytes(resp.content, self.password).decode("utf-8")
-                            item = json.loads(dec)
-                            k = item.get("full_key")
-                            if k:
-                                repo_records[k] = item
-                    except Exception:
-                        skipped_count += 1
-                        skipped_items.append({
-                            "key": mf,
-                            "repo_id": repo_id,
-                            "blob": mf,
-                            "reason": "Failed to decrypt sidecar metadata with master key"
-                        })
+                # 2. Try individual .meta.enc sidecars only if vault_index was missing/failed
+                if not repo_records:
+                    meta_files = [f for f in files_in_repo if f.endswith(".meta.enc")]
+                    if meta_files:
+                        from concurrent.futures import ThreadPoolExecutor
+                        def _fetch_meta(mf):
+                            try:
+                                url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{mf}"
+                                resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=8)
+                                if resp.status_code == 200:
+                                    dec = crypto_engine.decrypt_bytes(resp.content, self.password).decode("utf-8")
+                                    item = json.loads(dec)
+                                    k = item.get("full_key")
+                                    if k:
+                                        return (k, item, None)
+                            except Exception:
+                                pass
+                            return (None, None, {
+                                "key": mf,
+                                "repo_id": repo_id,
+                                "blob": mf,
+                                "reason": "Failed to decrypt sidecar metadata with master key"
+                            })
+
+                        with ThreadPoolExecutor(max_workers=8) as ex:
+                            results = ex.map(_fetch_meta, meta_files)
+                            for k, item, err in results:
+                                if k and item:
+                                    repo_records[k] = item
+                                elif err:
+                                    skipped_count += 1
+                                    skipped_items.append(err)
 
                 # If vault_index failed and no individual records could be decrypted,
                 # record all encrypted media blobs as skipped so the user gets accurate clues

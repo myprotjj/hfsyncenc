@@ -1352,23 +1352,37 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 self.token = self.acc_mgr.upload_token
                 self.hf_username = self.acc_mgr.primary_username
 
-            manifest = load_manifest()
-            scan_res = self.acc_mgr.scan_and_merge_all_accounts(manifest, library_dir="jellyfin_library")
-            save_manifest(manifest)
-
+            acc_user = res["username"]
             desc_role = "Designated as Primary Upload Account" if is_upload else "Added as Read/Scan/Stream Account"
             activity_tracker.tracker.add_event(
                 "info",
-                f"Account Connected: {res['username']}",
-                f"{desc_role} ({scan_res.get('discovered_count', 0)} files discovered)",
-                account=res["username"]
+                f"Account Connected: {acc_user}",
+                f"{desc_role} (Scanning repositories in background)",
+                account=acc_user
             )
+
+            # Perform discovery and library merge in background daemon so UI connects instantly without lag
+            def _async_bg_scan():
+                try:
+                    manifest = load_manifest()
+                    scan_res = self.acc_mgr.scan_and_merge_all_accounts(manifest, library_dir="jellyfin_library")
+                    save_manifest(manifest)
+                    activity_tracker.tracker.add_event(
+                        "info",
+                        f"Scan Complete: {acc_user}",
+                        f"Discovered {scan_res.get('discovered_count', 0)} files ({scan_res.get('skipped_count', 0)} skipped)",
+                        account=acc_user
+                    )
+                except Exception as ex:
+                    print(f"[!] Error in background scan for {acc_user}: {ex}")
+
+            threading.Thread(target=_async_bg_scan, daemon=True).start()
 
             resp_body = json.dumps({
                 "success": True,
                 "account": res,
-                "discovered": scan_res.get("discovered_count", 0),
-                "message": f"Successfully connected '{res['username']}'! Discovered {scan_res.get('discovered_count', 0)} file(s)."
+                "discovered": 0,
+                "message": f"Successfully connected '{acc_user}'! Scanning vault repositories in background."
             }).encode("utf-8")
 
         except Exception as e:
