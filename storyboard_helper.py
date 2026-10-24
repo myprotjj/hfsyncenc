@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import imageio_ffmpeg
 
 STORYBOARD_DIR = "storyboards"
+THUMBS_DIR = os.path.join(STORYBOARD_DIR, "thumbs")
 GENERATING_LOCK = threading.Lock()
 ACTIVE_GENERATIONS = set()
 
@@ -19,6 +20,7 @@ ACTIVE_GENERATIONS = set()
 PRIORITY_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="PriorityStoryboard")
 
 os.makedirs(STORYBOARD_DIR, exist_ok=True)
+os.makedirs(THUMBS_DIR, exist_ok=True)
 
 
 def clean_key(key: str) -> str:
@@ -92,6 +94,73 @@ def get_storyboard_image_path(safe_id: str) -> str:
     if os.path.exists(jpg_path):
         return jpg_path
     return None
+
+
+def get_poster_thumb_path(safe_id: str) -> str:
+    clean_id = clean_key(safe_id)
+    thumb_path = os.path.join(THUMBS_DIR, f"{clean_id}.jpg")
+    if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 1000:
+        return thumb_path
+    return slice_poster_thumbnail(clean_id)
+
+
+def slice_poster_thumbnail(safe_id: str, overwrite: bool = False) -> str:
+    """
+    Slices a razor-sharp, pixel-perfect 16:9 poster thumbnail (480x270)
+    from the 100-frame storyboard. Analyzes early candidate frames (2..12)
+    to select a high-contrast, vivid scene rather than an intro fade or black screen.
+    """
+    clean_id = clean_key(safe_id)
+    out_thumb = os.path.join(THUMBS_DIR, f"{clean_id}.jpg")
+    if not overwrite and os.path.exists(out_thumb) and os.path.getsize(out_thumb) > 1000:
+        return out_thumb
+
+    sb_jpg = os.path.join(STORYBOARD_DIR, f"{clean_id}.jpg")
+    if not os.path.exists(sb_jpg):
+        return None
+
+    try:
+        from PIL import Image, ImageStat
+        with Image.open(sb_jpg) as img:
+            w, h = img.size
+            cols, rows = 10, 10
+            tw = w // cols
+            th = h // rows
+
+            # Candidate frame indices: avoid frame 0-1 (often dark/intro), check 2..15
+            candidate_frames = [2, 3, 4, 5, 6, 8, 10, 12, 15]
+            best_frame = 3
+            best_score = -1.0
+
+            for f_idx in candidate_frames:
+                c = f_idx % cols
+                r = f_idx // cols
+                tile_box = (c * tw, r * th, (c + 1) * tw, (r + 1) * th)
+                crop_sample = img.crop(tile_box)
+                stat = ImageStat.Stat(crop_sample)
+                mean_b = sum(stat.mean) / len(stat.mean)
+                var_b = sum(stat.var) / len(stat.var) if stat.var else 0.0
+
+                if mean_b < 20 or mean_b > 245:
+                    score = 0.0
+                else:
+                    # Prefer frames with good variance and mid-range brightness
+                    score = var_b * (1.0 - abs(mean_b - 128.0) / 128.0)
+
+                if score > best_score:
+                    best_score = score
+                    best_frame = f_idx
+
+            best_c = best_frame % cols
+            best_r = best_frame // cols
+            crop = img.crop((best_c * tw, best_r * th, (best_c + 1) * tw, (best_r + 1) * th))
+            # Resize with highest quality Lanczos filter to 480x270
+            thumb = crop.resize((480, 270), Image.Resampling.LANCZOS)
+            thumb.save(out_thumb, "JPEG", quality=92, optimize=True)
+            return out_thumb
+    except Exception as e:
+        sys.stderr.write(f"[!] Error slicing poster thumbnail for {clean_id}: {e}\n")
+        return None
 
 
 def has_storyboard(key: str) -> bool:
@@ -192,6 +261,10 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
             }
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
+            try:
+                slice_poster_thumbnail(safe_id, overwrite=True)
+            except Exception:
+                pass
             return True
         else:
             if os.path.exists(temp_jpg):

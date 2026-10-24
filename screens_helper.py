@@ -125,36 +125,48 @@ def process_screens_image(
             is_contact_sheet = (orig_h >= orig_w) or (orig_h > 1000 and orig_w > 1000)
 
             if is_contact_sheet:
-                # Typical contact sheet layout:
-                # Top 6-10% is text header (file name, duration, resolution, codecs)
-                # Rest is grid of tiles (usually 3 or 4 columns, 3 to 6 rows)
-                cols = 4 if orig_w >= 1200 else 3
-                rows = 4 if orig_h >= 1400 else 3
-                header_h = int(orig_h * 0.08)
-
-                tile_w = orig_w // cols
-                tile_h = (orig_h - header_h) // rows
-
-                # Pick Tile (col 0, row 0) or (col 1, row 0) if col 0 has cutoffs
-                crop_x1 = 0
-                crop_y1 = header_h
-                crop_x2 = tile_w
-                crop_y2 = header_h + tile_h
+                # Check if it's a 10x10 storyboard (16:9 aspect ratio, e.g. 3840x2160)
+                aspect = orig_w / float(orig_h) if orig_h else 1.0
+                if abs(aspect - (16.0 / 9.0)) < 0.04 and orig_w >= 1600:
+                    # 10x10 grid with no header
+                    cols = 10
+                    rows = 10
+                    header_h = 0
+                    tile_w = orig_w // cols
+                    tile_h = orig_h // rows
+                    # Pick frame 2 or 3 (col 2, row 0)
+                    col_idx = 2
+                    row_idx = 0
+                    crop_x1 = col_idx * tile_w
+                    crop_y1 = row_idx * tile_h
+                    crop_x2 = crop_x1 + tile_w
+                    crop_y2 = crop_y1 + tile_h
+                else:
+                    # Typical external contact sheet with top metadata header
+                    cols = 4 if orig_w >= 1200 else 3
+                    rows = 4 if orig_h >= 1400 else 3
+                    header_h = int(orig_h * 0.08)
+                    tile_w = orig_w // cols
+                    tile_h = (orig_h - header_h) // rows
+                    # Pick Tile (col 0, row 0) or (col 1, row 0)
+                    crop_x1 = 0
+                    crop_y1 = header_h
+                    crop_x2 = tile_w
+                    crop_y2 = header_h + tile_h
 
                 # Ensure positive bounds
                 if crop_x2 > crop_x1 and crop_y2 > crop_y1:
                     tile_crop = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
                     # Resize to standard 480x270 (16:9) thumbnail
                     tile_crop = tile_crop.resize((480, 270), Image.Resampling.LANCZOS)
-                    tile_crop.save(out_thumb_jpg, "JPEG", quality=90, optimize=True)
+                    tile_crop.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
                 else:
-                    # Fallback to center crop
                     thumb_img = img.resize((480, 270), Image.Resampling.LANCZOS)
-                    thumb_img.save(out_thumb_jpg, "JPEG", quality=90, optimize=True)
+                    thumb_img.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
             else:
                 # Single landscape frame or banner
                 thumb_img = img.resize((480, 270), Image.Resampling.LANCZOS)
-                thumb_img.save(out_thumb_jpg, "JPEG", quality=90, optimize=True)
+                thumb_img.save(out_thumb_jpg, "JPEG", quality=92, optimize=True)
 
             # 3. Copy thumb to Jellyfin library if available
             if library_dir and video_rel_path:

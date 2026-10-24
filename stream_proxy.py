@@ -1445,13 +1445,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         thumb_path = screens_helper.get_screens_thumb_path(safe_id) if safe_id else None
         if not thumb_path or not os.path.exists(thumb_path):
+            # Check if we can slice or fetch poster thumb from storyboard
+            thumb_path = storyboard_helper.get_poster_thumb_path(safe_id) if safe_id else None
+
+        if not thumb_path or not os.path.exists(thumb_path):
             screens_path = screens_helper.get_screens_path(safe_id) if safe_id else None
             if screens_path and os.path.exists(screens_path):
                 screens_helper.process_screens_image(Path(screens_path), safe_id)
                 thumb_path = screens_helper.get_screens_thumb_path(safe_id)
 
         if not thumb_path or not os.path.exists(thumb_path):
-            self.handle_api_screens_image()
+            self.send_error(404, "Thumbnail not found")
             return
 
         with open(thumb_path, "rb") as f:
@@ -2841,8 +2845,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             inset: 0;
             background-repeat: no-repeat;
             background-color: #0b0f19;
-            background-size: 1000% 500%;
-            background-position: 22.2222% 0%; /* Frame 2 default poster */
+            background-size: cover;
+            background-position: center;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -2988,8 +2992,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 height: 51px;
             }}
             .thumb-canvas {{
-                background-size: 1000% 500%;
-                background-position: 22.2222% 0%;
+                background-size: cover;
+                background-position: center;
             }}
         }}
 
@@ -4738,10 +4742,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const canViewScreens = hasScreens || hasStoryboard;
             let thumbBgStyle = '';
             let fallbackHtml = '';
-            if (hasStoryboard && safeId) {{
-                thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 1000%; background-position: 22.2222% 0%;";
-            }} else if (hasScreens && safeId) {{
-                thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "'); background-size: cover; background-position: center;";
+            if ((hasStoryboard || hasScreens) && safeId) {{
+                const vTag = f.uploaded_at ? encodeURIComponent(f.uploaded_at) : '1';
+                thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "&v=" + vTag + "'); background-size: cover; background-position: center;";
             }} else {{
                 fallbackHtml = '<div class="thumb-fallback"><span class="thumb-fallback-icon">&#127916;</span><span class="thumb-fallback-txt">PREVIEW</span></div>';
             }}
@@ -4882,10 +4885,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const canViewScreens = hasScreens || hasStoryboard;
             let thumbBgStyle = '';
             let fallbackHtml = '';
-            if (hasStoryboard && safeId) {{
-                thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 1000%; background-position: 22.2222% 0%;";
-            }} else if (hasScreens && safeId) {{
-                thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "'); background-size: cover; background-position: center;";
+            if ((hasStoryboard || hasScreens) && safeId) {{
+                const vTag = f.uploaded_at ? encodeURIComponent(f.uploaded_at) : '1';
+                thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "&v=" + vTag + "'); background-size: cover; background-position: center;";
             }} else {{
                 fallbackHtml = '<div class="thumb-fallback"><span class="thumb-fallback-icon">&#127916;</span><span class="thumb-fallback-txt">PREVIEW</span></div>';
             }}
@@ -5653,73 +5655,72 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const canvas = card.querySelector('.thumb-canvas');
             if (!canvas) return;
 
-            const hasBg = canvas.style.backgroundImage && canvas.style.backgroundImage !== 'none' && canvas.style.backgroundImage !== '';
-            
-            if (hasBg) {{
-                startThumbAutoCycle(card, 0);
-            }} else {{
-                const fallback = card.querySelector('.thumb-fallback-txt');
-                if (fallback) fallback.textContent = 'Loading...';
+            // Remember initial static poster background for instant revert on mouse leave
+            if (!canvas.dataset.staticBg) {{
+                canvas.dataset.staticBg = canvas.style.backgroundImage || '';
+            }}
 
-                try {{
-                    const res = await fetch(`/api/storyboard?key=${{encodeURIComponent(key)}}`);
-                    if (!res.ok) return;
-                    const data = await res.json();
-                    
-                    if (data.available && data.sprite_url) {{
-                        const img = new Image();
-                        img.src = data.sprite_url;
-                        img.onload = () => {{
+            try {{
+                const res = await fetch(`/api/storyboard?key=${{encodeURIComponent(key)}}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                
+                if (data.available && data.sprite_url) {{
+                    const img = new Image();
+                    img.src = data.sprite_url;
+                    img.onload = () => {{
+                        if (activeHoveredThumb === card) {{
                             canvas.style.backgroundImage = `url('${{data.sprite_url}}')`;
                             canvas.style.backgroundSize = '1000% 1000%';
                             const fb = card.querySelector('.thumb-fallback');
                             if (fb) fb.remove();
-                            if (activeHoveredThumb === card) {{
-                                startThumbAutoCycle(card, 0);
-                            }} else {{
-                                setThumbCardFrame(card, 2);
-                            }}
-                        }};
-                    }} else {{
-                        let pollCount = 0;
-                        const poll = setInterval(async () => {{
-                            pollCount++;
-                            if (pollCount > 15 || activeHoveredThumb !== card) {{
-                                clearInterval(poll);
-                                return;
-                            }}
-                            try {{
-                                const r2 = await fetch(`/api/storyboard?key=${{encodeURIComponent(key)}}`);
-                                if (r2.ok) {{
-                                    const d2 = await r2.json();
-                                    if (d2.available && d2.sprite_url) {{
-                                        clearInterval(poll);
-                                        const img = new Image();
-                                        img.src = d2.sprite_url;
-                                        img.onload = () => {{
+                            startThumbAutoCycle(card, 0);
+                        }}
+                    }};
+                }} else {{
+                    let pollCount = 0;
+                    const poll = setInterval(async () => {{
+                        pollCount++;
+                        if (pollCount > 15 || activeHoveredThumb !== card) {{
+                            clearInterval(poll);
+                            return;
+                        }}
+                        try {{
+                            const r2 = await fetch(`/api/storyboard?key=${{encodeURIComponent(key)}}`);
+                            if (r2.ok) {{
+                                const d2 = await r2.json();
+                                if (d2.available && d2.sprite_url) {{
+                                    clearInterval(poll);
+                                    const img = new Image();
+                                    img.src = d2.sprite_url;
+                                    img.onload = () => {{
+                                        if (activeHoveredThumb === card) {{
                                             canvas.style.backgroundImage = `url('${{d2.sprite_url}}')`;
                                             canvas.style.backgroundSize = '1000% 1000%';
                                             const fb = card.querySelector('.thumb-fallback');
                                             if (fb) fb.remove();
-                                            if (activeHoveredThumb === card) {{
-                                                startThumbAutoCycle(card, 0);
-                                            }} else {{
-                                                setThumbCardFrame(card, 2);
-                                            }}
-                                        }};
-                                    }}
+                                            startThumbAutoCycle(card, 0);
+                                        }}
+                                    }};
                                 }}
-                            }} catch (e) {{}}
-                        }}, 800);
-                    }}
-                }} catch (err) {{}}
-            }}
+                            }}
+                        }} catch (e) {{}}
+                    }}, 800);
+                }}
+            }} catch (err) {{}}
         }}
 
         function handleThumbMove(card, event) {{
             if (!card) return;
             const canvas = card.querySelector('.thumb-canvas');
-            if (!canvas || !canvas.style.backgroundImage || canvas.style.backgroundImage === 'none') return;
+            if (!canvas) return;
+
+            // Ensure 100-frame sprite is active during scrubbing
+            const safeId = card.dataset.safeid;
+            if (safeId && (!canvas.style.backgroundSize || !canvas.style.backgroundSize.includes('1000%'))) {{
+                canvas.style.backgroundImage = `url('/api/storyboard/image?id=${{safeId}}')`;
+                canvas.style.backgroundSize = '1000% 1000%';
+            }}
 
             clearInterval(thumbCycleInterval);
             clearTimeout(thumbManualScrubTimeout);
@@ -5752,7 +5753,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (activeHoveredThumb === card) {{
                 activeHoveredThumb = null;
             }}
-            setThumbCardFrame(card, 2);
+            const canvas = card.querySelector('.thumb-canvas');
+            if (canvas) {{
+                if (canvas.dataset.staticBg) {{
+                    canvas.style.backgroundImage = canvas.dataset.staticBg;
+                }}
+                canvas.style.backgroundSize = 'cover';
+                canvas.style.backgroundPosition = 'center';
+            }}
             const fill = card.querySelector('.thumb-scrub-fill');
             if (fill) fill.style.width = '0%';
         }}
