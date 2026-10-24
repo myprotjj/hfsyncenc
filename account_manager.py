@@ -257,31 +257,53 @@ class AccountManager:
         master_id = self.get_master_repo_id()
         return self.get_api_for_repo(master_id)
 
-    def fetch_repo_sidecars_via_git(self, repo_id: str, token: str) -> dict:
+    def fetch_repo_sidecars_via_git(self, repo_id: str, token: str, detailed: bool = False):
         """
         Method 3: Batch fetches all .meta.enc sidecars from a dataset repo in ~2 seconds
         using a shallow git clone without Git-LFS, completely bypassing API rate limits.
+        If detailed=True, returns (records, stats_dict).
+        If detailed=False, returns records dict.
         """
-        import tempfile, subprocess, shutil
+        import tempfile, subprocess, shutil, time
         git_exe = r"C:\Users\opc\tools\git\cmd\git.exe"
         if not os.path.exists(git_exe):
             git_exe = shutil.which("git") or "git"
 
         temp_dir = tempfile.mkdtemp(prefix="hfsync_meta_")
         records = {}
+        stats = {
+            "success": False,
+            "clone_time": 0.0,
+            "checkout_time": 0.0,
+            "decrypt_time": 0.0,
+            "sidecars_count": 0,
+            "error": None
+        }
         try:
             url = f"https://user:{token}@huggingface.co/datasets/{repo_id}"
             env = dict(os.environ, GIT_LFS_SKIP_SMUDGE="1")
+            t0 = time.time()
             p1 = subprocess.run(
                 [git_exe, "clone", "--depth", "1", "--no-checkout", url, temp_dir],
                 env=env, capture_output=True, timeout=30
             )
+            stats["clone_time"] = round(time.time() - t0, 2)
             if p1.returncode != 0:
-                return {}
+                err_text = p1.stderr.decode("utf-8", errors="replace").strip()
+                if token and token in err_text:
+                    err_text = err_text.replace(token, "[REDACTED]")
+                stats["error"] = f"Git clone failed (exit {p1.returncode}): {err_text}"
+                return (records, stats) if detailed else records
+
+            t_chk = time.time()
             subprocess.run(
                 [git_exe, "-C", temp_dir, "checkout", "HEAD", "--", "*.meta.enc", "blobs/*.meta.enc", "blobs/*/*.meta.enc"],
                 env=env, capture_output=True, timeout=15
             )
+            stats["checkout_time"] = round(time.time() - t_chk, 2)
+
+            t_dec = time.time()
+            count = 0
             for root, _, files in os.walk(temp_dir):
                 for f in files:
                     if f.endswith(".meta.enc"):
@@ -293,33 +315,45 @@ class AccountManager:
                                 k = item.get("full_key")
                                 if k:
                                     records[k] = item
+                                    count += 1
                         except Exception:
                             pass
-        except Exception:
-            pass
+            stats["decrypt_time"] = round(time.time() - t_dec, 2)
+            stats["sidecars_count"] = count
+            stats["success"] = True
+        except Exception as e:
+            stats["error"] = str(e)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
-        return records
+        return (records, stats) if detailed else records
 
-    def batch_fetch_all_repos_parallel(self, repo_targets: list, max_workers: int = 4) -> tuple:
+    def batch_fetch_all_repos_parallel(self, repo_targets: list, max_workers: int = 4, progress_callback = None) -> tuple:
         """
         Fetches .meta.enc sidecars across multiple repositories in parallel using
         a bounded worker pool (default 4 workers) with staggered dispatch to prevent
         Hugging Face connection limits.
-        Returns: (all_records: dict, errors: list)
+        Returns: (all_records: dict, errors: list, repo_stats: dict)
         """
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         all_records = {}
         errors = []
+        repo_stats = {}
         if not repo_targets:
-            return all_records, errors
+            return all_records, errors, repo_stats
 
         workers = max(1, min(len(repo_targets), max_workers))
 
-        def _fetch_worker(target):
+        def _fetch_worker(target, worker_num):
             repo_id, token, user = target
+            if progress_callback:
+                progress_callback("worker_start", {
+                    "repo_id": repo_id,
+                    "user": user,
+                    "worker_id": worker_num
+                })
+            t0 = time.time()
             try:
                 # 1. Quick check: does repo have a local vault_index.enc?
                 if self.password and token:
@@ -334,30 +368,86 @@ class AccountManager:
                             except Exception:
                                 recs = json.loads(dec.decode("utf-8"))
                             if recs:
-                                return repo_id, recs, None
+                                st = {
+                                    "success": True,
+                                    "clone_time": 0.0,
+                                    "checkout_time": 0.0,
+                                    "decrypt_time": 0.0,
+                                    "sidecars_count": len(recs),
+                                    "error": None,
+                                    "elapsed": round(time.time() - t0, 2),
+                                    "source": "vault_index"
+                                }
+                                if progress_callback:
+                                    progress_callback("worker_success", {
+                                        "repo_id": repo_id,
+                                        "user": user,
+                                        "worker_id": worker_num,
+                                        "count": len(recs),
+                                        "stats": st
+                                    })
+                                return repo_id, recs, None, st
                     except Exception:
                         pass
 
                 # 2. Method 3: Parallel Git Batch Fetch for all .meta.enc sidecars
-                recs = self.fetch_repo_sidecars_via_git(repo_id, token)
-                return repo_id, recs, None
+                recs, stats = self.fetch_repo_sidecars_via_git(repo_id, token, detailed=True)
+                stats["elapsed"] = round(time.time() - t0, 2)
+                stats["source"] = "git_shallow"
+                if stats.get("error"):
+                    if progress_callback:
+                        progress_callback("worker_error", {
+                            "repo_id": repo_id,
+                            "user": user,
+                            "worker_id": worker_num,
+                            "error": stats["error"],
+                            "stats": stats
+                        })
+                    return repo_id, {}, stats["error"], stats
+                else:
+                    if progress_callback:
+                        progress_callback("worker_success", {
+                            "repo_id": repo_id,
+                            "user": user,
+                            "worker_id": worker_num,
+                            "count": len(recs),
+                            "stats": stats
+                        })
+                    return repo_id, recs, None, stats
             except Exception as e:
-                return repo_id, {}, str(e)
+                err_msg = str(e)
+                st = {
+                    "success": False,
+                    "error": err_msg,
+                    "elapsed": round(time.time() - t0, 2),
+                    "sidecars_count": 0
+                }
+                if progress_callback:
+                    progress_callback("worker_error", {
+                        "repo_id": repo_id,
+                        "user": user,
+                        "worker_id": worker_num,
+                        "error": err_msg,
+                        "stats": st
+                    })
+                return repo_id, {}, err_msg, st
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = []
-            for t in repo_targets:
-                futures.append(pool.submit(_fetch_worker, t))
+            for idx, t in enumerate(repo_targets, 1):
+                w_num = ((idx - 1) % workers) + 1
+                futures.append(pool.submit(_fetch_worker, t, w_num))
                 time.sleep(0.08)  # Staggered dispatch avoids TLS thundering-herd
 
             for f in as_completed(futures):
-                r_id, recs, err = f.result()
+                r_id, recs, err, st = f.result()
+                repo_stats[r_id] = st
                 if recs:
                     all_records.update(recs)
                 if err:
                     errors.append({"repo_id": r_id, "error": err})
 
-        return all_records, errors
+        return all_records, errors, repo_stats
 
     def can_write_to_repo(self, repo_id: str) -> bool:
         """
@@ -514,7 +604,7 @@ class AccountManager:
                 print(f"[!] Error listing datasets for user {user}: {e}")
 
         # Execute parallel sidecar fetch across all targets with 4 bounded workers
-        parallel_records, fetch_errors = self.batch_fetch_all_repos_parallel(repo_targets, max_workers=4)
+        parallel_records, fetch_errors, _ = self.batch_fetch_all_repos_parallel(repo_targets, max_workers=4)
 
         files = manifest.setdefault("files", {})
         media_hashes = manifest.setdefault("media_hashes", {})

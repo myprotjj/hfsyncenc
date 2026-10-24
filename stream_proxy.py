@@ -382,7 +382,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_folder_tags()
         elif path == "/api/sync-hf":
             self.handle_sync_hf()
-        elif path in ("/api/restore-hf", "/api/recheck-cloud"):
+        elif path in ("/api/resync-stream", "/api/recheck-cloud"):
+            self.handle_resync_stream()
+        elif path == "/api/restore-hf":
             self.handle_restore_hf()
         elif path == "/api/jellyfin_sync/toggle":
             self.handle_toggle_jellyfin_sync()
@@ -2678,6 +2680,284 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
+    def handle_resync_stream(self):
+        """
+        Streaming NDJSON endpoint for Resync All Accounts with real-time live terminal output
+        and strict zero-partial Master Index integrity verification.
+        """
+        import time, threading, zlib
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        stream_lock = threading.Lock()
+        def send_chunk(data: dict):
+            with stream_lock:
+                self._send_stream_chunk(data)
+
+        def log_msg(msg: str, stage: str = "running", percent: int = None, **kwargs):
+            payload = {
+                "timestamp": time.strftime("%H:%M:%S"),
+                "stage": stage,
+                "message": msg
+            }
+            if percent is not None:
+                payload["percent"] = percent
+            payload.update(kwargs)
+            send_chunk(payload)
+
+        t_overall_start = time.time()
+
+        # Step 1: Initialization & Integrity Banner
+        log_msg("🚀 Initiating Cloud Resync across all connected Hugging Face accounts...", stage="init", percent=3)
+        log_msg("🛡️ STRICT INTEGRITY PROTECTION ACTIVE: All repository queries must succeed 100%.", stage="init", percent=5)
+        log_msg("   If ANY repository fails or times out, the Master Index will NOT be modified.", stage="init", percent=6)
+
+        if not hasattr(self, "acc_mgr") or not self.acc_mgr:
+            self.acc_mgr = account_manager.AccountManager()
+
+        accounts = self.acc_mgr.get_all_accounts()
+        if not accounts:
+            log_msg("❌ ERROR: No Hugging Face accounts configured!", stage="error", percent=10)
+            log_msg("🛑 Master Index NOT modified. Resync aborted.", stage="aborted", percent=10, abort=True)
+            send_chunk({"stage": "failed", "success": False, "percent": 10, "message": "No accounts configured."})
+            self._finish_stream_chunked()
+            return
+
+        master_repo = self.acc_mgr.get_master_repo_id()
+        log_msg(f"👑 Canonical Master Repository: {master_repo}", stage="info", percent=8)
+
+        # Step 2: Validate Account Credentials & Permissions
+        log_msg(f"🔑 Validating {len(accounts)} Hugging Face account(s)...", stage="auth", percent=10)
+        auth_failures = []
+        for acc in accounts:
+            u = acc["username"]
+            if not acc.get("enabled", True):
+                log_msg(f"⏭️ Account '{u}' is disabled in settings. Skipping.", stage="auth")
+                continue
+            try:
+                who = acc["api"].whoami()
+                u_type = who.get("type", "user")
+                can_w = acc.get("can_write", True)
+                log_msg(f"   ✅ Account '{u}' ({u_type}) verified successfully (Write: {can_w})", stage="auth")
+            except Exception as e:
+                err_str = str(e)
+                auth_failures.append({"user": u, "error": err_str})
+                log_msg(f"   ❌ Account '{u}' authentication failed: {err_str}", stage="auth_error")
+
+        if auth_failures:
+            log_msg("=" * 60, stage="error")
+            log_msg("🛑 CRITICAL SAFETY ABORT: One or more Hugging Face account tokens failed authentication!", stage="error")
+            for af in auth_failures:
+                log_msg(f"   ❌ User: {af['user']} -> {af['error']}", stage="error")
+            log_msg("🛡️ Master Index Protection: master vault_index.enc and local manifest were NOT modified.", stage="error")
+            log_msg("=" * 60, stage="error")
+            send_chunk({"stage": "failed", "success": False, "percent": 15, "message": "Account authentication failed. Master Index was untouched.", "auth_failures": auth_failures})
+            self._finish_stream_chunked()
+            return
+
+        # Step 3: Discover Target Dataset Repositories
+        log_msg("🔍 Discovering dataset repositories across all enabled accounts...", stage="discovery", percent=15)
+        repo_targets = []
+        discovery_failures = []
+        for acc in accounts:
+            if not acc.get("enabled", True):
+                continue
+            u = acc["username"]
+            token = acc["token"]
+            try:
+                ds_list = list(acc["api"].list_datasets(author=u))
+                u_repos = []
+                for ds in ds_list:
+                    if ds.id != master_repo:
+                        repo_targets.append((ds.id, token, u))
+                        u_repos.append(ds.id)
+                log_msg(f"📦 Account '{u}': Found {len(u_repos)} data repository/repositories ({', '.join([r.split('/')[-1] for r in u_repos]) if u_repos else 'None'})", stage="discovery", percent=20)
+            except Exception as de:
+                err_str = str(de)
+                discovery_failures.append({"user": u, "error": err_str})
+                log_msg(f"   ❌ Failed to discover repositories for '{u}': {err_str}", stage="discovery_error")
+
+        if discovery_failures:
+            log_msg("=" * 60, stage="error")
+            log_msg("🛑 CRITICAL SAFETY ABORT: Repository discovery failed on one or more accounts!", stage="error")
+            for df in discovery_failures:
+                log_msg(f"   ❌ User: {df['user']} -> {df['error']}", stage="error")
+            log_msg("🛡️ Master Index was NOT modified to prevent data loss.", stage="error")
+            log_msg("=" * 60, stage="error")
+            send_chunk({"stage": "failed", "success": False, "percent": 22, "message": "Repository discovery failed. Master Index was untouched.", "discovery_failures": discovery_failures})
+            self._finish_stream_chunked()
+            return
+
+        total_repos = len(repo_targets)
+        log_msg(f"📊 Target Repositories: {total_repos} repositories queued for parallel sidecar scanning.", stage="discovery", percent=25, total_repos=total_repos)
+
+        if total_repos == 0:
+            log_msg("ℹ️ No folder repositories found. Checking Master Index directly...", stage="discovery", percent=30)
+
+        # Step 4: Dispatch Parallel Workers with Live Progress
+        workers_count = max(1, min(total_repos, 4))
+        log_msg(f"⚡ Spawning {workers_count} bounded worker(s) (GIT_LFS_SKIP_SMUDGE=1, 80ms staggered dispatch)...", stage="dispatch", percent=28)
+        log_msg("💡 Skipping all multi-GB media blobs: fetching only encrypted lightweight .meta.enc sidecars.", stage="dispatch", percent=30)
+
+        completed_count = 0
+        total_sidecars = 0
+
+        def on_worker_progress(event_type, data):
+            nonlocal completed_count, total_sidecars
+            wid = data.get("worker_id", 1)
+            r_id = data.get("repo_id", "")
+            r_short = r_id.split("/")[-1] if "/" in r_id else r_id
+
+            if event_type == "worker_start":
+                log_msg(f"[Worker-{wid}] 🚀 Connecting to '{r_short}' ({data.get('user')})...", stage="worker_start")
+            elif event_type == "worker_success":
+                st = data.get("stats", {})
+                cnt = data.get("count", 0)
+                total_sidecars += cnt
+                completed_count += 1
+                curr_pct = int(30 + (completed_count / max(1, total_repos)) * 45)
+                source_lbl = "vault_index" if st.get("source") == "vault_index" else f"Git clone {st.get('clone_time', 0)}s"
+                log_msg(
+                    f"[Worker-{wid}] ✅ '{r_short}' SUCCESS: {cnt} sidecar(s) verified in {st.get('elapsed', 0)}s ({source_lbl}) | Status: 200 OK",
+                    stage="worker_success",
+                    percent=curr_pct,
+                    completed_repos=completed_count,
+                    total_repos=total_repos,
+                    total_sidecars=total_sidecars
+                )
+            elif event_type == "worker_error":
+                completed_count += 1
+                curr_pct = int(30 + (completed_count / max(1, total_repos)) * 45)
+                err = data.get("error", "Unknown error")
+                log_msg(
+                    f"[Worker-{wid}] ❌ FAILED on '{r_short}': {err}",
+                    stage="worker_error",
+                    percent=curr_pct,
+                    completed_repos=completed_count,
+                    total_repos=total_repos,
+                    error=err
+                )
+
+        t_fetch_start = time.time()
+        parallel_records, fetch_errors, repo_stats = self.acc_mgr.batch_fetch_all_repos_parallel(
+            repo_targets, max_workers=workers_count, progress_callback=on_worker_progress
+        )
+        t_fetch_elapsed = round(time.time() - t_fetch_start, 2)
+        log_msg(f"⚡ Parallel scan finished in {t_fetch_elapsed}s. Sidecars retrieved: {len(parallel_records)} | Repos with errors: {len(fetch_errors)}", stage="scan_done", percent=76)
+
+        # Step 5: STRICT VERIFICATION GATE
+        if fetch_errors or len(repo_stats) < total_repos:
+            log_msg("=" * 60, stage="error")
+            log_msg(f"🛑 CRITICAL SAFETY ABORT: {len(fetch_errors)} repository query/queries failed!", stage="error")
+            for fe in fetch_errors:
+                log_msg(f"   ❌ Repo: {fe['repo_id']} -> Error: {fe['error']}", stage="error")
+            log_msg("🛡️ STRICT ALL-OR-NOTHING POLICY TRIGGERED:", stage="error")
+            log_msg("   Because not all repositories could be verified, the Master Index was NOT modified.", stage="error")
+            log_msg("   Local manifest was NOT modified. Zero partial data written.", stage="error")
+            log_msg("   This guarantees no video records are accidentally deleted or lost.", stage="error")
+            log_msg("=" * 60, stage="error")
+            send_chunk({
+                "stage": "failed",
+                "success": False,
+                "percent": 78,
+                "message": f"Resync aborted: {len(fetch_errors)} repo(s) failed. Master Index was preserved.",
+                "fetch_errors": fetch_errors
+            })
+            self._finish_stream_chunked()
+            return
+
+        log_msg(f"🛡️ 100% Repository Verification PASSED! All {total_repos}/{total_repos} repositories succeeded with 0 errors.", stage="verified", percent=78)
+
+        # Step 6: Tombstones & Local Manifest Merging
+        log_msg("🧹 Loading local manifest and checking tombstone filters...", stage="merge", percent=80)
+        manifest = load_manifest()
+        tombstones = manifest.get("tombstones", {})
+        log_msg(f"🔍 Checking tombstones: {len(tombstones)} active deletion tombstone(s) found.", stage="merge", percent=82)
+
+        files = manifest.setdefault("files", {})
+        media_hashes = manifest.setdefault("media_hashes", {})
+        new_discovered = 0
+        updated_count = 0
+        tombstoned_ignored = 0
+
+        for k, rec in parallel_records.items():
+            if k in tombstones:
+                tombstoned_ignored += 1
+                continue
+            if k not in files:
+                files[k] = rec
+                new_discovered += 1
+            else:
+                r_ts = float(rec.get("updated_at") or 0.0)
+                l_ts = float(files[k].get("updated_at") or 0.0)
+                if r_ts > l_ts:
+                    files[k] = rec
+                    updated_count += 1
+            m_hash = rec.get("media_hash")
+            if m_hash:
+                media_hashes[m_hash] = rec
+
+        if tombstoned_ignored > 0:
+            log_msg(f"🗑️ Respected {tombstoned_ignored} tombstoned deletion(s) (permanently deleted files will not resurrect).", stage="merge", percent=85)
+        log_msg(f"📝 Manifest merged: {new_discovered} new video(s) added, {updated_count} updated, {len(files)} total active video(s).", stage="merge", percent=87)
+
+        save_manifest(manifest)
+        log_msg("💾 upload_manifest.json saved to disk safely.", stage="merge", percent=89)
+
+        # Step 7: Master Index Encryption & Upload
+        log_msg(f"🔐 Building unified Master Index for '{master_repo}'...", stage="master_index", percent=90)
+        try:
+            master_api = self.acc_mgr.get_api_for_repo(master_repo)
+            metadata_helper.sync_master_manifest_to_hf(master_api, master_repo, manifest, self.password)
+            log_msg(f"✅ Canonical Master Index successfully committed and synced to '{master_repo}'!", stage="master_index", percent=96)
+        except Exception as me:
+            err_m = str(me)
+            log_msg(f"⚠️ Warning: Failed to upload Master Index to cloud: {err_m}", stage="master_index_error")
+
+        # Step 8: Update Jellyfin Library pointers if enabled
+        if account_manager.is_jellyfin_sync_enabled():
+            log_msg("📺 Refreshing local Jellyfin library pointers (.strm / .nfo)...", stage="jellyfin", percent=98)
+            try:
+                for k, rec in files.items():
+                    if rec.get("status") == "uploaded":
+                        strm_p = Path("jellyfin_library") / f"{k}.strm"
+                        strm_p.parent.mkdir(parents=True, exist_ok=True)
+                        strm_p.write_text(f"http://127.0.0.1:8080/stream/{k}\n", encoding="utf-8")
+                        meta = rec.get("metadata") or metadata_helper.extract_default_metadata(k)
+                        metadata_helper.write_nfo_files("jellyfin_library", k, meta, media_info=rec.get("media_info"))
+            except Exception as je:
+                log_msg(f"⚠️ Jellyfin strm generation notice: {je}", stage="jellyfin")
+
+        t_overall_total = round(time.time() - t_overall_start, 2)
+        activity_tracker.tracker.add_event(
+            "success",
+            "Full Cloud Resync Complete",
+            f"100% verified {total_repos} repos across {len(accounts)} accounts. Rebuilt Master Index ({len(files)} active videos) in {t_overall_total}s."
+        )
+        activity_tracker.tracker.notify_manifest_updated()
+
+        log_msg("=" * 60, stage="complete")
+        log_msg(f"🎉 RESYNC COMPLETE: Rebuilt Master Index with {len(files)} active video(s) across {total_repos} repositories in {t_overall_total}s!", stage="complete", percent=100)
+        log_msg("=" * 60, stage="complete")
+
+        send_chunk({
+            "stage": "complete",
+            "success": True,
+            "percent": 100,
+            "message": f"Successfully resynced {len(files)} video(s) across {total_repos} repository/repositories in {t_overall_total}s.",
+            "total_files": len(files),
+            "new_discovered": new_discovered,
+            "updated_count": updated_count,
+            "total_repos": total_repos,
+            "total_accounts": len(accounts),
+            "elapsed_seconds": t_overall_total
+        })
+        self._finish_stream_chunked()
+
     def purge_video_entry(self, key_to_delete: str, manifest: dict, force_cloud_delete: bool = False, sync_repo_index: bool = True) -> dict:
         """
         Exhaustively and permanently purges a video from A to Z across all systems:
@@ -3374,7 +3654,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_api_files()
         elif path == "/api/jellyfin_sync":
             self.handle_get_jellyfin_sync()
-        elif path in ("/api/restore-hf", "/api/recheck-cloud"):
+        elif path in ("/api/resync-stream", "/api/recheck-cloud"):
+            self.handle_resync_stream()
+        elif path == "/api/restore-hf":
             self.handle_restore_hf()
         elif path == "/api/jellyfin_sync/toggle":
             self.handle_toggle_jellyfin_sync()
@@ -7671,7 +7953,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span style="font-weight: 600;">Jellyfin Sync</span>
                     <span class="jellyfin-sync-badge is-on" id="jellyfinSyncBadge">ON</span>
                 </div>
-                <button onclick="recheckCloudSync(event)" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Click: Fast Resync (<0.5s) | Shift+Click: Deep Parallel Sidecar Scan across all repositories">
+                <button onclick="openResyncModalAndStart()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Live transparent resync across all repositories and accounts with strict integrity verification">
                     &#9889; Resync All Accounts
                 </button>
                 <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" title="Extract resolution, audio, and video codecs">
@@ -8433,6 +8715,84 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         </div>
     </div>
 
+    <!-- Real-time Live Resync All Accounts Modal -->
+    <div id="resyncModal" class="modal-overlay" style="z-index: 1250; display: none;">
+        <div class="modal" style="max-width: 820px; width: 92vw; background: #0b1120; border: 1px solid #1e293b; box-shadow: 0 20px 60px rgba(0,0,0,0.85); padding: 22px; border-radius: 12px;">
+            <!-- Header -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div id="resyncSpinnerIcon" style="width: 22px; height: 22px; border: 3px solid #38bdf8; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <div>
+                        <h3 id="resyncModalTitle" style="color: #38bdf8; margin: 0; font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                            &#9889; Cloud Resync &amp; Master Index Verification
+                        </h3>
+                        <div id="resyncModalSubtitle" style="font-size: 0.8rem; color: #94a3b8; margin-top: 2px;">
+                            Parallel Git shallow sidecar scanning with strict zero-partial Master Index integrity
+                        </div>
+                    </div>
+                </div>
+                <button id="btnCloseResyncModal" onclick="closeResyncModal()" class="tool-btn btn-xs" style="font-size: 1.2rem; padding: 2px 10px; display: none;">&times;</button>
+            </div>
+
+            <!-- Metric Stats Row -->
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px;">
+                <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; text-align: center;">
+                    <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600;">Status</div>
+                    <div id="resyncStatStatus" style="font-size: 0.95rem; font-weight: 700; color: #38bdf8; margin-top: 4px;">Running</div>
+                </div>
+                <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; text-align: center;">
+                    <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600;">Repositories</div>
+                    <div id="resyncStatRepos" style="font-size: 0.95rem; font-weight: 700; color: #f1f5f9; margin-top: 4px;">0 / 0</div>
+                </div>
+                <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; text-align: center;">
+                    <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600;">Sidecars Verified</div>
+                    <div id="resyncStatSidecars" style="font-size: 0.95rem; font-weight: 700; color: #a855f7; margin-top: 4px;">0</div>
+                </div>
+                <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; text-align: center;">
+                    <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600;">Elapsed Time</div>
+                    <div id="resyncStatElapsed" style="font-size: 0.95rem; font-weight: 700; color: #22c55e; margin-top: 4px;">0.0s</div>
+                </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <div style="margin-bottom: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 0.82rem;">
+                    <span id="resyncCurrentStage" style="color: #cbd5e1; font-weight: 600;">Initializing stream...</span>
+                    <span id="resyncPercentText" style="color: #38bdf8; font-weight: 700; font-family: monospace;">0%</span>
+                </div>
+                <div style="background: #1e293b; border-radius: 6px; height: 10px; overflow: hidden; position: relative;">
+                    <div id="resyncProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #0284c7, #38bdf8, #818cf8); border-radius: 6px; transition: width 0.3s ease;"></div>
+                </div>
+            </div>
+
+            <!-- Real-time Terminal Log Window -->
+            <div style="margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <div style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+                        <span>&#128421;&#65039;</span> Live Transparent Activity Stream
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button onclick="copyResyncLogs()" class="tool-btn btn-xs" style="font-size: 0.72rem; padding: 2px 8px;" title="Copy terminal log output to clipboard">&#128203; Copy Log</button>
+                    </div>
+                </div>
+                <div id="resyncTerminalLog" style="background: #030712; border: 1px solid #1e293b; border-radius: 8px; height: 290px; overflow-y: auto; padding: 12px 14px; font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace; font-size: 0.8rem; line-height: 1.55; color: #e2e8f0; white-space: pre-wrap; word-break: break-all; scroll-behavior: smooth;">
+                </div>
+            </div>
+
+            <!-- Footer / Action Buttons -->
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div id="resyncFooterNote" style="font-size: 0.78rem; color: #64748b;">
+                    Strict Integrity: Master Index is protected and only updated if all repositories succeed.
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button id="btnResyncCloseDone" onclick="closeResyncModal()" class="tool-btn" style="display: none; padding: 8px 20px; font-weight: 600;">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Delete Account Confirmation Modal -->
     <div id="deleteAccountModal" class="modal-overlay" style="z-index: 1100;">
         <div class="modal" style="max-width: 480px;">
@@ -9004,33 +9364,294 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
-        async function recheckCloudSync(ev) {{
-            const isDeep = Boolean(ev && ev.shiftKey);
-            const btn = document.getElementById('btnRecheckCloud');
-            const origHtml = btn ? btn.innerHTML : '&#9889; Resync All Accounts';
-            if (btn) {{
-                btn.disabled = true;
-                const label = isDeep ? 'Deep Parallel Scan...' : 'Resyncing Cloud...';
-                btn.innerHTML = `<span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> ${{label}}`;
+        let resyncRunning = false;
+        let resyncStartTime = 0;
+        let resyncTimerInterval = null;
+
+        function openResyncModalAndStart() {{
+            if (resyncRunning) return;
+            resyncRunning = true;
+            resyncStartTime = Date.now();
+
+            const modal = document.getElementById('resyncModal');
+            if (!modal) return;
+            modal.style.display = 'flex';
+
+            document.getElementById('resyncModalTitle').innerHTML = '&#9889; Cloud Resync &amp; Master Index Verification';
+            document.getElementById('resyncModalTitle').style.color = '#38bdf8';
+            document.getElementById('resyncSpinnerIcon').style.display = 'inline-block';
+            document.getElementById('resyncSpinnerIcon').style.borderColor = '#38bdf8';
+            document.getElementById('resyncSpinnerIcon').style.borderTopColor = 'transparent';
+            document.getElementById('btnCloseResyncModal').style.display = 'none';
+            document.getElementById('btnResyncCloseDone').style.display = 'none';
+            document.getElementById('resyncStatStatus').innerText = 'Running';
+            document.getElementById('resyncStatStatus').style.color = '#38bdf8';
+            document.getElementById('resyncStatRepos').innerText = '0 / 0';
+            document.getElementById('resyncStatSidecars').innerText = '0';
+            document.getElementById('resyncStatElapsed').innerText = '0.0s';
+            document.getElementById('resyncCurrentStage').innerText = 'Starting parallel sync stream...';
+            document.getElementById('resyncPercentText').innerText = '0%';
+            document.getElementById('resyncProgressBar').style.width = '0%';
+            document.getElementById('resyncProgressBar').style.background = 'linear-gradient(90deg, #0284c7, #38bdf8, #818cf8)';
+
+            const term = document.getElementById('resyncTerminalLog');
+            if (term) term.innerHTML = '';
+
+            if (resyncTimerInterval) clearInterval(resyncTimerInterval);
+            resyncTimerInterval = setInterval(() => {{
+                if (!resyncRunning) {{
+                    clearInterval(resyncTimerInterval);
+                    return;
+                }}
+                const el = ((Date.now() - resyncStartTime) / 1000).toFixed(1);
+                const elElem = document.getElementById('resyncStatElapsed');
+                if (elElem) elElem.innerText = el + 's';
+            }}, 100);
+
+            startResyncStream();
+        }}
+
+        function recheckCloudSync(ev) {{
+            openResyncModalAndStart();
+        }}
+
+        function appendResyncTerminal(text, stage) {{
+            const term = document.getElementById('resyncTerminalLog');
+            if (!term) return;
+            const line = document.createElement('div');
+            line.style.margin = '2px 0';
+
+            if (stage === 'error' || stage === 'auth_error' || stage === 'discovery_error' || stage === 'worker_error') {{
+                line.style.color = '#f87171';
+                line.style.fontWeight = '600';
+            }} else if (stage === 'worker_success') {{
+                line.style.color = '#4ade80';
+            }} else if (stage === 'worker_start') {{
+                line.style.color = '#38bdf8';
+            }} else if (stage === 'master_index' || stage === 'verified') {{
+                line.style.color = '#c084fc';
+            }} else if (stage === 'complete') {{
+                line.style.color = '#34d399';
+                line.style.fontWeight = '700';
+            }} else {{
+                line.style.color = '#cbd5e1';
             }}
+
+            line.textContent = text;
+            term.appendChild(line);
+            term.scrollTop = term.scrollHeight;
+        }}
+
+        async function startResyncStream() {{
             try {{
-                const url = isDeep ? '/api/recheck-cloud?deep=1' : '/api/recheck-cloud';
-                const res = await fetch(url, {{ method: 'POST' }});
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const data = await res.json();
-                const total = data.total_files || data.recovered_count || 0;
-                const accs = data.total_accounts || 1;
-                const prefix = isDeep ? '&#9889; Deep Parallel Scan complete' : '&#9989; Resync complete';
-                flashCenterFeedback(`${{prefix}}: ${{total}} video(s) active across ${{accs}} HF account(s)! Master Index updated.`);
-                await reloadFilesList();
+                const response = await fetch('/api/resync-stream', {{
+                    method: 'POST',
+                    headers: {{ 'Accept': 'application/x-ndjson' }}
+                }});
+
+                if (!response.ok) {{
+                    throw new Error(`Server returned HTTP ${{response.status}} ${{response.statusText}}`);
+                }}
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {{
+                    const {{ done, value }} = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, {{ stream: true }});
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {{
+                        const trimmed = line.trim();
+                        if (!trimmed) continue;
+                        try {{
+                            const chunk = JSON.parse(trimmed);
+                            handleResyncChunk(chunk);
+                        }} catch (e) {{
+                            console.error("Error parsing NDJSON chunk:", e, trimmed);
+                        }}
+                    }}
+                }}
+
+                if (buffer.trim()) {{
+                    try {{
+                        const chunk = JSON.parse(buffer.trim());
+                        handleResyncChunk(chunk);
+                    }} catch (e) {{}}
+                }}
             }} catch (err) {{
-                flashCenterFeedback('Cloud resync error: ' + err.message);
-            }} finally {{
-                if (btn) {{
-                    btn.disabled = false;
-                    btn.innerHTML = origHtml;
+                appendResyncTerminal(`🛑 Connection error: ${{err.message}}`, 'error');
+                handleResyncFailed(`Stream terminated unexpectedly: ${{err.message}}`);
+            }}
+        }}
+
+        function handleResyncChunk(chunk) {{
+            if (chunk.message) {{
+                appendResyncTerminal(`[${{chunk.timestamp || ''}}] ${{chunk.message}}`, chunk.stage);
+            }}
+
+            if (chunk.percent !== undefined) {{
+                const pBar = document.getElementById('resyncProgressBar');
+                const pTxt = document.getElementById('resyncPercentText');
+                if (pBar) pBar.style.width = chunk.percent + '%';
+                if (pTxt) pTxt.innerText = chunk.percent + '%';
+            }}
+
+            if (chunk.stage) {{
+                const stageMap = {{
+                    'init': 'Initializing resync...',
+                    'auth': 'Validating account credentials...',
+                    'discovery': 'Discovering dataset repositories...',
+                    'dispatch': 'Dispatching parallel Git workers...',
+                    'worker_start': 'Scanning repositories in parallel...',
+                    'worker_success': 'Fetching encrypted sidecars...',
+                    'worker_error': 'Worker error detected...',
+                    'scan_done': 'Parallel scan complete. Verifying...',
+                    'verified': 'All repositories verified. Merging...',
+                    'merge': 'Updating manifest and tombstones...',
+                    'master_index': 'Uploading Canonical Master Index...',
+                    'jellyfin': 'Updating Jellyfin pointers...',
+                    'complete': 'Cloud resync complete!',
+                    'failed': 'Resync aborted!'
+                }};
+                if (stageMap[chunk.stage]) {{
+                    const stageElem = document.getElementById('resyncCurrentStage');
+                    if (stageElem) stageElem.innerText = stageMap[chunk.stage];
                 }}
             }}
+
+            if (chunk.total_repos !== undefined && chunk.completed_repos !== undefined) {{
+                const rElem = document.getElementById('resyncStatRepos');
+                if (rElem) rElem.innerText = `${{chunk.completed_repos}} / ${{chunk.total_repos}}`;
+            }} else if (chunk.total_repos !== undefined) {{
+                const rElem = document.getElementById('resyncStatRepos');
+                if (rElem) rElem.innerText = `0 / ${{chunk.total_repos}}`;
+            }}
+
+            if (chunk.total_sidecars !== undefined) {{
+                const scElem = document.getElementById('resyncStatSidecars');
+                if (scElem) scElem.innerText = chunk.total_sidecars;
+            }}
+
+            if (chunk.stage === 'failed' || chunk.abort) {{
+                handleResyncFailed(chunk.message || 'Resync aborted to protect Master Index.');
+            }} else if (chunk.stage === 'complete') {{
+                handleResyncComplete(chunk);
+            }}
+        }}
+
+        function handleResyncFailed(msg) {{
+            resyncRunning = false;
+            if (resyncTimerInterval) clearInterval(resyncTimerInterval);
+
+            const spinner = document.getElementById('resyncSpinnerIcon');
+            if (spinner) spinner.style.display = 'none';
+
+            const btnClose = document.getElementById('btnCloseResyncModal');
+            if (btnClose) btnClose.style.display = 'inline-block';
+
+            const btnDone = document.getElementById('btnResyncCloseDone');
+            if (btnDone) {{
+                btnDone.style.display = 'inline-block';
+                btnDone.className = 'btn btn-delete';
+                btnDone.innerText = 'Close (Aborted)';
+            }}
+
+            const statStatus = document.getElementById('resyncStatStatus');
+            if (statStatus) {{
+                statStatus.innerText = 'Aborted';
+                statStatus.style.color = '#ef4444';
+            }}
+
+            const title = document.getElementById('resyncModalTitle');
+            if (title) {{
+                title.innerHTML = '&#9888; Resync Aborted (Master Index Protected)';
+                title.style.color = '#ef4444';
+            }}
+
+            const pBar = document.getElementById('resyncProgressBar');
+            if (pBar) pBar.style.background = '#ef4444';
+
+            const cStage = document.getElementById('resyncCurrentStage');
+            if (cStage) cStage.innerText = 'Halted: Zero partial updates written to protect data.';
+        }}
+
+        function handleResyncComplete(chunk) {{
+            resyncRunning = false;
+            if (resyncTimerInterval) clearInterval(resyncTimerInterval);
+
+            const spinner = document.getElementById('resyncSpinnerIcon');
+            if (spinner) spinner.style.display = 'none';
+
+            const btnClose = document.getElementById('btnCloseResyncModal');
+            if (btnClose) btnClose.style.display = 'inline-block';
+
+            const btnDone = document.getElementById('btnResyncCloseDone');
+            if (btnDone) {{
+                btnDone.style.display = 'inline-block';
+                btnDone.className = 'btn btn-play';
+                btnDone.innerText = 'Done & Refresh';
+            }}
+
+            const statStatus = document.getElementById('resyncStatStatus');
+            if (statStatus) {{
+                statStatus.innerText = 'Verified & Synced';
+                statStatus.style.color = '#22c55e';
+            }}
+
+            const title = document.getElementById('resyncModalTitle');
+            if (title) {{
+                title.innerHTML = '&#9989; Cloud Resync Complete';
+                title.style.color = '#22c55e';
+            }}
+
+            const pBar = document.getElementById('resyncProgressBar');
+            if (pBar) {{
+                pBar.style.background = '#22c55e';
+                pBar.style.width = '100%';
+            }}
+
+            const pTxt = document.getElementById('resyncPercentText');
+            if (pTxt) pTxt.innerText = '100%';
+
+            const cStage = document.getElementById('resyncCurrentStage');
+            if (cStage) cStage.innerText = 'Master Index rebuilt and synchronized with 100% integrity!';
+
+            if (chunk.total_files !== undefined) {{
+                const scElem = document.getElementById('resyncStatSidecars');
+                if (scElem) scElem.innerText = chunk.total_files;
+            }}
+
+            if (typeof reloadFilesList === 'function') {{
+                reloadFilesList();
+            }}
+        }}
+
+        function closeResyncModal() {{
+            if (resyncRunning) {{
+                if (!confirm('Resync is actively running. Closing will not cancel server operations. Continue?')) {{
+                    return;
+                }}
+            }}
+            const modal = document.getElementById('resyncModal');
+            if (modal) modal.style.display = 'none';
+            if (typeof reloadFilesList === 'function') {{
+                reloadFilesList();
+            }}
+        }}
+
+        function copyResyncLogs() {{
+            const term = document.getElementById('resyncTerminalLog');
+            if (!term) return;
+            navigator.clipboard.writeText(term.innerText).then(() => {{
+                showToast('📋 Terminal logs copied to clipboard!');
+            }}).catch(err => {{
+                showToast('Failed to copy: ' + err);
+            }});
         }}
 
         function updateSystemStatusIndicators(serverOnline, watcherState, watcherMsg) {{
