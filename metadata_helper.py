@@ -10,6 +10,7 @@ from huggingface_hub import HfApi
 import imageio_ffmpeg
 import crypto_engine
 import commit_helper
+import account_manager
 
 
 def detect_content_tags_from_path(key_path: str) -> list:
@@ -508,6 +509,8 @@ def write_nfo_files(library_dir: str, key_path: str, metadata: dict, media_info:
       3. <name>.strm.nfo (e.g. flight.mp4.strm.nfo)
     for 100% Jellyfin / Emby / Kodi compatibility.
     """
+    if not account_manager.is_jellyfin_sync_enabled():
+        return
     base_dir = Path(library_dir)
     target_path = base_dir / key_path
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -673,12 +676,14 @@ def delete_video_and_sidecars_from_hf(api: HfApi, repo_id: str, info: dict) -> l
     return deleted_paths
 
 
-def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, password: str):
+def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, password: str, max_retries: int = 3):
     """
     Encrypts all file records belonging to a repository and uploads
     it as 'vault_index.enc' in the dataset root.
-    If repo_files is empty, deletes 'vault_index.enc' from the dataset root.
+    Uses optimistic concurrency with union-merge and exponential backoff retry on conflict.
     """
+    import random
+    import time
     if not repo_files:
         try:
             api.delete_file(
@@ -690,25 +695,60 @@ def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, passwor
             return True
         except Exception:
             return False
+
+    now_ts = round(time.time(), 3)
     for r in repo_files.values():
         if "verifier" not in r:
             r["verifier"] = crypto_engine.create_verifier(password)
+        if "updated_at" not in r:
+            r["updated_at"] = now_ts
 
-    json_bytes = json.dumps(repo_files).encode("utf-8")
-    encrypted_bytes = crypto_engine.encrypt_bytes(json_bytes, password)
+    token = getattr(api, "token", None) or os.environ.get("HF_TOKEN", "")
 
-    try:
-        api.upload_file(
-            path_or_fileobj=io.BytesIO(encrypted_bytes),
-            path_in_repo="vault_index.enc",
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=commit_helper.get_human_commit_message("metadata")
-        )
-        return True
-    except Exception as e:
-        print(f"[!] Warning syncing vault_index to HF ({repo_id}): {e}")
-        return False
+    for attempt in range(max_retries):
+        payload_records = dict(repo_files)
+
+        # On retries (conflict detected), fetch latest remote index and union merge
+        if attempt > 0 and token:
+            try:
+                url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
+                resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                if resp.status_code == 200 and resp.content:
+                    remote_json = crypto_engine.decrypt_bytes(resp.content, password).decode("utf-8")
+                    remote_dict = json.loads(remote_json)
+                    for r_k, r_v in remote_dict.items():
+                        if r_k not in payload_records:
+                            payload_records[r_k] = r_v
+                        else:
+                            r_ts = float(r_v.get("updated_at") or 0.0)
+                            l_ts = float(payload_records[r_k].get("updated_at") or 0.0)
+                            if r_ts > l_ts:
+                                payload_records[r_k] = r_v
+            except Exception:
+                pass
+
+        json_bytes = json.dumps(payload_records).encode("utf-8")
+        encrypted_bytes = crypto_engine.encrypt_bytes(json_bytes, password)
+
+        try:
+            api.upload_file(
+                path_or_fileobj=io.BytesIO(encrypted_bytes),
+                path_in_repo="vault_index.enc",
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=commit_helper.get_human_commit_message("metadata")
+            )
+            return True
+        except Exception as e:
+            err_msg = str(e).lower()
+            if attempt < max_retries - 1 and any(x in err_msg for x in ["conflict", "412", "commit", "parent"]):
+                backoff = 0.5 * (2 ** attempt) + random.uniform(0.1, 0.4)
+                time.sleep(backoff)
+                continue
+            print(f"[!] Warning syncing vault_index to HF ({repo_id}): {e}")
+            return False
+
+    return False
 
 
 def sync_all_manifest_metadata_to_hf(api: HfApi, manifest: dict, password: str, hf_username: str, default_repo: str = "encrypted-media-vault"):
@@ -831,16 +871,19 @@ def restore_library_from_hf(api: HfApi, password: str, hf_username: str, library
             if media_hash:
                 manifest["media_hashes"][media_hash] = rec
 
-            # Recreate .strm
-            strm_path = Path(library_dir) / f"{key}.strm"
-            strm_path.parent.mkdir(parents=True, exist_ok=True)
-            url = f"http://{proxy_host}/stream/{key}"
-            with open(strm_path, "w", encoding="utf-8") as f:
-                f.write(f"{url}\n")
+            # Recreate .strm and .nfo only if Jellyfin sync is enabled
+            if account_manager.is_jellyfin_sync_enabled() and library_dir:
+                try:
+                    strm_path = Path(library_dir) / f"{key}.strm"
+                    strm_path.parent.mkdir(parents=True, exist_ok=True)
+                    url = f"http://{proxy_host}/stream/{key}"
+                    with open(strm_path, "w", encoding="utf-8") as f:
+                        f.write(f"{url}\n")
 
-            # Recreate .nfo files
-            meta = rec.get("metadata") or extract_default_metadata(key)
-            write_nfo_files(library_dir, key, meta)
+                    meta = rec.get("metadata") or extract_default_metadata(key)
+                    write_nfo_files(library_dir, key, meta)
+                except Exception:
+                    pass
             recovered_count += 1
 
     temp_path = f"{manifest_path}.tmp"

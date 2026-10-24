@@ -75,6 +75,18 @@ def load_env_config(env_path=ENV_FILE):
     return config
 
 
+def is_jellyfin_sync_enabled(env_path=ENV_FILE) -> bool:
+    """Returns True if local Jellyfin folder sync is enabled in env.txt or system env."""
+    cfg = load_env_config(env_path)
+    val = cfg.get("ENABLE_JELLYFIN_SYNC", "1").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def set_jellyfin_sync_enabled(enabled: bool, env_path=ENV_FILE):
+    """Saves the ENABLE_JELLYFIN_SYNC setting to env.txt."""
+    save_env_config({"ENABLE_JELLYFIN_SYNC": "1" if enabled else "0"}, env_path)
+
+
 def save_env_config(updates: dict, env_path=ENV_FILE):
     """
     Safely updates keys in env.txt while preserving comments, ordering,
@@ -118,6 +130,13 @@ class AccountManager:
         self.upload_token = None
         self.disabled_users = set()
         self._init_accounts()
+
+    def is_jellyfin_sync_enabled(self) -> bool:
+        return is_jellyfin_sync_enabled(self.env_path)
+
+    def set_jellyfin_sync_enabled(self, enabled: bool):
+        set_jellyfin_sync_enabled(enabled, self.env_path)
+        self.reload()
 
     def reload(self):
         """Reloads configuration from env.txt and re-authenticates."""

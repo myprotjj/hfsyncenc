@@ -23,6 +23,7 @@ import metadata_helper
 import account_manager
 import activity_tracker
 import companion_helper
+import cloud_watcher
 import screens_helper
 from encrypted_stream_cache import stream_cache
 
@@ -346,6 +347,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
+        cloud_watcher.notify_client_active()
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
@@ -363,6 +365,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_sync_hf()
         elif path in ("/api/restore-hf", "/api/recheck-cloud"):
             self.handle_restore_hf()
+        elif path == "/api/jellyfin_sync/toggle":
+            self.handle_toggle_jellyfin_sync()
+        elif path == "/api/cloud_sync/trigger":
+            self.handle_cloud_sync_trigger()
         elif path == "/api/delete-skipped":
             self.handle_delete_skipped()
         elif path == "/api/accounts/add":
@@ -599,6 +605,54 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(resp_body)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_get_jellyfin_sync(self):
+        enabled = account_manager.is_jellyfin_sync_enabled()
+        resp_body = json.dumps({"enabled": enabled}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_toggle_jellyfin_sync(self):
+        cur = account_manager.is_jellyfin_sync_enabled()
+        new_val = not cur
+        account_manager.set_jellyfin_sync_enabled(new_val)
+        if new_val:
+            def _bg_gen():
+                try:
+                    manifest = load_manifest()
+                    for k, rec in manifest.get("files", {}).items():
+                        if rec.get("status") == "uploaded":
+                            strm_p = Path("jellyfin_library") / f"{k}.strm"
+                            strm_p.parent.mkdir(parents=True, exist_ok=True)
+                            strm_p.write_text(f"http://127.0.0.1:8080/stream/{k}\n", encoding="utf-8")
+                            meta = rec.get("metadata") or metadata_helper.extract_default_metadata(k)
+                            metadata_helper.write_nfo_files("jellyfin_library", k, meta, media_info=rec.get("media_info"))
+                except Exception:
+                    pass
+            threading.Thread(target=_bg_gen, daemon=True).start()
+
+        resp_body = json.dumps({"success": True, "enabled": new_val}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_cloud_sync_trigger(self):
+        watcher = cloud_watcher.get_cloud_watcher()
+        watcher.trigger_check()
+        resp_body = json.dumps({"success": True, "status": "triggered"}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(resp_body)))
         self.end_headers()
         self.wfile.write(resp_body)
 
@@ -3260,6 +3314,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.wfile.write(resp_body)
 
     def do_GET(self):
+        cloud_watcher.notify_client_active()
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
@@ -3267,8 +3322,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_dashboard()
         elif path == "/api/files":
             self.handle_api_files()
+        elif path == "/api/jellyfin_sync":
+            self.handle_get_jellyfin_sync()
         elif path in ("/api/restore-hf", "/api/recheck-cloud"):
             self.handle_restore_hf()
+        elif path == "/api/jellyfin_sync/toggle":
+            self.handle_toggle_jellyfin_sync()
+        elif path == "/api/cloud_sync/trigger":
+            self.handle_cloud_sync_trigger()
         elif path == "/api/accounts":
             self.handle_api_accounts()
         elif path == "/api/activity":
@@ -3692,6 +3753,44 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             align-items: center;
             gap: 8px;
             flex-wrap: wrap;
+        }}
+        .jellyfin-sync-pill {{
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 5px 12px;
+            background: rgba(15, 23, 42, 0.75);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            border-radius: 9999px;
+            cursor: pointer;
+            font-size: 0.82rem;
+            color: #e2e8f0;
+            transition: all 0.2s ease;
+            user-select: none;
+        }}
+        .jellyfin-sync-pill:hover {{
+            background: rgba(56, 189, 248, 0.15);
+            border-color: rgba(56, 189, 248, 0.6);
+            transform: translateY(-1px);
+        }}
+        .jellyfin-sync-badge {{
+            padding: 2px 7px;
+            border-radius: 9999px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            transition: all 0.2s ease;
+        }}
+        .jellyfin-sync-badge.is-on {{
+            background: rgba(16, 185, 129, 0.25);
+            color: #34d399;
+            border: 1px solid rgba(52, 211, 153, 0.5);
+            box-shadow: 0 0 8px rgba(52, 211, 153, 0.25);
+        }}
+        .jellyfin-sync-badge.is-off {{
+            background: rgba(100, 116, 139, 0.25);
+            color: #94a3b8;
+            border: 1px solid rgba(148, 163, 184, 0.3);
         }}
 
         /* Status Pills (Always-On-Top Indicators) */
@@ -7517,6 +7616,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <button onclick="resumeLastClosedVideo(event)" id="btnHeaderQuickResume" class="tool-btn" style="display: none; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Instantly resume last played video (Shortcut: R)">
                     &#9654;&#65039; <span id="headerResumeLabel">Resume</span>
                 </button>
+                <div class="jellyfin-sync-pill" onclick="toggleJellyfinSync()" id="btnJellyfinSyncToggle" title="When enabled, automatically generates and keeps Jellyfin .strm pointers and .nfo metadata synced in jellyfin_library. When disabled, runs 100% web-based without touching disk folders.">
+                    <span>📺</span>
+                    <span style="font-weight: 600;">Jellyfin Sync</span>
+                    <span class="jellyfin-sync-badge is-on" id="jellyfinSyncBadge">ON</span>
+                </div>
                 <button onclick="recheckCloudSync()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Recheck Hugging Face for new cloud uploads and sync">
                     &#128260; Recheck Cloud
                 </button>
@@ -8801,6 +8905,52 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
             }} catch (err) {{
                 alert('Failed to remove folder tag: ' + err.message);
+            }}
+        }}
+
+        let isJellyfinSyncActive = true;
+
+        async function checkJellyfinSyncStatus() {{
+            try {{
+                const res = await fetch('/api/jellyfin_sync');
+                if (res.ok) {{
+                    const data = await res.json();
+                    isJellyfinSyncActive = !!data.enabled;
+                    updateJellyfinSyncBadge();
+                }}
+            }} catch (e) {{}}
+        }}
+
+        function updateJellyfinSyncBadge() {{
+            const badge = document.getElementById('jellyfinSyncBadge');
+            const pill = document.getElementById('btnJellyfinSyncToggle');
+            if (!badge || !pill) return;
+            if (isJellyfinSyncActive) {{
+                badge.textContent = 'ON';
+                badge.className = 'jellyfin-sync-badge is-on';
+                pill.title = 'Jellyfin Sync is ON: Local .strm & .nfo files are automatically updated in jellyfin_library. Click to disable.';
+            }} else {{
+                badge.textContent = 'OFF';
+                badge.className = 'jellyfin-sync-badge is-off';
+                pill.title = 'Jellyfin Sync is OFF: Runs 100% web-based without touching local library folder. Click to enable.';
+            }}
+        }}
+
+        async function toggleJellyfinSync() {{
+            try {{
+                const res = await fetch('/api/jellyfin_sync/toggle', {{ method: 'POST' }});
+                if (res.ok) {{
+                    const data = await res.json();
+                    isJellyfinSyncActive = !!data.enabled;
+                    updateJellyfinSyncBadge();
+                    if (isJellyfinSyncActive) {{
+                        showToast('📺 Jellyfin Library Sync: Enabled. .strm & .nfo files updating in background.');
+                    }} else {{
+                        showToast('📺 Jellyfin Library Sync: Disabled. Running 100% web-based.');
+                    }}
+                }}
+            }} catch (e) {{
+                showToast('⚠️ Failed to toggle Jellyfin Sync: ' + e);
             }}
         }}
 
@@ -14728,6 +14878,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         // Initial setup
         loadOpenedTrees();
         populateFilterDropdowns();
+        checkJellyfinSyncStatus();
         pollActivity();
         setInterval(pollActivity, 1000);
         refreshTreeDisplay();
@@ -15320,6 +15471,8 @@ def run_server(port=8080, password=None):
 
     threading.Thread(target=_prewarm_daemon, daemon=True).start()
     storyboard_helper.prewarm_all_storyboards(port=port)
+    # Start Cloud Commit Watcher for real-time multi-server synchronization
+    cloud_watcher.get_cloud_watcher().start()
 
     server_address = ("0.0.0.0", port)
     httpd = ThreadedHTTPServer(server_address, InteractiveJellyfinStreamHandler)

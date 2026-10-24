@@ -253,6 +253,8 @@ def ensure_hf_repo_exists(api: HfApi, repo_id: str):
 
 
 def auto_generate_strm(repo_folder: str, rel_in_repo: str, proxy_host="127.0.0.1:8080", library_dir="jellyfin_library"):
+    if not account_manager.is_jellyfin_sync_enabled():
+        return
     try:
         strm_path = Path(library_dir) / repo_folder / f"{rel_in_repo}.strm"
         strm_path.parent.mkdir(parents=True, exist_ok=True)
@@ -979,6 +981,7 @@ def process_file_pipeline(
             "orig_size": file_size,
             "enc_size": enc_size,
             "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": round(time.time(), 3),
             "status": "uploaded",
             "file_names": [full_key],
             "aliases": [],
@@ -1218,7 +1221,8 @@ def main():
         sys.exit(1)
 
     os.makedirs(args.watch_dir, exist_ok=True)
-    os.makedirs(args.library_dir, exist_ok=True)
+    if account_manager.is_jellyfin_sync_enabled():
+        os.makedirs(args.library_dir, exist_ok=True)
     os.makedirs(args.archive_dir, exist_ok=True)
 
     watch_and_sync(
