@@ -106,6 +106,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         sys.stdout.write(f"[{self.log_date_time_string()}] {self.command} {self.path} - {args[1] if len(args) > 1 else ''}\n")
 
 
+    def sync_master_index_to_cloud(self, async_mode: bool = True):
+        """Syncs the canonical master vault_index.enc to the Master Repository."""
+        def _do_sync():
+            try:
+                master_repo = self.acc_mgr.get_master_repo_id() if hasattr(self, "acc_mgr") and self.acc_mgr else (os.getenv("REPO_ID") or f"{self.hf_username}/{self.default_repo}")
+                api = self.acc_mgr.get_api_for_repo(master_repo) if hasattr(self, "acc_mgr") and self.acc_mgr else HfApi(token=self.token)
+                manifest = load_manifest()
+                metadata_helper.sync_master_manifest_to_hf(api, master_repo, manifest, self.password)
+            except Exception as e:
+                logger.warning("Error updating master index: %s", e)
+
+        if async_mode:
+            import threading
+            threading.Thread(target=_do_sync, daemon=True).start()
+        else:
+            _do_sync()
+
     def read_json_body(self) -> dict:
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length <= 0:
@@ -525,6 +542,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             for r_id in set(r.get("repo_id") for r in files.values() if r.get("repo_id")):
                                 r_files = {rk: rv for rk, rv in files.items() if rv.get("repo_id") == r_id}
                                 metadata_helper.sync_repo_manifest_to_hf(acc["api"], r_id, r_files, self.password)
+                                self.sync_master_index_to_cloud()
                     except Exception:
                         pass
                 activity_tracker.tracker.add_event(
@@ -781,6 +799,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, rec_copy, self.password)
                         count += 1
                 metadata_helper.sync_repo_manifest_to_hf(api, repo_id, r_files, self.password)
+                self.sync_master_index_to_cloud()
         else:
             api = HfApi(token=self.token)
             count = metadata_helper.sync_all_manifest_metadata_to_hf(
@@ -790,6 +809,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 hf_username=self.hf_username,
                 default_repo=self.default_repo
             )
+
+        self.sync_master_index_to_cloud(async_mode=False)
 
         resp_body = json.dumps({
             "success": True,
@@ -1147,6 +1168,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 m = load_manifest()
                 repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                 metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                self.sync_master_index_to_cloud()
             except Exception as ex:
                 logger.warning("Background metadata HF sync warning: %s", ex)
 
@@ -1253,6 +1275,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     m = load_manifest()
                     repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                     metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                    self.sync_master_index_to_cloud()
                 except Exception as ex:
                     logger.warning("Background metadata HF sync warning: %s", ex)
 
@@ -1353,6 +1376,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                         repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                         metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                        self.sync_master_index_to_cloud()
                 except Exception as ex:
                     logger.warning("Background folder tag HF sync warning: %s", ex)
 
@@ -1458,6 +1482,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                         repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                         metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                        self.sync_master_index_to_cloud()
                 except Exception as ex:
                     logger.warning("Background tag rename HF sync warning: %s", ex)
 
@@ -1569,6 +1594,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                         repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                         metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                        self.sync_master_index_to_cloud()
                 except Exception as ex:
                     logger.warning("Background tag merge HF sync warning: %s", ex)
 
@@ -1751,6 +1777,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                     repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                     metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                    self.sync_master_index_to_cloud()
             except Exception as ex:
                 logger.warning("Background folder rename HF sync warning: %s", ex)
 
@@ -1849,6 +1876,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                         repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                         metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                        self.sync_master_index_to_cloud()
                 except Exception as ex:
                     logger.warning("Background delete HF sync warning: %s", ex)
 
@@ -1957,6 +1985,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                         repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
                         metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                        self.sync_master_index_to_cloud()
                 except Exception as ex:
                     logger.warning("Background rename HF sync warning: %s", ex)
 
@@ -2204,6 +2233,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     m = load_manifest()
                     repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == repo_id}
                     metadata_helper.sync_repo_manifest_to_hf(api, repo_id, repo_files, self.password)
+                    self.sync_master_index_to_cloud()
 
                 # Delete remote discarded blobs if requested
                 if do_del_remote:
@@ -2235,6 +2265,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         if d_repo != repo_id:
                             d_repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == d_repo}
                             metadata_helper.sync_repo_manifest_to_hf(d_api, d_repo, d_repo_files, self.password)
+                            self.sync_master_index_to_cloud()
             except Exception as ex:
                 logger.warning("Background cloud merge sync warning: %s", ex)
 
@@ -2738,6 +2769,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     logger.info("Deleted empty HF vault repository %s", repo_id)
                 else:
                     metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
+                    self.sync_master_index_to_cloud()
             except Exception as e:
                 logger.warning("Could not sync repo manifest after delete for %s: %s", repo_id, e)
 
@@ -2845,6 +2877,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             logger.info("Deleted empty HF vault repository %s", repo_id)
                         else:
                             metadata_helper.sync_repo_manifest_to_hf(api, repo_id, remaining_repo_files, self.password)
+                            self.sync_master_index_to_cloud()
                     except Exception as e:
                         logger.warning("Could not sync repo manifest after batch delete for %s: %s", repo_id, e)
 

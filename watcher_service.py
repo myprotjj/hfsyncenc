@@ -1011,6 +1011,14 @@ def process_file_pipeline(
         repo_files = {k: v for k, v in cur_manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
         metadata_helper.sync_repo_manifest_to_hf(api, repo_id, repo_files, password)
 
+        # Update canonical Master Index on Hugging Face
+        master_repo = acc_mgr.get_master_repo_id() if acc_mgr else (os.getenv("REPO_ID") or f"{hf_username}/encrypted-media-vault")
+        m_api = acc_mgr.get_api_for_repo(master_repo) if acc_mgr else api
+        try:
+            metadata_helper.sync_master_manifest_to_hf(m_api, master_repo, cur_manifest, password)
+        except Exception as e:
+            safe_print(f"[!] Warning updating master index: {e}")
+
         activity_tracker.tracker.finish_task(full_key, "completed", f"Ready for streaming! ({upload_speed_mbps:.1f} Mbps)", 100)
         activity_tracker.tracker.add_event("success", f"Live on Jellyfin: {rel_to_base}", f"Uploaded to {repo_id} in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", account=hf_username, speed=f"{upload_speed_mbps:.1f} Mbps")
 

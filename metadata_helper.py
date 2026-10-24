@@ -711,11 +711,15 @@ def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, passwor
         # On retries (conflict detected), fetch latest remote index and union merge
         if attempt > 0 and token:
             try:
+                import zlib
                 url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
                 resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
                 if resp.status_code == 200 and resp.content:
-                    remote_json = crypto_engine.decrypt_bytes(resp.content, password).decode("utf-8")
-                    remote_dict = json.loads(remote_json)
+                    dec = crypto_engine.decrypt_bytes(resp.content, password)
+                    try:
+                        remote_dict = json.loads(zlib.decompress(dec).decode("utf-8"))
+                    except Exception:
+                        remote_dict = json.loads(dec.decode("utf-8"))
                     for r_k, r_v in remote_dict.items():
                         if r_k not in payload_records:
                             payload_records[r_k] = r_v
@@ -727,8 +731,10 @@ def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, passwor
             except Exception:
                 pass
 
-        json_bytes = json.dumps(payload_records).encode("utf-8")
-        encrypted_bytes = crypto_engine.encrypt_bytes(json_bytes, password)
+        import zlib
+        raw_json = json.dumps(payload_records, separators=(',', ':')).encode("utf-8")
+        compressed_payload = zlib.compress(raw_json, level=6)
+        encrypted_bytes = crypto_engine.encrypt_bytes(compressed_payload, password)
 
         try:
             api.upload_file(
@@ -746,6 +752,100 @@ def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, passwor
                 time.sleep(backoff)
                 continue
             print(f"[!] Warning syncing vault_index to HF ({repo_id}): {e}")
+            return False
+
+    return False
+
+
+def sync_master_manifest_to_hf(
+    api: HfApi,
+    master_repo_id: str,
+    manifest_or_files: dict,
+    password: str,
+    max_retries: int = 3
+) -> bool:
+    """
+    Encrypts the entire multi-repository library index and uploads it as
+    the canonical 'vault_index.enc' in the Master Repository root.
+    Uses zlib compression before AES-256-GCM encryption for ultra-compact storage (<30MB for 100k files).
+    Uses optimistic union-merge so concurrent writes from multiple servers merge cleanly.
+    """
+    import random
+    import time
+    import zlib
+
+    if not manifest_or_files:
+        return False
+
+    if isinstance(manifest_or_files, dict) and "files" in manifest_or_files:
+        raw_files = manifest_or_files["files"]
+    else:
+        raw_files = manifest_or_files
+
+    local_records = {}
+    now_ts = round(time.time(), 3)
+    for k, v in raw_files.items():
+        if isinstance(v, dict) and v.get("status") == "uploaded":
+            rec = dict(v)
+            rec["full_key"] = k
+            rec["repo_id"] = rec.get("repo_id") or master_repo_id
+            if "verifier" not in rec:
+                rec["verifier"] = crypto_engine.create_verifier(password)
+            if "updated_at" not in rec:
+                rec["updated_at"] = now_ts
+            local_records[k] = rec
+
+    if not local_records:
+        return False
+
+    token = getattr(api, "token", None) or os.environ.get("HF_TOKEN", "")
+
+    for attempt in range(max_retries):
+        payload_records = dict(local_records)
+
+        # On every attempt, pull latest remote master index to union-merge
+        if token:
+            try:
+                url = f"https://huggingface.co/datasets/{master_repo_id}/resolve/main/vault_index.enc"
+                resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                if resp.status_code == 200 and resp.content:
+                    dec = crypto_engine.decrypt_bytes(resp.content, password)
+                    try:
+                        remote_dict = json.loads(zlib.decompress(dec).decode("utf-8"))
+                    except Exception:
+                        remote_dict = json.loads(dec.decode("utf-8"))
+
+                    for r_k, r_v in remote_dict.items():
+                        if r_k not in payload_records:
+                            payload_records[r_k] = r_v
+                        else:
+                            r_ts = float(r_v.get("updated_at") or 0.0)
+                            l_ts = float(payload_records[r_k].get("updated_at") or 0.0)
+                            if r_ts > l_ts:
+                                payload_records[r_k] = r_v
+            except Exception:
+                pass
+
+        raw_json = json.dumps(payload_records, separators=(',', ':')).encode("utf-8")
+        compressed_payload = zlib.compress(raw_json, level=6)
+        encrypted_bytes = crypto_engine.encrypt_bytes(compressed_payload, password)
+
+        try:
+            api.upload_file(
+                path_or_fileobj=io.BytesIO(encrypted_bytes),
+                path_in_repo="vault_index.enc",
+                repo_id=master_repo_id,
+                repo_type="dataset",
+                commit_message=commit_helper.get_human_commit_message("metadata")
+            )
+            return True
+        except Exception as e:
+            err_msg = str(e).lower()
+            if attempt < max_retries - 1 and any(x in err_msg for x in ["conflict", "412", "commit", "parent"]):
+                backoff = 0.5 * (2 ** attempt) + random.uniform(0.1, 0.4)
+                time.sleep(backoff)
+                continue
+            print(f"[!] Warning syncing master vault_index to HF ({master_repo_id}): {e}")
             return False
 
     return False
@@ -776,6 +876,13 @@ def sync_all_manifest_metadata_to_hf(api: HfApi, manifest: dict, password: str, 
     # Push per-repo vault_index.enc
     for repo_id, r_files in files_by_repo.items():
         sync_repo_manifest_to_hf(api, repo_id, r_files, password)
+
+    # Push unified master index to default/master repo
+    master_repo = f"{hf_username}/{default_repo}"
+    try:
+        sync_master_manifest_to_hf(api, master_repo, manifest, password)
+    except Exception as e:
+        print(f"[!] Warning updating master index during sync_all: {e}")
 
     return synced_items
 
@@ -820,8 +927,12 @@ def restore_library_from_hf(api: HfApi, password: str, hf_username: str, library
                 url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
                 resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
                 if resp.status_code == 200:
-                    dec = crypto_engine.decrypt_bytes(resp.content, password).decode("utf-8")
-                    repo_records = json.loads(dec)
+                    dec = crypto_engine.decrypt_bytes(resp.content, password)
+                    try:
+                        import zlib
+                        repo_records = json.loads(zlib.decompress(dec).decode("utf-8"))
+                    except Exception:
+                        repo_records = json.loads(dec.decode("utf-8"))
             except Exception as e:
                 print(f"[!] Warning reading vault_index.enc for {repo_id}: {e}")
 

@@ -243,6 +243,20 @@ class AccountManager:
         """Returns list of all configured Hugging Face accounts."""
         return list(self.accounts.values())
 
+    def get_master_repo_id(self) -> str:
+        """Returns the canonical Master Repository ID containing the unified vault_index.enc."""
+        cfg_repo = self.config.get("REPO_ID", "").strip()
+        if cfg_repo:
+            return cfg_repo
+        if self.primary_username:
+            return f"{self.primary_username}/encrypted-media-vault"
+        return "myprotjj/encrypted-media-vault"
+
+    def get_master_api(self):
+        """Returns the HfApi instance for the master repository."""
+        master_id = self.get_master_repo_id()
+        return self.get_api_for_repo(master_id)
+
     def can_write_to_repo(self, repo_id: str) -> bool:
         """
         Returns True if the designated account for repo_id has verified write/delete permissions.
@@ -360,8 +374,12 @@ class AccountManager:
                         url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
                         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
                         if resp.status_code == 200:
-                            dec = crypto_engine.decrypt_bytes(resp.content, self.password).decode("utf-8")
-                            repo_records = json.loads(dec)
+                            dec = crypto_engine.decrypt_bytes(resp.content, self.password)
+                            try:
+                                import zlib
+                                repo_records = json.loads(zlib.decompress(dec).decode("utf-8"))
+                            except Exception:
+                                repo_records = json.loads(dec.decode("utf-8"))
                     except Exception as e:
                         vault_index_failed = True
 
@@ -429,11 +447,16 @@ class AccountManager:
                     ghost_found = False
                     for key, rec in repo_records.items():
                         blob = rec.get("blob_path")
-                        if blob and blob in files_set:
-                            valid_records[key] = rec
+                        rec_repo = rec.get("repo_id") or repo_id
+                        if rec_repo == repo_id:
+                            if blob and blob in files_set:
+                                valid_records[key] = rec
+                            else:
+                                ghost_found = True
+                                print(f"[!] Pruning ghost record {key} (blob {blob} missing in {repo_id})")
                         else:
-                            ghost_found = True
-                            print(f"[!] Pruning ghost record {key} (blob {blob} missing in {repo_id})")
+                            # Item blobs reside in a different repo in the unified multi-repo index
+                            valid_records[key] = rec
 
                     if ghost_found and self.can_write_to_repo(repo_id):
                         metadata_helper.sync_repo_manifest_to_hf(api, repo_id, valid_records, self.password)

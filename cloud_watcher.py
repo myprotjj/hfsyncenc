@@ -38,7 +38,8 @@ def merge_remote_repo_records(
     remote_records: dict,
     manifest_path: str = MANIFEST_FILE,
     library_dir: str = "jellyfin_library",
-    proxy_host: str = "127.0.0.1:8080"
+    proxy_host: str = "127.0.0.1:8080",
+    is_master: bool = False
 ) -> dict:
     """
     Performs an optimistic union-merge between the remote repository records and
@@ -63,16 +64,22 @@ def merge_remote_repo_records(
         updated = []
         deleted = []
 
-        # Find all currently local files belonging to this repository
-        local_repo_keys = [
-            k for k, v in files.items()
-            if v.get("repo_id") == repo_id and v.get("status") == "uploaded"
-        ]
+        # Find all currently local files belonging to this repository (or all files if master index)
+        if is_master:
+            local_repo_keys = [
+                k for k, v in files.items()
+                if v.get("status") == "uploaded"
+            ]
+        else:
+            local_repo_keys = [
+                k for k, v in files.items()
+                if v.get("repo_id") == repo_id and v.get("status") == "uploaded"
+            ]
 
         # 1. Process remote records (additions and updates)
         for key, r_rec in remote_records.items():
             r_rec["full_key"] = key
-            r_rec["repo_id"] = repo_id
+            r_rec["repo_id"] = r_rec.get("repo_id") or repo_id
             r_ts = float(r_rec.get("updated_at") or 0.0)
 
             if key not in files:
@@ -233,6 +240,43 @@ class CloudCommitWatcher:
                     results[r_id] = sha
         return results
 
+    def _sync_master_index(self) -> bool:
+        """Downloads canonical master vault_index.enc, decrypts in-memory, and merges all records."""
+        master_id = self.acc_mgr.get_master_repo_id()
+        token = self.acc_mgr.get_token_for_repo(master_id)
+        pwd = self.acc_mgr.password
+        if not token or not pwd:
+            return False
+
+        url = f"https://huggingface.co/datasets/{master_id}/resolve/main/vault_index.enc"
+        try:
+            import zlib
+            resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=12)
+            if resp.status_code == 200 and resp.content:
+                dec = crypto_engine.decrypt_bytes(resp.content, pwd)
+                try:
+                    remote_records = json.loads(zlib.decompress(dec).decode("utf-8"))
+                except Exception:
+                    remote_records = json.loads(dec.decode("utf-8"))
+
+                res = merge_remote_repo_records(
+                    repo_id=master_id,
+                    remote_records=remote_records,
+                    library_dir=self.library_dir,
+                    proxy_host=self.proxy_host,
+                    is_master=True
+                )
+                if res.get("has_changes"):
+                    print(f"[{time.strftime('%H:%M:%S')}] [Master Index Auto-Sync] {master_id}: +{len(res['added'])} added, ~{len(res['updated'])} updated, -{len(res['deleted'])} deleted")
+                    activity_tracker.tracker.notify_manifest_updated()
+                return True
+            elif resp.status_code == 404:
+                return False
+        except Exception as e:
+            sys.stderr.write(f"[!] Warning syncing master cloud index ({master_id}): {e}\n")
+            return False
+        return False
+
     def _sync_repo_index(self, repo_id: str) -> bool:
         """Downloads vault_index.enc from repo, decrypts in-memory, and merges."""
         token = self.acc_mgr.get_token_for_repo(repo_id)
@@ -242,22 +286,28 @@ class CloudCommitWatcher:
 
         url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/vault_index.enc"
         try:
+            import zlib
             resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=12)
             if resp.status_code == 200 and resp.content:
-                dec = crypto_engine.decrypt_bytes(resp.content, pwd).decode("utf-8")
-                remote_records = json.loads(dec)
+                dec = crypto_engine.decrypt_bytes(resp.content, pwd)
+                try:
+                    remote_records = json.loads(zlib.decompress(dec).decode("utf-8"))
+                except Exception:
+                    remote_records = json.loads(dec.decode("utf-8"))
+
+                is_m = (repo_id == self.acc_mgr.get_master_repo_id())
                 res = merge_remote_repo_records(
                     repo_id=repo_id,
                     remote_records=remote_records,
                     library_dir=self.library_dir,
-                    proxy_host=self.proxy_host
+                    proxy_host=self.proxy_host,
+                    is_master=is_m
                 )
                 if res.get("has_changes"):
                     print(f"[{time.strftime('%H:%M:%S')}] [Cloud Auto-Sync] {repo_id}: +{len(res['added'])} added, ~{len(res['updated'])} updated, -{len(res['deleted'])} deleted")
                     activity_tracker.tracker.notify_manifest_updated()
                 return True
             elif resp.status_code == 404:
-                # No vault_index.enc yet for this repo
                 return False
         except Exception as e:
             sys.stderr.write(f"[!] Warning syncing cloud index for {repo_id}: {e}\n")
@@ -268,26 +318,27 @@ class CloudCommitWatcher:
         # Initial sleep of 2 seconds on startup to let local services initialize
         time.sleep(2.0)
 
-        # Baseline: record current SHAs
-        tracked = self.get_tracked_repos()
-        current_shas = self._check_shas_parallel(tracked)
-        self.known_shas.update(current_shas)
+        master_id = self.acc_mgr.get_master_repo_id()
+        print(f"[*] Cloud Commit Watcher initialized in Master Index Mode (Master Repo: {master_id})")
 
-        # On first startup: verify if remote index has any records not in local manifest
-        for r_id in tracked:
-            try:
-                self._sync_repo_index(r_id)
-            except Exception:
-                pass
+        # Initial startup sync: load master index first
+        try:
+            self._sync_master_index()
+        except Exception:
+            pass
+
+        # Record baseline SHA for master repo
+        _, m_sha = self._query_repo_sha(master_id)
+        if m_sha:
+            self.known_shas[master_id] = m_sha
 
         while self.running:
-            # Determine adaptive sleep time
+            # Adaptive sleep interval based on client interaction
             if is_client_active():
                 interval = self.active_interval
             else:
                 interval = self.idle_interval
 
-            # Wait for interval or explicit trigger_check signal
             self._check_event.wait(timeout=interval)
             self._check_event.clear()
 
@@ -296,18 +347,16 @@ class CloudCommitWatcher:
 
             self.is_syncing = True
             try:
-                repos = self.get_tracked_repos()
-                latest_shas = self._check_shas_parallel(repos)
-
-                for r_id, new_sha in latest_shas.items():
-                    old_sha = self.known_shas.get(r_id)
-                    if old_sha and new_sha != old_sha:
-                        # Remote change detected on PC 1!
-                        self.known_shas[r_id] = new_sha
-                        self._sync_repo_index(r_id)
-                    elif not old_sha:
-                        # Newly tracked repo
-                        self.known_shas[r_id] = new_sha
+                # 1-Check Master Polling (<200ms)
+                _, new_m_sha = self._query_repo_sha(master_id)
+                if new_m_sha:
+                    old_m_sha = self.known_shas.get(master_id)
+                    if old_m_sha and new_m_sha != old_m_sha:
+                        # Cloud change detected on PC 1!
+                        self.known_shas[master_id] = new_m_sha
+                        self._sync_master_index()
+                    elif not old_m_sha:
+                        self.known_shas[master_id] = new_m_sha
             except Exception as e:
                 pass
             finally:
