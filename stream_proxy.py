@@ -5539,29 +5539,34 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             flex-shrink: 0;
         }}
         .card-mark-merge-pill {{
-            background: rgba(168, 85, 247, 0.12);
-            border: 1px solid rgba(168, 85, 247, 0.38);
+            background: rgba(168, 85, 247, 0.15);
+            border: 1px solid rgba(168, 85, 247, 0.45);
             color: #c084fc;
-            font-size: 0.68rem;
-            font-weight: 700;
-            padding: 2px 7px;
-            border-radius: 4px;
+            font-size: 0.72rem;
+            width: 24px;
+            height: 24px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 5px;
             cursor: pointer;
             transition: all 0.15s ease;
-            white-space: nowrap;
-            line-height: 1.3;
+            flex-shrink: 0;
+            line-height: 1;
         }}
         .card-mark-merge-pill:hover {{
             background: #9333ea;
             color: #fff;
             border-color: #a855f7;
-            transform: scale(1.04);
+            transform: scale(1.08);
         }}
         .card-mark-merge-pill.active {{
-            background: #9333ea;
-            color: #fff;
-            border-color: #c084fc;
-            box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+            background: #9333ea !important;
+            color: #fff !important;
+            border-color: #d8b4fe !important;
+            box-shadow: 0 0 10px rgba(168, 85, 247, 0.6) !important;
+            transform: scale(1.04) !important;
         }}
         .video-card.is-marked-for-merge {{
             border-color: #a855f7 !important;
@@ -6539,26 +6544,33 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             background: rgba(34, 197, 94, 0.15) !important;
         }}
         .card-offline-tag-btn {{
-            font-size: 0.68rem;
-            padding: 2px 7px;
-            border-radius: 12px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            background: rgba(255, 255, 255, 0.05);
+            font-size: 0.72rem;
+            width: 24px;
+            height: 24px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 5px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(15, 23, 42, 0.85);
             color: #94a3b8;
             cursor: pointer;
             transition: all 0.15s ease;
-            font-weight: 500;
+            flex-shrink: 0;
+            line-height: 1;
         }}
         .card-offline-tag-btn:hover {{
             border-color: #38bdf8;
             color: #38bdf8;
+            background: rgba(56, 189, 248, 0.15);
+            transform: scale(1.08);
         }}
         .card-offline-tag-btn.active {{
-            background: rgba(34, 197, 94, 0.2) !important;
+            background: rgba(16, 185, 129, 0.25) !important;
             color: #4ade80 !important;
-            border-color: rgba(34, 197, 94, 0.5) !important;
-            font-weight: 700;
-            box-shadow: 0 0 8px rgba(34, 197, 94, 0.25);
+            border-color: rgba(74, 222, 128, 0.6) !important;
+            box-shadow: 0 0 8px rgba(34, 197, 94, 0.35);
         }}
 
         .file-actions {{ display: flex; gap: 6px; flex-shrink: 0; }}
@@ -9620,11 +9632,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             ${{escapeHtml(title)}}
                         </div>
                         <div class="video-card-title-actions">
-                            <button type="button" class="card-offline-tag-btn ${{isFullyOffline ? 'active' : (isProcessingOffline ? 'downloading' : '')}}" id="tagOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isFullyOffline ? '📌 Pinned offline forever (Click to unpin)' : (isProcessingOffline ? `⏳ Downloading offline: ${{cachePct}}% (${{cachedSizeStr}})` : '📥 Make offline available (Caches 100% & keeps forever)')}}">
-                                ${{isFullyOffline ? '📌 Offline' : (isProcessingOffline ? `⏳ ${{cachePct}}%` : '📥 Offline')}}
+                            <button type="button" class="card-offline-tag-btn ${{isFullyOffline ? 'active' : (isProcessingOffline ? 'downloading' : '')}}" id="tagOffline_${{safeId}}" onclick="toggleMakeOffline('${{safeId}}', event)" title="${{isFullyOffline ? `📌 Offline Ready (${{cachedSizeStr}}). Click to unpin.` : (isProcessingOffline ? `⏳ Downloading offline: ${{cachePct}}% (${{cachedSizeStr}}). Click to cancel.` : '📥 Make offline available (Download & save full video offline forever)')}}">
+                                ${{isFullyOffline ? '📌' : (isProcessingOffline ? '<span class="cache-pulse-icon">⏳</span>' : '📥')}}
                             </button>
-                            <button type="button" class="card-mark-merge-pill ${{isMarked ? 'active' : ''}}" onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" title="${{isMarked ? 'Unmark from merge' : 'Mark this video for duplicate merge'}}">
-                                &#128256; ${{isMarked ? 'Marked' : 'Merge'}}
+                            <button type="button" class="card-mark-merge-pill ${{isMarked ? 'active' : ''}}" onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" title="${{isMarked ? 'Marked for duplicate merge (Click to unmark)' : 'Mark this video for duplicate merge'}}">
+                                ${{isMarked ? '&#10003;' : '&#128256;'}}
                             </button>
                             <button type="button" class="card-action-arrow-btn" onclick="toggleCardActions(this, event)" title="Toggle actions (Direct, HF, Edit, Delete)">
                                 <span class="card-arrow-icon">&#9662;</span>
@@ -11380,16 +11392,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (tagBtn) {{
                 if (isFullyOffline) {{
                     tagBtn.className = 'card-offline-tag-btn active';
-                    tagBtn.innerHTML = '📌 Offline';
-                    tagBtn.title = '📌 Pinned offline forever (Click to unpin)';
+                    tagBtn.innerHTML = '📌';
+                    tagBtn.title = `📌 Offline Ready: 100% saved locally forever (${{sizeStr}}). Click to unpin.`;
                 }} else if (isProcessing) {{
                     tagBtn.className = 'card-offline-tag-btn downloading';
-                    tagBtn.innerHTML = `⏳ ${{numPct}}%`;
-                    tagBtn.title = `⏳ Downloading offline: ${{numPct}}% (${{sizeStr}})`;
+                    tagBtn.innerHTML = '<span class="cache-pulse-icon">⏳</span>';
+                    tagBtn.title = `⏳ Downloading offline: ${{numPct}}% (${{sizeStr}}). Click to cancel.`;
                 }} else {{
                     tagBtn.className = 'card-offline-tag-btn';
-                    tagBtn.innerHTML = '📥 Offline';
-                    tagBtn.title = '📥 Make offline available (Caches 100% & keeps forever)';
+                    tagBtn.innerHTML = '📥';
+                    tagBtn.title = '📥 Make offline available (Download & save full video offline forever)';
                 }}
             }}
         }}
@@ -12781,10 +12793,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const markBtns = el.querySelectorAll('.card-mark-merge-pill, .btn-mark-merge, .btn-card-merge');
                 markBtns.forEach(btn => {{
                     btn.classList.toggle('active', isMarked);
-                    if (btn.classList.contains('card-mark-merge-pill') || btn.classList.contains('btn-mark-merge')) {{
+                    if (btn.classList.contains('card-mark-merge-pill')) {{
+                        btn.innerHTML = isMarked ? '&#10003;' : '&#128256;';
+                    }} else if (btn.classList.contains('btn-mark-merge')) {{
                         btn.innerHTML = isMarked ? '&#10003; Marked' : '&#128256; Merge';
                     }}
-                    btn.title = isMarked ? 'Click to unmark from merge' : 'Mark for duplicate merge';
+                    btn.title = isMarked ? 'Marked for duplicate merge (Click to unmark)' : 'Mark for duplicate merge';
                 }});
             }});
 
