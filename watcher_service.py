@@ -16,6 +16,7 @@ import metadata_helper
 import account_manager
 import activity_tracker
 import companion_helper
+import screens_helper
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -24,7 +25,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 SUPPORTED_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm",
-    ".flv", ".ts", ".m4v", ".srt", ".vtt", ".nfo"
+    ".flv", ".ts", ".m4v", ".srt", ".vtt", ".nfo",
+    ".jpg", ".jpeg", ".png", ".webp"
 }
 
 IGNORED_EXTENSIONS = {
@@ -327,6 +329,95 @@ def process_standalone_subtitle(
         return False
 
 
+def process_standalone_screens(
+    file_path: Path,
+    base_dir: Path,
+    library_dir: str,
+    api: HfApi,
+    hf_username: str,
+    password: str,
+    delete_local: bool
+):
+    try:
+        manifest = load_manifest()
+        sc_stem = file_path.stem.lower()
+        for sfx in [".screens", "-screens", "_screens", " screens", ".screen", "-screen", "_screen", "_thumb", "-thumb", ".thumb", "_poster", "-poster"]:
+            if sc_stem.endswith(sfx):
+                sc_stem = sc_stem[:-len(sfx)]
+                break
+
+        sc_parent = file_path.parent.relative_to(base_dir).as_posix()
+        matching_key = None
+        for key in manifest.get("files", {}).keys():
+            k_path = Path(key)
+            k_parent = k_path.parent.as_posix()
+            k_stem = k_path.stem.lower()
+            if (sc_parent == "." or k_parent == sc_parent) and (sc_stem == k_stem):
+                matching_key = key
+                break
+
+        if not matching_key:
+            return False
+
+        video_record = manifest["files"][matching_key]
+        repo_id = video_record.get("repo_id")
+        obfuscated_blob_path = video_record.get("blob_path")
+        if not repo_id or not obfuscated_blob_path:
+            return False
+
+        safe_id = storyboard_helper.get_safe_id(matching_key)
+        screens_helper.process_screens_image(
+            screen_path=file_path,
+            safe_id=safe_id,
+            library_dir=library_dir,
+            video_rel_path=matching_key
+        )
+
+        temp_screen_enc = f"{str(file_path)}.enc"
+        enc_size = crypto_engine.encrypt_file(str(file_path), temp_screen_enc, password)
+        screens_blob = obfuscated_blob_path.replace(".enc", ".screens.jpg.enc")
+
+        api.upload_file(
+            path_or_fileobj=temp_screen_enc,
+            path_in_repo=screens_blob,
+            repo_id=repo_id,
+            repo_type="dataset",
+            commit_message=commit_helper.get_human_commit_message("upload")
+        )
+
+        screens_record = {
+            "blob_path": screens_blob,
+            "repo_id": repo_id,
+            "account": hf_username,
+            "orig_size": os.path.getsize(str(file_path)),
+            "enc_size": enc_size,
+            "format": "jpg",
+            "safe_id": safe_id,
+            "verifier": crypto_engine.create_verifier(password)
+        }
+
+        with MANIFEST_LOCK:
+            cur_manifest = load_manifest()
+            if matching_key in cur_manifest.get("files", {}):
+                cur_manifest["files"][matching_key]["screens"] = screens_record
+                save_manifest(cur_manifest)
+
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [Standalone Screens Synced] for {matching_key} -> {screens_blob}")
+
+        if os.path.exists(temp_screen_enc):
+            os.remove(temp_screen_enc)
+        if delete_local and os.path.exists(str(file_path)):
+            os.remove(str(file_path))
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned standalone screens: {file_path.name}")
+        return True
+    except Exception as e:
+        if is_rate_limit_error(e):
+            trigger_rate_limit_cooldown(e, hf_username)
+        else:
+            safe_print(f"[!] Warning processing standalone screens {file_path.name}: {e}")
+        return False
+
+
 def process_file_pipeline(
     file_path: Path,
     base_dir: Path,
@@ -347,6 +438,18 @@ def process_file_pipeline(
 
         if file_path.suffix.lower() in {".srt", ".vtt"}:
             process_standalone_subtitle(
+                file_path=file_path,
+                base_dir=base_dir,
+                library_dir=library_dir,
+                api=api,
+                hf_username=hf_username,
+                password=password,
+                delete_local=delete_local
+            )
+            return
+
+        if file_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+            process_standalone_screens(
                 file_path=file_path,
                 base_dir=base_dir,
                 library_dir=library_dir,
@@ -597,6 +700,47 @@ def process_file_pipeline(
         except Exception as s_err:
             safe_print(f"[!] Companion subtitle check warning: {s_err}")
 
+        # 6b. Detect and Upload Companion Screens / Contact Sheet from Watch Folder
+        screens_record = None
+        try:
+            matched_screen = screens_helper.find_matching_screens_file(file_path)
+            if matched_screen and matched_screen.is_file():
+                safe_id = storyboard_helper.get_safe_id(full_key)
+                screens_helper.process_screens_image(
+                    screen_path=matched_screen,
+                    safe_id=safe_id,
+                    library_dir=library_dir,
+                    video_rel_path=full_key
+                )
+                temp_screen_enc = f"{str(matched_screen)}.enc"
+                enc_sc_size = crypto_engine.encrypt_file(str(matched_screen), temp_screen_enc, password)
+                screens_blob = obfuscated_blob_path.replace(".enc", ".screens.jpg.enc")
+                api.upload_file(
+                    path_or_fileobj=temp_screen_enc,
+                    path_in_repo=screens_blob,
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    commit_message=commit_helper.get_human_commit_message("upload")
+                )
+                screens_record = {
+                    "blob_path": screens_blob,
+                    "repo_id": repo_id,
+                    "account": hf_username,
+                    "orig_size": os.path.getsize(str(matched_screen)),
+                    "enc_size": enc_sc_size,
+                    "format": "jpg",
+                    "safe_id": safe_id,
+                    "verifier": crypto_engine.create_verifier(password)
+                }
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [Companion Screens Live] ({matched_screen.name}) -> {screens_blob}")
+                if os.path.exists(temp_screen_enc):
+                    os.remove(temp_screen_enc)
+                if delete_local and os.path.exists(str(matched_screen)):
+                    os.remove(str(matched_screen))
+                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned screens image: {matched_screen.name}")
+        except Exception as sc_err:
+            safe_print(f"[!] Companion screens check warning: {sc_err}")
+
         # 7. Clean up temp encrypted file
         if os.path.exists(temp_enc_file):
             os.remove(temp_enc_file)
@@ -640,6 +784,8 @@ def process_file_pipeline(
             record["audio"] = audio_record
         if subtitles_record:
             record["subtitles"] = subtitles_record
+        if screens_record:
+            record["screens"] = screens_record
         update_manifest_record(record, media_hash)
 
         # 11. Generate Jellyfin pointer (.strm) & metadata (.nfo)

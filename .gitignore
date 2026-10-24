@@ -37,6 +37,10 @@ archive/*
 *.nfo
 *.srt
 *.vtt
+*.jpg
+*.jpeg
+*.png
+*.webp
 
 # ==========================================
 # PYTHON COMPILED & SYSTEM TEMPORARIES

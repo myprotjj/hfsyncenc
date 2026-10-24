@@ -19,6 +19,7 @@ import metadata_helper
 import account_manager
 import activity_tracker
 import companion_helper
+import screens_helper
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1378,6 +1379,92 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def handle_api_screens_image(self):
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        safe_id = qs.get("id", [""])[0]
+        key = qs.get("key", [""])[0]
+        if not safe_id and key:
+            safe_id = storyboard_helper.get_safe_id(key)
+
+        img_path = screens_helper.get_screens_path(safe_id) if safe_id else None
+        if not img_path or not os.path.exists(img_path):
+            manifest = load_manifest()
+            target_info = None
+            for k, info in manifest.get("files", {}).items():
+                if storyboard_helper.get_safe_id(k) == safe_id or k == key:
+                    target_info = info
+                    break
+
+            screens_info = (target_info or {}).get("screens")
+            if screens_info and screens_info.get("blob_path"):
+                try:
+                    repo_id = screens_info.get("repo_id")
+                    blob_path = screens_info.get("blob_path")
+                    acc_owner = screens_info.get("account")
+                    accounts = get_all_accounts()
+                    token = None
+                    for a in accounts:
+                        if a.get("username") == acc_owner:
+                            token = a.get("token")
+                            break
+                    if not token and accounts:
+                        token = accounts[0].get("token")
+
+                    api = HfApi(token=token)
+                    local_downloaded = api.hf_hub_download(repo_id=repo_id, filename=blob_path, repo_type="dataset")
+                    temp_plain = os.path.join(screens_helper.SCREENS_DIR, f"{safe_id}.jpg")
+                    crypto_engine.decrypt_file(local_downloaded, temp_plain, ENCRYPTION_PASSWORD)
+                    screens_helper.process_screens_image(Path(temp_plain), safe_id)
+                    img_path = temp_plain
+                except Exception as e:
+                    print(f"[!] Warning on-demand restoring screens {safe_id}: {e}")
+
+        if not img_path or not os.path.exists(img_path):
+            self.send_error(404, "Screens image not found")
+            return
+
+        with open(img_path, "rb") as f:
+            data = f.read()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def handle_api_screens_thumb(self):
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        safe_id = qs.get("id", [""])[0]
+        key = qs.get("key", [""])[0]
+        if not safe_id and key:
+            safe_id = storyboard_helper.get_safe_id(key)
+
+        thumb_path = screens_helper.get_screens_thumb_path(safe_id) if safe_id else None
+        if not thumb_path or not os.path.exists(thumb_path):
+            screens_path = screens_helper.get_screens_path(safe_id) if safe_id else None
+            if screens_path and os.path.exists(screens_path):
+                screens_helper.process_screens_image(Path(screens_path), safe_id)
+                thumb_path = screens_helper.get_screens_thumb_path(safe_id)
+
+        if not thumb_path or not os.path.exists(thumb_path):
+            self.handle_api_screens_image()
+            return
+
+        with open(thumb_path, "rb") as f:
+            data = f.read()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
     def handle_api_activity(self):
         state = activity_tracker.tracker.get_state()
         resp = json.dumps(state).encode("utf-8")
@@ -1486,6 +1573,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_api_storyboard()
         elif path == "/api/storyboard/image":
             self.handle_api_storyboard_image()
+        elif path == "/api/screens/thumb":
+            self.handle_api_screens_thumb()
+        elif path == "/api/screens/image":
+            self.handle_api_screens_image()
         elif path.startswith("/stream/subtitle"):
             self.handle_stream_subtitle()
         elif path.startswith("/stream/audio/"):
@@ -1558,10 +1649,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         dur_sec = raw_sb_dur
                         duration_str = format_duration(dur_sec)
 
+                safe_id = storyboard_helper.get_safe_id(key)
+                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+
                 item = {
                     "key": key,
-                    "safe_id": storyboard_helper.get_safe_id(key),
+                    "safe_id": safe_id,
                     "has_storyboard": storyboard_helper.has_storyboard(key),
+                    "has_screens": has_screens_flag,
+                    "screens_url": f"/api/screens/image?id={safe_id}",
+                    "screens_thumb_url": f"/api/screens/thumb?id={safe_id}",
                     "duration_sec": dur_sec,
                     "duration_str": duration_str,
                     "account": account_owner,
@@ -1662,10 +1759,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         dur_sec = raw_sb_dur
                         duration_str = format_duration(dur_sec)
 
+                safe_id = storyboard_helper.get_safe_id(key)
+                has_screens_flag = bool(info.get("screens")) or screens_helper.has_screens(safe_id)
+
                 item = {
                     "key": key,
-                    "safe_id": storyboard_helper.get_safe_id(key),
+                    "safe_id": safe_id,
                     "has_storyboard": storyboard_helper.has_storyboard(key),
+                    "has_screens": has_screens_flag,
+                    "screens_url": f"/api/screens/image?id={safe_id}",
+                    "screens_thumb_url": f"/api/screens/thumb?id={safe_id}",
                     "duration_sec": dur_sec,
                     "duration_str": duration_str,
                     "account": account_owner,
@@ -2816,6 +2919,32 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
         .video-thumb-card:hover .thumb-badge {{
             opacity: 0;
+        }}
+        .thumb-screens-btn {{
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(4px);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            z-index: 10;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            transition: all 0.15s ease;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+        }}
+        .thumb-screens-btn:hover {{
+            background: #0284c7;
+            color: #ffffff;
+            border-color: #38bdf8;
+            transform: scale(1.05);
         }}
         .card-duration-badge {{
             position: absolute;
@@ -4399,9 +4528,49 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         </div>
     </div>
 
+    <!-- Screens Contact Sheet Lightbox Modal -->
+    <div id="screensModal" class="modal-overlay" onclick="closeScreensModal(event)" style="z-index: 1200; display: none;">
+        <div class="modal" style="max-width: 94vw; width: 1280px; max-height: 94vh; display: flex; flex-direction: column; padding: 16px; background: rgba(15, 20, 32, 0.98); border: 1px solid rgba(255, 255, 255, 0.12); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.85);" onclick="event.stopPropagation()">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span style="font-size: 1.2rem;">&#128444;&#65039;</span>
+                    <h3 id="screensModalTitle" style="margin: 0; font-size: 1rem; color: #f3f4f6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 800px;">Contact Sheet Preview</h3>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
+                    <a id="screensModalDownloadBtn" href="#" target="_blank" download class="btn btn-secondary btn-xs" title="Open full resolution image in new tab">&#8599; Full Size</a>
+                    <button type="button" class="btn btn-secondary btn-xs" onclick="closeScreensModal()">✕ Close</button>
+                </div>
+            </div>
+            <div style="flex: 1; overflow: auto; text-align: center; background: rgba(0,0,0,0.5); border-radius: 6px; padding: 8px;">
+                <img id="screensModalImg" src="" alt="Video Contact Sheet" style="max-width: 100%; height: auto; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.6);" loading="lazy">
+            </div>
+        </div>
+    </div>
+
     <div id="toast" class="toast"></div>
 
     <script>
+        function openScreensModal(safeId, title, event) {{
+            if (event) event.stopPropagation();
+            const modal = document.getElementById('screensModal');
+            const img = document.getElementById('screensModalImg');
+            const titleEl = document.getElementById('screensModalTitle');
+            const dlBtn = document.getElementById('screensModalDownloadBtn');
+            if (!modal || !img) return;
+
+            const url = '/api/screens/image?id=' + encodeURIComponent(safeId);
+            img.src = url;
+            if (titleEl) titleEl.textContent = title ? '🖼️ ' + title : 'Contact Sheet Preview';
+            if (dlBtn) dlBtn.href = url;
+            modal.style.display = 'flex';
+        }}
+
+        function closeScreensModal(event) {{
+            if (event && event.target && event.target.closest && event.target.closest('.modal')) return;
+            const modal = document.getElementById('screensModal');
+            if (modal) modal.style.display = 'none';
+        }}
+
         let allFiles = {files_json_str};
         let skippedFiles = {skipped_json_str};
         let primaryAccount = "{primary_user}";
@@ -4549,10 +4718,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const safeId = f.safe_id || '';
             const hasStoryboard = !!f.has_storyboard;
+            const hasScreens = !!f.has_screens;
             let thumbBgStyle = '';
             let fallbackHtml = '';
             if (hasStoryboard && safeId) {{
                 thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 500%; background-position: 22.2222% 0%;";
+            }} else if (hasScreens && safeId) {{
+                thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "'); background-size: cover; background-position: center;";
             }} else {{
                 fallbackHtml = '<div class="thumb-fallback"><span class="thumb-fallback-icon">&#127916;</span><span class="thumb-fallback-txt">PREVIEW</span></div>';
             }}
@@ -4579,7 +4751,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    <div class="thumb-badge">${{hasStoryboard ? 'HD' : 'PREVIEW'}}</div>
+                    <div class="thumb-badge">${{hasStoryboard ? 'HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
+                    ${{hasScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
                     <div class="card-size-badge">${{escapeHtml(f.size_str)}}</div>
                     ${{durationHtml}}
                 </div>
@@ -4605,6 +4778,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <div class="video-card-actions">
                     <div class="card-action-group-left">
                         <a href="/stream/${{escapeHtml(f.key)}}" target="_blank" class="card-icon-btn btn-card-link" title="Direct Stream URL">&#128279;</a>
+                        ${{hasScreens ? `<button type="button" class="card-icon-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet Screenshots">&#128444;&#65039;</button>` : ''}}
                         <a href="/stream/audio/${{escapeHtml(f.key)}}" download="${{escapeHtml(title)}}.m4a" target="_blank" class="card-icon-btn btn-card-audio" title="Download / Stream Lightweight Audio (.m4a)">&#127925;</a>
                         <a href="${{escapeHtml(f.hf_url)}}" target="_blank" class="card-icon-btn btn-card-hf" title="Open dataset on Hugging Face">&#129303;</a>
                     </div>
@@ -4687,10 +4861,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const safeId = f.safe_id || '';
             const hasStoryboard = !!f.has_storyboard;
+            const hasScreens = !!f.has_screens;
             let thumbBgStyle = '';
             let fallbackHtml = '';
             if (hasStoryboard && safeId) {{
                 thumbBgStyle = "background-image: url('/api/storyboard/image?id=" + safeId + "'); background-size: 1000% 500%; background-position: 22.2222% 0%;";
+            }} else if (hasScreens && safeId) {{
+                thumbBgStyle = "background-image: url('/api/screens/thumb?id=" + safeId + "'); background-size: cover; background-position: center;";
             }} else {{
                 fallbackHtml = '<div class="thumb-fallback"><span class="thumb-fallback-icon">&#127916;</span><span class="thumb-fallback-txt">PREVIEW</span></div>';
             }}
@@ -4717,7 +4894,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    <div class="thumb-badge">${{hasStoryboard ? 'HD' : 'PREVIEW'}}</div>
+                    <div class="thumb-badge">${{hasStoryboard ? 'HD' : (hasScreens ? 'SCREENS' : 'PREVIEW')}}</div>
+                    ${{hasScreens ? `<button type="button" class="thumb-screens-btn" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="View High-Res Contact Sheet">&#128444;&#65039; Screens</button>` : ''}}
                     ${{durationHtml}}
                 </div>
                 <div style="flex: 1; min-width: 0;">
@@ -4736,6 +4914,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </div>
                 <div class="file-actions">
                     <a href="/stream/${{f.key}}" target="_blank" class="btn btn-link" title="Direct Stream URL">&#128279; Direct</a>
+                    ${{hasScreens ? `<button type="button" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" class="btn btn-secondary btn-sm" title="View Full Contact Sheet Screenshots">&#128444;&#65039; Screens</button>` : ''}}
                     <a href="/stream/audio/${{f.key}}" download="${{escapeHtml(title)}}.m4a" target="_blank" class="btn btn-link btn-card-audio" title="Download / Stream Lightweight Audio (.m4a)">&#127925; Audio</a>
                     <a href="${{f.hf_url}}" target="_blank" class="btn btn-hf" title="Open file on Hugging Face">&#129303; View on HF</a>
                     <button onclick="promptEditMetadata('${{escapeHtml(f.key)}}')" class="btn btn-edit" title="Edit tags, categories, and Jellyfin metadata">&#127991; Edit Tags</button>
