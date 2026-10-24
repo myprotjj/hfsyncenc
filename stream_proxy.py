@@ -10912,7 +10912,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (res.success) {{
                     showToast(res.message || 'Videos merged successfully!', 'success');
                     closeMergeVideosModal();
-                    await loadFiles();
+                    if (typeof reloadFilesList === 'function') {{
+                        await reloadFilesList();
+                    }}
                     if (editingKey === keepKey) {{
                         promptEditMetadata(keepKey);
                     }}
@@ -11922,6 +11924,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
             }} catch (err) {{}}
         }}
+        window.loadFiles = reloadFilesList;
 
         /* Technical Metadata & Tag Extraction */
         async function scanAllTechTags() {{
