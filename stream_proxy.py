@@ -10714,18 +10714,28 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             const cur = player.currentTime || 0;
             const dur = player.duration || 0;
-            const key = currentVideoKey;
-            const fileObj = (allFiles || []).find(f => f.key === key || (f.file_names && f.file_names.includes(key)));
-            const safeId = currentPlayingSafeId || (fileObj ? fileObj.safe_id : key);
+            let key = currentVideoKey || '';
+            if (key.startsWith('play/')) key = key.substring(5);
+            if (key.startsWith('/stream/play/')) key = key.substring(13);
+            if (key.startsWith('/stream/')) key = key.substring(8);
+
+            const fileObj = (allFiles || []).find(f => 
+                f.key === key || 
+                f.safe_id === key || 
+                (f.file_names && f.file_names.includes(key))
+            );
+            const resolvedKey = fileObj ? fileObj.key : key;
+            let safeId = fileObj ? fileObj.safe_id : (currentPlayingSafeId || resolvedKey);
+            if (safeId.startsWith('play/')) safeId = safeId.substring(5);
             if (!safeId) return;
 
             // If user finished video (< 5s left), wrap to 0:
             const resumeTime = (dur > 0 && cur >= dur - 5) ? 0 : Math.floor(cur);
 
             const snapshot = {{
-                key: key || safeId,
+                key: resolvedKey || safeId,
                 safeId: safeId,
-                title: (playerTitle ? playerTitle.textContent : '') || key || 'Video',
+                title: (playerTitle ? playerTitle.textContent : '') || resolvedKey || 'Video',
                 blobPath: currentBlobId || '',
                 time: resumeTime,
                 duration: Math.floor(dur),
@@ -10742,7 +10752,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const raw = localStorage.getItem('hfsync_last_closed_video');
                 if (raw) {{
                     const data = JSON.parse(raw);
-                    if (data && data.safeId) return data;
+                    if (data && (data.safeId || data.key)) {{
+                        // Automatically heal any snapshot containing 'play/' prefix
+                        if (data.safeId && data.safeId.startsWith('play/')) {{
+                            data.safeId = data.safeId.substring(5);
+                        }}
+                        if (data.key && data.key.startsWith('play/')) {{
+                            data.key = data.key.substring(5);
+                        }}
+                        return data;
+                    }}
                 }}
             }} catch (e) {{}}
             return null;
@@ -10815,16 +10834,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 event.stopPropagation();
             }}
             const last = getLastClosedVideo();
-            if (!last || !last.safeId) return;
+            if (!last || (!last.key && !last.safeId)) return;
 
-            const box = document.getElementById('playerBox');
-            if (box) {{
-                box.style.display = 'block';
-                box.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-            }}
+            // Find matching file in allFiles to ensure exact key and blobPath
+            const fileObj = (allFiles || []).find(f => 
+                (last.safeId && f.safe_id === last.safeId) || 
+                (last.key && f.key === last.key) || 
+                (f.file_names && f.file_names.includes(last.key))
+            );
 
-            const streamUrl = '/stream/play/' + encodeURIComponent(last.safeId);
-            playVideo(streamUrl, last.title || 'Video Stream', last.blobPath || streamUrl, last.time || 0);
+            const playKey = fileObj ? fileObj.key : (last.key || last.safeId);
+            const playTitle = fileObj ? (fileObj.title || fileObj.display_name || playKey) : (last.title || playKey);
+            const playBlob = fileObj ? (fileObj.blob_path || '') : (last.blobPath || '');
+            const playTime = (typeof last.time === 'number') ? last.time : 0;
+
+            // Respect mini player: DO NOT scroll to top; playVideo automatically docks to mini player if scrolled down!
+            playVideo('/stream/' + playKey, playTitle, playBlob, playTime);
             updateQuickResumeUI();
         }}
 
@@ -11017,11 +11042,21 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             updateQuickResumeUI();
 
             currentBlobId = blobPath || url;
-            currentVideoKey = (url.startsWith('/stream/') ? url.substring('/stream/'.length) : url);
-            try {{ currentVideoKey = decodeURIComponent(currentVideoKey); }} catch (e) {{}}
+            let rawKey = url;
+            if (rawKey.startsWith('/stream/play/')) {{
+                rawKey = rawKey.substring('/stream/play/'.length);
+            }} else if (rawKey.startsWith('/stream/')) {{
+                rawKey = rawKey.substring('/stream/'.length);
+            }}
+            try {{ rawKey = decodeURIComponent(rawKey); }} catch (e) {{}}
             
-            const fileObj = (allFiles || []).find(f => f.key === currentVideoKey || (f.file_names && f.file_names.includes(currentVideoKey)));
-            const safeId = fileObj ? fileObj.safe_id : currentVideoKey;
+            const fileObj = (allFiles || []).find(f => 
+                f.key === rawKey || 
+                f.safe_id === rawKey || 
+                (f.file_names && f.file_names.includes(rawKey))
+            );
+            currentVideoKey = fileObj ? fileObj.key : rawKey;
+            const safeId = fileObj ? fileObj.safe_id : (currentPlayingSafeId || currentVideoKey);
             currentPlayingSafeId = safeId;
 
             highlightAndPromotePlayingVideo(currentVideoKey);
@@ -11057,16 +11092,25 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
 
             if (targetSeek > 0) {{
+                let seekDone = false;
                 const applySeek = () => {{
+                    if (seekDone) return;
                     try {{
+                        if (player.duration && targetSeek >= player.duration - 2) {{
+                            seekDone = true;
+                            return;
+                        }}
                         player.currentTime = targetSeek;
+                        seekDone = true;
                         flashCenterFeedback(`Position: ${{formatTime(targetSeek)}}`);
                     }} catch (err) {{}}
                 }};
+                
                 if (player.readyState >= 1) {{
                     applySeek();
                 }} else {{
                     player.addEventListener('loadedmetadata', applySeek, {{ once: true }});
+                    player.addEventListener('canplay', applySeek, {{ once: true }});
                 }}
             }}
 
