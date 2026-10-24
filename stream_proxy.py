@@ -305,10 +305,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     meta = rec.get("metadata", {})
                     tags = meta.get("tags", [])
                     has_res = any(t in tags for t in ["4K", "2160p", "1440p", "1080p", "Full HD", "720p", "HD Ready", "480p", "SD"])
-                    if not has_res or not rec.get("media_info"):
+                    has_dur = any(t in tags for t in ["< 1m", "1-5m", "5-15m", "15-30m", "30-60m", "1-2h", "2-3h", "3h+"])
+                    if not has_res or not has_dur or not rec.get("media_info"):
                         url = f"http://127.0.0.1:{port}/stream/{quote(k)}"
                         try:
-                            mi = metadata_helper.probe_media_file(url, timeout=12)
+                            mi = metadata_helper.probe_media_file(url, key_path=k, timeout=12)
                             if mi and mi.get("resolution_label"):
                                 rec["media_info"] = mi
                                 if "metadata" not in rec or not rec["metadata"]:
@@ -1534,9 +1535,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     metadata["overview"] = ""
                 account_owner = info.get("account") or (repo.split("/")[0] if "/" in repo else self.hf_username)
 
+                media_info = info.get("media_info")
                 sb_meta = storyboard_helper.get_storyboard_meta(key)
-                dur_sec = sb_meta.get("duration", 0) if sb_meta else 0
-                duration_str = format_duration(dur_sec)
+                if media_info and media_info.get("duration_sec"):
+                    dur_sec = media_info.get("duration_sec", 0)
+                    duration_str = media_info.get("duration_str") or format_duration(dur_sec)
+                elif sb_meta and sb_meta.get("duration"):
+                    dur_sec = sb_meta.get("duration", 0)
+                    duration_str = format_duration(dur_sec)
+                else:
+                    dur_sec = 0
+                    duration_str = ""
 
                 item = {
                     "key": key,
@@ -1554,6 +1563,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     "file_names": file_names,
                     "aliases": aliases,
                     "metadata": metadata,
+                    "media_info": media_info,
                     "subtitles": info.get("subtitles") or [],
                     "has_audio": bool(info.get("audio")),
                     "audio_url": f"/stream/audio/{key}"
@@ -1627,9 +1637,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 account_owner = info.get("account") or (repo.split("/")[0] if "/" in repo else self.hf_username)
 
+                media_info = info.get("media_info")
                 sb_meta = storyboard_helper.get_storyboard_meta(key)
-                dur_sec = sb_meta.get("duration", 0) if sb_meta else 0
-                duration_str = format_duration(dur_sec)
+                if media_info and media_info.get("duration_sec"):
+                    dur_sec = media_info.get("duration_sec", 0)
+                    duration_str = media_info.get("duration_str") or format_duration(dur_sec)
+                elif sb_meta and sb_meta.get("duration"):
+                    dur_sec = sb_meta.get("duration", 0)
+                    duration_str = format_duration(dur_sec)
+                else:
+                    dur_sec = 0
+                    duration_str = ""
 
                 item = {
                     "key": key,
@@ -1647,6 +1665,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     "file_names": file_names,
                     "aliases": aliases,
                     "metadata": metadata,
+                    "media_info": media_info,
                     "subtitles": info.get("subtitles") or [],
                     "has_audio": bool(info.get("audio")),
                     "audio_url": f"/stream/audio/{key}"
@@ -2918,6 +2937,61 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             border: 1px solid rgba(99, 102, 241, 0.45);
             font-weight: 500;
         }}
+        .dur-short-pill {{
+            background: rgba(34, 197, 94, 0.16);
+            color: #86efac;
+            border: 1px solid rgba(34, 197, 94, 0.42);
+            font-weight: 500;
+        }}
+        .dur-mid-pill {{
+            background: rgba(56, 189, 248, 0.16);
+            color: #7dd3fc;
+            border: 1px solid rgba(56, 189, 248, 0.42);
+            font-weight: 500;
+        }}
+        .dur-long-pill {{
+            background: rgba(168, 85, 247, 0.18);
+            color: #d8b4fe;
+            border: 1px solid rgba(168, 85, 247, 0.45);
+            font-weight: 600;
+        }}
+        .dur-epic-pill {{
+            background: rgba(239, 68, 68, 0.22);
+            color: #fca5a5;
+            border: 1px solid rgba(239, 68, 68, 0.55);
+            font-weight: 700;
+            box-shadow: 0 0 6px rgba(239, 68, 68, 0.25);
+        }}
+        .cutscene-pill {{
+            background: rgba(245, 158, 11, 0.2);
+            color: #fde68a;
+            border: 1px solid rgba(245, 158, 11, 0.5);
+            font-weight: 600;
+        }}
+        .trailer-pill {{
+            background: rgba(249, 115, 22, 0.2);
+            color: #fdba74;
+            border: 1px solid rgba(249, 115, 22, 0.5);
+            font-weight: 600;
+        }}
+        .gameplay-pill {{
+            background: rgba(16, 185, 129, 0.2);
+            color: #6ee7b7;
+            border: 1px solid rgba(16, 185, 129, 0.45);
+            font-weight: 600;
+        }}
+        .music-pill {{
+            background: rgba(236, 72, 153, 0.2);
+            color: #f472b6;
+            border: 1px solid rgba(236, 72, 153, 0.45);
+            font-weight: 600;
+        }}
+        .vertical-pill {{
+            background: rgba(139, 92, 246, 0.2);
+            color: #c4b5fd;
+            border: 1px solid rgba(139, 92, 246, 0.45);
+            font-weight: 600;
+        }}
         .alias-pill {{
             font-size: 0.74rem;
             font-weight: 500;
@@ -4092,6 +4166,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl === 'hdr' || tl === 'hdr10' || tl === 'dolby vision' || tl === 'hlg') {{ cls = 'hdr-pill'; icon = '&#127775;'; }}
                 else if (tl === '5.1' || tl === '5.1 surround' || tl === '7.1' || tl === '7.1 surround' || tl === 'atmos') {{ cls = 'surround-pill'; icon = '&#128266;'; }}
                 else if (['h.264', 'h.265', 'av1', 'vp9', 'hevc', 'mpeg-4'].includes(tl)) {{ cls = 'codec-pill'; icon = '&#127916;'; }}
+                else if (tl.includes('< 1m') || tl.includes('1-5m') || tl === 'micro clip' || tl === 'short clip') {{ cls = 'dur-short-pill'; icon = '&#9201;'; }}
+                else if (tl.includes('5-15m') || tl.includes('15-30m') || tl === 'scene' || tl === 'short form') {{ cls = 'dur-mid-pill'; icon = '&#9201;'; }}
+                else if (tl.includes('30-60m') || tl === 'mid-length' || tl === 'episode') {{ cls = 'dur-mid-pill'; icon = '&#128250;'; }}
+                else if (tl.includes('1-2h') || tl.includes('2-3h') || tl === 'feature film' || tl === 'extended feature') {{ cls = 'dur-long-pill'; icon = '&#127916;'; }}
+                else if (tl.includes('3h+') || tl.includes('4h+') || tl.includes('epic') || tl.includes('marathon')) {{ cls = 'dur-epic-pill'; icon = '&#128293;'; }}
+                else if (tl === 'cutscene' || tl === 'cinematic') {{ cls = 'cutscene-pill'; icon = '&#127918;'; }}
+                else if (tl === 'trailer' || tl === 'teaser') {{ cls = 'trailer-pill'; icon = '&#127916;'; }}
+                else if (tl === 'gameplay') {{ cls = 'gameplay-pill'; icon = '&#128377;'; }}
+                else if (tl === 'music video') {{ cls = 'music-pill'; icon = '&#127925;'; }}
+                else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
                 badgesHtml += `<span class="meta-pill ${{cls}}">${{icon}} ${{escapeHtml(t)}}</span>`;
             }});
 
@@ -4220,6 +4304,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 else if (tl === 'hdr' || tl === 'hdr10' || tl === 'dolby vision' || tl === 'hlg') {{ cls = 'hdr-pill'; icon = '&#127775;'; }}
                 else if (tl === '5.1' || tl === '5.1 surround' || tl === '7.1' || tl === '7.1 surround' || tl === 'atmos') {{ cls = 'surround-pill'; icon = '&#128266;'; }}
                 else if (['h.264', 'h.265', 'av1', 'vp9', 'hevc', 'mpeg-4'].includes(tl)) {{ cls = 'codec-pill'; icon = '&#127916;'; }}
+                else if (tl.includes('< 1m') || tl.includes('1-5m') || tl === 'micro clip' || tl === 'short clip') {{ cls = 'dur-short-pill'; icon = '&#9201;'; }}
+                else if (tl.includes('5-15m') || tl.includes('15-30m') || tl === 'scene' || tl === 'short form') {{ cls = 'dur-mid-pill'; icon = '&#9201;'; }}
+                else if (tl.includes('30-60m') || tl === 'mid-length' || tl === 'episode') {{ cls = 'dur-mid-pill'; icon = '&#128250;'; }}
+                else if (tl.includes('1-2h') || tl.includes('2-3h') || tl === 'feature film' || tl === 'extended feature') {{ cls = 'dur-long-pill'; icon = '&#127916;'; }}
+                else if (tl.includes('3h+') || tl.includes('4h+') || tl.includes('epic') || tl.includes('marathon')) {{ cls = 'dur-epic-pill'; icon = '&#128293;'; }}
+                else if (tl === 'cutscene' || tl === 'cinematic') {{ cls = 'cutscene-pill'; icon = '&#127918;'; }}
+                else if (tl === 'trailer' || tl === 'teaser') {{ cls = 'trailer-pill'; icon = '&#127916;'; }}
+                else if (tl === 'gameplay') {{ cls = 'gameplay-pill'; icon = '&#128377;'; }}
+                else if (tl === 'music video') {{ cls = 'music-pill'; icon = '&#127925;'; }}
+                else if (tl.includes('vertical') || tl.includes('mobile')) {{ cls = 'vertical-pill'; icon = '&#128241;'; }}
                 badgesHtml += `<span class="meta-pill ${{cls}}">${{icon}} ${{escapeHtml(t)}}</span>`;
             }});
 

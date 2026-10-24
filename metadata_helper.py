@@ -12,12 +12,67 @@ import crypto_engine
 import commit_helper
 
 
-def probe_media_file(source_path: str, timeout: int = 15) -> dict:
+def detect_content_tags_from_path(key_path: str) -> list:
+    """
+    Detects rich content type tags based on filename, subfolder, and path conventions.
+    Identifies: Cutscenes, Cinematics, Trailers, Clips, Shorts, Gameplays, Highlights,
+    Episodes, Music Videos, Streams / VODs, Behind The Scenes, and multi-part media.
+    """
+    tags = []
+    if not key_path:
+        return tags
+
+    p = key_path.lower().replace("\\", "/")
+    clean_p = p.replace("_", " ").replace("-", " ")
+    name = Path(key_path).name.lower()
+    clean_name = name.replace("_", " ").replace("-", " ")
+
+    # 1. Cutscenes & Cinematics
+    if any(k in clean_p for k in ("cutscene", "cut scene", "cinematic", "c scene")):
+        tags.append("Cutscene")
+    if any(k in clean_p for k in ("trailer", "teaser", "pv", "promo")):
+        tags.append("Trailer")
+    if any(k in clean_p for k in ("intro", "opening")) or name.startswith("op_") or name.startswith("op."):
+        tags.append("Intro")
+    if any(k in clean_p for k in ("outro", "ending")) or name.startswith("ed_") or name.startswith("ed."):
+        tags.append("Outro")
+    if any(k in clean_p for k in ("gameplay", "walkthrough", "playthrough", "boss fight", "speedrun")):
+        tags.append("Gameplay")
+    if any(k in clean_p for k in ("highlight", "highlights", "montage", "moments", "best of", "compilation")):
+        tags.append("Highlights")
+    if any(k in clean_p for k in ("behind the scenes", "making of", "bts", "blooper", "featurette", "extra")):
+        tags.append("Behind The Scenes")
+
+    # 2. Clips & Shorts
+    if any(k in clean_p for k in ("clip", "shortclip", "short clip", "snip", "preview", "sample")):
+        tags.append("Clip")
+    if any(k in clean_p for k in ("short", "shorts", "reel", "reels", "tiktok")):
+        tags.append("Shorts")
+
+    # 3. TV / Series / Episode
+    if re.search(r"\b[sS]\d{1,2}[eE]\d{1,2}\b", p) or re.search(r"\b(ep|episode)\s*\d+\b", clean_p):
+        tags.append("Episode")
+    if re.search(r"\bpart\s*\d+\b", clean_p):
+        tags.append("Multi-Part")
+
+    # 4. Music
+    if any(k in clean_p for k in ("music video", "official video", "mv", "amv", "ost", "soundtrack")):
+        tags.append("Music Video")
+
+    # 5. Live Stream / VOD
+    if any(k in clean_p for k in ("vod", "livestream", "live stream", "stream recording", "broadcast")):
+        tags.append("VOD / Stream")
+
+    return tags
+
+
+def probe_media_file(source_path: str, key_path: str = None, timeout: int = 15) -> dict:
     """
     Extracts comprehensive technical media metadata using ffmpeg.
     Extracts: resolution, dimensions, aspect ratio, resolution category (4K, 1080p, 720p, SD),
     video/audio codecs, audio channels/layout (Stereo, 5.1, 7.1), HDR/SDR dynamic range,
     color depth (10-bit, 8-bit), FPS, duration, bitrate, and a standardized list of tags.
+    Handles any video length (from 15s micro-clips to 4+ hour epic marathons).
     Works seamlessly on both local unencrypted video files and streaming URLs.
     """
     info = {
@@ -27,6 +82,7 @@ def probe_media_file(source_path: str, timeout: int = 15) -> dict:
         "aspect_ratio": None,
         "duration_sec": 0.0,
         "duration_str": "",
+        "duration_category": "",
         "video_codec": None,
         "video_profile": None,
         "fps": None,
@@ -46,24 +102,55 @@ def probe_media_file(source_path: str, timeout: int = 15) -> dict:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore", timeout=timeout)
         out = res.stderr or ""
 
-        # 1. Duration
+        # 1. Granular Duration Categorization (from 15s clips to 4+ hour marathons)
         dur_m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", out)
         if dur_m:
             h, m, s = int(dur_m.group(1)), int(dur_m.group(2)), float(dur_m.group(3))
             sec = h * 3600 + m * 60 + s
             info["duration_sec"] = round(sec, 2)
-            info["duration_str"] = f"{h}:{m:02d}:{int(s):02d}" if h > 0 else f"{m}:{int(s):02d}"
-            if sec >= 3600:
-                info["tags"].append("Feature Film")
-            elif sec >= 900:
-                info["tags"].append("Short Film")
-            elif sec > 0:
-                info["tags"].append("Clip")
+            if h > 0:
+                info["duration_str"] = f"{h}:{m:02d}:{int(s):02d}"
+            else:
+                info["duration_str"] = f"{m}:{int(s):02d}"
+
+            # Granular duration tiers
+            if sec < 60:
+                info["duration_category"] = "Micro Clip (< 1m)"
+                info["tags"].extend(["Micro Clip", "< 1m"])
+            elif sec < 300:
+                info["duration_category"] = "Short Clip (1-5m)"
+                info["tags"].extend(["Short Clip", "1-5m"])
+            elif sec < 900:
+                info["duration_category"] = "Scene (5-15m)"
+                info["tags"].extend(["Scene", "5-15m"])
+            elif sec < 1800:
+                info["duration_category"] = "Short Form (15-30m)"
+                info["tags"].extend(["Short Form", "15-30m"])
+            elif sec < 3600:
+                info["duration_category"] = "Mid-Length (30-60m)"
+                info["tags"].extend(["Mid-Length", "30-60m"])
+            elif sec < 7200:
+                info["duration_category"] = "Feature Film (1-2h)"
+                info["tags"].extend(["Feature Film", "1-2h"])
+            elif sec < 10800:
+                info["duration_category"] = "Extended Feature (2-3h)"
+                info["tags"].extend(["Extended Feature", "2-3h"])
+            else:
+                hrs = int(sec // 3600)
+                info["duration_category"] = f"Epic Marathon ({hrs}h+)"
+                info["tags"].extend(["Epic Length", "3h+", f"{hrs}h+"])
 
         # 2. Overall Bitrate
         br_m = re.search(r"bitrate:\s*(\d+)\s*kb/s", out)
         if br_m:
             info["bitrate_kbps"] = int(br_m.group(1))
+            br = info["bitrate_kbps"]
+            if br >= 20000:
+                info["tags"].append("Master Quality (20M+)")
+            elif br >= 8000:
+                info["tags"].append("High Bitrate")
+            elif br < 1200:
+                info["tags"].append("Compact Size")
 
         # 3. Video Stream
         v_m = re.search(r"Stream #\d+:\d+.*?: Video:\s*([^\n\r]+)", out)
@@ -71,7 +158,7 @@ def probe_media_file(source_path: str, timeout: int = 15) -> dict:
             v_line = v_m.group(1)
             v_lower = v_line.lower()
 
-            # Resolution & Aspect Ratio
+            # Resolution & Aspect Ratio & Orientation
             res_m = re.search(r"\b(\d{3,5})x(\d{3,5})\b", v_line)
             if res_m:
                 w, h = int(res_m.group(1)), int(res_m.group(2))
@@ -79,13 +166,21 @@ def probe_media_file(source_path: str, timeout: int = 15) -> dict:
                 info["height"] = h
                 if h > 0:
                     ar = w / h
-                    if 1.70 <= ar <= 1.85:
-                        info["aspect_ratio"] = "16:9"
+                    if h > w:
+                        info["aspect_ratio"] = "9:16 (Vertical)"
+                        info["tags"].extend(["Vertical Video", "Mobile Format"])
+                    elif 0.95 <= ar <= 1.05:
+                        info["aspect_ratio"] = "1:1 (Square)"
+                        info["tags"].append("Square Video")
                     elif 2.25 <= ar <= 2.45:
                         info["aspect_ratio"] = "21:9"
-                        info["tags"].append("21:9")
+                        info["tags"].append("Ultrawide (21:9)")
+                    elif 1.70 <= ar <= 1.85:
+                        info["aspect_ratio"] = "16:9"
+                        info["tags"].append("Widescreen (16:9)")
                     elif 1.30 <= ar <= 1.40:
                         info["aspect_ratio"] = "4:3"
+                        info["tags"].append("Classic (4:3)")
                     else:
                         info["aspect_ratio"] = f"{ar:.2f}:1"
 
@@ -155,10 +250,15 @@ def probe_media_file(source_path: str, timeout: int = 15) -> dict:
                 elif 23.5 <= fps_val <= 24.5:
                     info["tags"].append("24fps")
 
-        # 4. Audio Stream
-        a_m = re.search(r"Stream #\d+:\d+.*?: Audio:\s*([^\n\r]+)", out)
-        if a_m:
-            a_line = a_m.group(1)
+        # 4. Audio Streams
+        audio_matches = re.findall(r"Stream #\d+:\d+.*?: Audio:\s*([^\n\r]+)", out)
+        if len(audio_matches) == 0:
+            info["tags"].append("Silent / No Audio")
+        elif len(audio_matches) > 1:
+            info["tags"].append("Multi-Audio Track")
+
+        if audio_matches:
+            a_line = audio_matches[0]
             a_lower = a_line.lower()
 
             if "truehd" in a_lower:
@@ -199,6 +299,12 @@ def probe_media_file(source_path: str, timeout: int = 15) -> dict:
                 info["tags"].append("Stereo")
             elif "mono" in a_lower:
                 info["audio_channels"] = "Mono"
+
+        # 5. Path & Filename Content Type Tags
+        path_hint = key_path or str(source_path)
+        for ct in detect_content_tags_from_path(path_hint):
+            if ct not in info["tags"]:
+                info["tags"].append(ct)
 
     except Exception as e:
         pass
@@ -267,6 +373,12 @@ def extract_default_metadata(key_path: str, media_info: dict = None) -> dict:
     tags = ["Streamable"]
     res_label = ""
     duration_str = ""
+
+    # Content type tags (Cutscene, Trailer, Gameplay, Episode, Music Video, Clip, etc.)
+    for pt in detect_content_tags_from_path(key_path):
+        if pt not in tags:
+            tags.append(pt)
+
     if media_info:
         for t in media_info.get("tags", []):
             if t not in tags:

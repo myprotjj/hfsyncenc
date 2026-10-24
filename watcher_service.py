@@ -511,7 +511,7 @@ def process_file_pipeline(
 
         # 8. Probe technical video/audio metadata (resolution, codecs, HDR, channels) before deletion
         safe_print(f"[{time.strftime('%H:%M:%S')}] [Probing Technical Metadata] Analyzing video streams & resolution...")
-        media_info = metadata_helper.probe_media_file(str_path)
+        media_info = metadata_helper.probe_media_file(str_path, key_path=full_key)
         if media_info and media_info.get("resolution_label"):
             safe_print(f"[{time.strftime('%H:%M:%S')}] [Detected Video Specs] {media_info.get('resolution_label')} ({media_info.get('width')}x{media_info.get('height')}), {media_info.get('video_codec', 'Video')}, {media_info.get('audio_channels', 'Audio')} | Tags: {', '.join(media_info.get('tags', []))}")
 
