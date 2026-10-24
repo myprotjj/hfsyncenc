@@ -333,6 +333,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_rename_tag()
         elif path == "/api/tags/merge":
             self.handle_merge_tags()
+        elif path == "/api/folders/rename":
+            self.handle_rename_folder()
+        elif path == "/api/tag-category/delete":
+            self.handle_delete_tag_category()
+        elif path == "/api/tag-category/rename":
+            self.handle_rename_tag_category()
         else:
             self.send_error(404, "Not Found")
 
@@ -1344,6 +1350,395 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "target_tag": target_tag,
             "updated_count": len(updated_keys),
             "message": f"Successfully merged {len(source_tags)} tag(s) into '{target_tag}' across {len(updated_keys)} video(s)."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_rename_folder(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            folder_path = str(req_data.get("folder_path", "")).strip().replace("\\", "/").strip("/")
+            new_name = str(req_data.get("new_name", "")).strip().replace("\\", "/").strip("/")
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not folder_path or not new_name:
+            self.send_error(400, "Both 'folder_path' and 'new_name' are required")
+            return
+
+        clean_new_leaf = new_name.split("/")[-1].strip()
+        if not clean_new_leaf:
+            self.send_error(400, "Invalid new folder name")
+            return
+
+        if "/" in folder_path:
+            parent_path = folder_path.rsplit("/", 1)[0]
+            new_folder_path = f"{parent_path}/{clean_new_leaf}"
+            old_leaf_name = folder_path.rsplit("/", 1)[1]
+        else:
+            new_folder_path = clean_new_leaf
+            old_leaf_name = folder_path
+
+        if folder_path == new_folder_path:
+            resp_body = json.dumps({"success": True, "message": "Folder name unchanged", "old_folder": folder_path, "new_folder": new_folder_path, "updated_count": 0}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_body)
+            return
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        prefix = folder_path + "/"
+
+        matched_keys = [k for k in list(files.keys()) if k == folder_path or k.replace("\\", "/").startswith(prefix)]
+        if not matched_keys:
+            self.send_error(404, f"No files found under folder '{folder_path}'")
+            return
+
+        import shutil
+        old_lib_dir = Path("jellyfin_library") / folder_path
+        new_lib_dir = Path("jellyfin_library") / new_folder_path
+        if old_lib_dir.exists() and old_lib_dir.is_dir():
+            new_lib_dir.parent.mkdir(parents=True, exist_ok=True)
+            if not new_lib_dir.exists():
+                try:
+                    old_lib_dir.rename(new_lib_dir)
+                except Exception:
+                    shutil.move(str(old_lib_dir), str(new_lib_dir))
+            else:
+                for item in old_lib_dir.glob("**/*"):
+                    if item.is_file():
+                        rel = item.relative_to(old_lib_dir)
+                        dest = new_lib_dir / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(item), str(dest))
+                shutil.rmtree(str(old_lib_dir), ignore_errors=True)
+
+        if new_lib_dir.exists():
+            for strm_file in new_lib_dir.glob("**/*.strm"):
+                try:
+                    txt = strm_file.read_text(encoding="utf-8")
+                    txt = txt.replace(f"/stream/{folder_path}/", f"/stream/{new_folder_path}/")
+                    strm_file.write_text(txt, encoding="utf-8")
+                except Exception as ex:
+                    logger.warning("Error updating strm file %s: %s", strm_file, ex)
+
+        old_sync_dir = Path("videos_to_sync") / folder_path
+        new_sync_dir = Path("videos_to_sync") / new_folder_path
+        if old_sync_dir.exists() and old_sync_dir.is_dir():
+            new_sync_dir.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if not new_sync_dir.exists():
+                    old_sync_dir.rename(new_sync_dir)
+                else:
+                    for item in old_sync_dir.glob("**/*"):
+                        if item.is_file():
+                            rel = item.relative_to(old_sync_dir)
+                            dest = new_sync_dir / rel
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(item), str(dest))
+                    shutil.rmtree(str(old_sync_dir), ignore_errors=True)
+            except Exception as ex:
+                logger.warning("Error moving sync dir: %s", ex)
+
+        new_keys_created = []
+        for old_k in matched_keys:
+            finfo = files.pop(old_k)
+            if old_k == folder_path:
+                new_k = new_folder_path
+            else:
+                new_k = new_folder_path + old_k[len(folder_path):]
+
+            old_fns = finfo.get("file_names") or []
+            new_fns = []
+            for fn in old_fns:
+                if fn == old_k or fn.startswith(prefix):
+                    new_fn = new_folder_path + fn[len(folder_path):]
+                    new_fns.append(new_fn)
+                else:
+                    new_fns.append(fn)
+            if new_k not in new_fns:
+                new_fns.append(new_k)
+            finfo["file_names"] = new_fns
+
+            meta = finfo.get("metadata") or {}
+            genres = meta.get("genres") or []
+            if isinstance(genres, list):
+                new_genres = []
+                for g in genres:
+                    g_clean = str(g).strip()
+                    if g_clean.lower() == old_leaf_name.lower() or g_clean.lower() == folder_path.lower():
+                        new_genres.append(clean_new_leaf)
+                    else:
+                        new_genres.append(g_clean)
+                meta["genres"] = new_genres
+                finfo["metadata"] = meta
+
+            finfo["verifier"] = crypto_engine.create_verifier(self.password)
+            files[new_k] = finfo
+            new_keys_created.append(new_k)
+
+            try:
+                metadata_helper.write_nfo_files("jellyfin_library", new_k, meta)
+            except Exception as e:
+                logger.warning("Error rewriting NFO for %s: %s", new_k, e)
+
+        save_manifest(manifest)
+        activity_tracker.tracker.add_event(
+            "info",
+            "Folder Renamed",
+            f"Renamed folder '{folder_path}' to '{new_folder_path}' ({len(matched_keys)} video(s))"
+        )
+
+        def _bg_sync_folder(new_keys_list):
+            try:
+                m = load_manifest()
+                repos_touched = set()
+                for item_key in new_keys_list:
+                    f = m.get("files", {}).get(item_key)
+                    if not f:
+                        continue
+                    repo_id = f.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                    repos_touched.add(repo_id)
+                    api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                    blob_path = f.get("blob_path") or f.get("remote_path")
+                    if blob_path:
+                        record = dict(f)
+                        record["full_key"] = item_key
+                        metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
+                for r_id in repos_touched:
+                    api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                    repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                    metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+            except Exception as ex:
+                logger.warning("Background folder rename HF sync warning: %s", ex)
+
+        threading.Thread(target=_bg_sync_folder, args=(new_keys_created,), daemon=True).start()
+
+        resp = {
+            "success": True,
+            "old_folder": folder_path,
+            "new_folder": new_folder_path,
+            "new_leaf": clean_new_leaf,
+            "updated_count": len(matched_keys),
+            "message": f"Successfully renamed folder '{folder_path}' to '{new_folder_path}' across {len(matched_keys)} video(s)."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_delete_tag_category(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            item_type = str(req_data.get("type", "tag")).strip().lower()
+            name = str(req_data.get("name", "")).strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not name:
+            self.send_error(400, "Missing 'name' parameter")
+            return
+
+        is_genre = item_type in ("genre", "category", "cat")
+        field_name = "genres" if is_genre else "tags"
+        target_lower = name.lower()
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        updated_keys = []
+
+        for k, finfo in files.items():
+            meta = finfo.get("metadata") or {}
+            raw_list = meta.get(field_name) or []
+            if isinstance(raw_list, str):
+                raw_list = [x.strip() for x in raw_list.split(",") if x.strip()]
+            elif not isinstance(raw_list, list):
+                raw_list = []
+
+            has_match = any(str(x).strip().lower() == target_lower for x in raw_list)
+            if not has_match:
+                continue
+
+            new_list = [str(x).strip() for x in raw_list if str(x).strip().lower() != target_lower]
+            meta[field_name] = new_list
+            finfo["metadata"] = meta
+            finfo["verifier"] = crypto_engine.create_verifier(self.password)
+            try:
+                metadata_helper.write_nfo_files("jellyfin_library", k, meta)
+                for alias in finfo.get("aliases", []):
+                    alias_key = str(Path(k).parent / alias) if str(Path(k).parent) != "." else alias
+                    metadata_helper.write_nfo_files("jellyfin_library", alias_key, meta)
+            except Exception as e:
+                logger.warning("Error writing NFO for %s: %s", k, e)
+
+            updated_keys.append(k)
+
+        if updated_keys:
+            save_manifest(manifest)
+            activity_tracker.tracker.add_event(
+                "info",
+                f"{'Category' if is_genre else 'Tag'} Deleted",
+                f"Removed {'category' if is_genre else 'tag'} '{name}' across {len(updated_keys)} video(s)"
+            )
+
+            def _bg_sync(keys):
+                try:
+                    m = load_manifest()
+                    repos_touched = set()
+                    for item_key in keys:
+                        f = m.get("files", {}).get(item_key)
+                        if not f:
+                            continue
+                        repo_id = f.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                        repos_touched.add(repo_id)
+                        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        blob_path = f.get("blob_path") or f.get("remote_path")
+                        if blob_path:
+                            record = dict(f)
+                            record["full_key"] = item_key
+                            metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
+                    for r_id in repos_touched:
+                        api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                        metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                except Exception as ex:
+                    logger.warning("Background delete HF sync warning: %s", ex)
+
+            threading.Thread(target=_bg_sync, args=(updated_keys,), daemon=True).start()
+
+        resp = {
+            "success": True,
+            "type": "genre" if is_genre else "tag",
+            "name": name,
+            "updated_count": len(updated_keys),
+            "message": f"Successfully deleted {'category' if is_genre else 'tag'} '{name}' from {len(updated_keys)} video(s)."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_rename_tag_category(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            item_type = str(req_data.get("type", "genre")).strip().lower()
+            old_name = str(req_data.get("old_name", "")).strip()
+            new_name = str(req_data.get("new_name", "")).strip()
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        if not old_name or not new_name:
+            self.send_error(400, "Both 'old_name' and 'new_name' are required")
+            return
+
+        is_genre = item_type in ("genre", "category", "cat")
+        field_name = "genres" if is_genre else "tags"
+        old_lower = old_name.lower()
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        updated_keys = []
+
+        for k, finfo in files.items():
+            meta = finfo.get("metadata") or {}
+            raw_list = meta.get(field_name) or []
+            if isinstance(raw_list, str):
+                raw_list = [x.strip() for x in raw_list.split(",") if x.strip()]
+            elif not isinstance(raw_list, list):
+                raw_list = []
+
+            has_match = any(str(x).strip().lower() == old_lower for x in raw_list)
+            if not has_match:
+                continue
+
+            new_list = []
+            seen = set()
+            for x in raw_list:
+                s = str(x).strip()
+                if not s:
+                    continue
+                if s.lower() == old_lower:
+                    s = new_name
+                if s.lower() not in seen:
+                    seen.add(s.lower())
+                    new_list.append(s)
+
+            meta[field_name] = new_list
+            finfo["metadata"] = meta
+            finfo["verifier"] = crypto_engine.create_verifier(self.password)
+            try:
+                metadata_helper.write_nfo_files("jellyfin_library", k, meta)
+                for alias in finfo.get("aliases", []):
+                    alias_key = str(Path(k).parent / alias) if str(Path(k).parent) != "." else alias
+                    metadata_helper.write_nfo_files("jellyfin_library", alias_key, meta)
+            except Exception as e:
+                logger.warning("Error writing NFO for %s: %s", k, e)
+            updated_keys.append(k)
+
+        if updated_keys:
+            save_manifest(manifest)
+            activity_tracker.tracker.add_event(
+                "info",
+                f"{'Category' if is_genre else 'Tag'} Renamed",
+                f"Renamed {'category' if is_genre else 'tag'} '{old_name}' to '{new_name}' across {len(updated_keys)} video(s)"
+            )
+
+            def _bg_sync(keys):
+                try:
+                    m = load_manifest()
+                    repos_touched = set()
+                    for item_key in keys:
+                        f = m.get("files", {}).get(item_key)
+                        if not f:
+                            continue
+                        repo_id = f.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+                        repos_touched.add(repo_id)
+                        api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        blob_path = f.get("blob_path") or f.get("remote_path")
+                        if blob_path:
+                            record = dict(f)
+                            record["full_key"] = item_key
+                            metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
+                    for r_id in repos_touched:
+                        api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                        repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
+                        metadata_helper.sync_repo_manifest_to_hf(api, r_id, repo_files, self.password)
+                except Exception as ex:
+                    logger.warning("Background rename HF sync warning: %s", ex)
+
+            threading.Thread(target=_bg_sync, args=(updated_keys,), daemon=True).start()
+
+        resp = {
+            "success": True,
+            "type": "genre" if is_genre else "tag",
+            "old_name": old_name,
+            "new_name": new_name,
+            "updated_count": len(updated_keys),
+            "message": f"Successfully renamed {'category' if is_genre else 'tag'} '{old_name}' to '{new_name}' across {len(updated_keys)} video(s)."
         }
         resp_body = json.dumps(resp).encode("utf-8")
         self.send_response(200)
@@ -2938,6 +3333,56 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .quick-add-create-btn:hover {{
             background: rgba(168, 85, 247, 0.28);
             border-color: #c084fc;
+            color: #ffffff;
+        }}
+
+        .pill-del-trigger {{
+            font-size: 0.72rem;
+            margin-left: 2px;
+            cursor: pointer;
+            opacity: 0.65;
+            color: #f87171;
+            font-weight: bold;
+            transition: opacity 0.15s, color 0.15s;
+            padding: 0 2px;
+            border-radius: 2px;
+            display: inline-flex;
+            align-items: center;
+            line-height: 1;
+        }}
+        .pill-del-trigger:hover {{
+            opacity: 1;
+            color: #ef4444;
+            background: rgba(239, 68, 68, 0.2);
+        }}
+        .btn-tag-del-mini {{
+            background: transparent;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #f87171;
+            border-radius: 4px;
+            padding: 1px 5px;
+            font-size: 0.68rem;
+            cursor: pointer;
+            transition: all 0.12s;
+            line-height: 1.2;
+        }}
+        .btn-tag-del-mini:hover {{
+            background: rgba(239, 68, 68, 0.2);
+            border-color: #ef4444;
+            color: #ffffff;
+        }}
+        .quick-add-item-purge {{
+            cursor: pointer;
+            color: #f87171;
+            font-size: 0.85rem;
+            font-weight: bold;
+            padding: 0 4px;
+            border-radius: 3px;
+            transition: background 0.12s, color 0.12s;
+            line-height: 1;
+        }}
+        .quick-add-item-purge:hover {{
+            background: rgba(239, 68, 68, 0.25);
             color: #ffffff;
         }}
 
@@ -6599,7 +7044,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (meta.rating) badgesHtml += `<span class="meta-pill rating-pill">&#11088; ${{escapeHtml(meta.rating)}}</span>`;
 
             genres.forEach(g => {{
-                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Category / Folder: ${{escapeHtml(g)}} (Click to filter)"><span class="cat-pill-prefix">&#128193; CAT:</span><span class="cat-pill-name">${{escapeHtml(g)}}</span></span>`;
+                badgesHtml += `<span class="meta-pill genre-pill" onclick="event.stopPropagation(); addQuickFilter('genre', '${{escapeHtml(g)}}')" title="Category / Folder: ${{escapeHtml(g)}} (Click to filter)"><span class="cat-pill-prefix">&#128193; CAT:</span><span class="cat-pill-name">${{escapeHtml(g)}}</span><span class="pill-del-trigger" onclick="event.stopPropagation(); quickRemoveTagOrGenre('${{escapeHtml(f.key)}}', 'genre', '${{escapeHtml(g)}}')" title="Remove category '${{escapeHtml(g)}}' from this video">&times;</span></span>`;
             }});
 
             tags.forEach(t => {{
@@ -6630,6 +7075,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span class="pill-label-txt" onclick="event.stopPropagation(); addQuickFilter('tag', '${{escapeHtml(t)}}')" title="Filter by tag: ${{escapeHtml(t)}}">${{icon}} ${{escapeHtml(t)}}</span>
                     <span class="pill-tag-edit" onclick="promptRenameTag('${{escapeHtml(t)}}', event)" title="Rename / edit tag '${{escapeHtml(t)}}' across all videos">&#9998;</span>
                     <span class="pill-hide-trigger" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Unhide this tag on all cards' : 'Hide this tag across all cards'}}">${{isHidden ? '&#128065;&#65039;' : '&#128584;'}}</span>
+                    <span class="pill-del-trigger" onclick="event.stopPropagation(); quickRemoveTagOrGenre('${{escapeHtml(f.key)}}', 'tag', '${{escapeHtml(t)}}')" title="Remove tag '${{escapeHtml(t)}}' from this video">&times;</span>
                 </span>`;
             }});
 
@@ -6826,7 +7272,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span class="quick-add-item-name">
                         <span>📁</span> <span>${{escapeHtml(g)}}</span>
                     </span>
-                    <span class="quick-add-item-type cat-type">Category</span>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <span class="quick-add-item-type cat-type">Category</span>
+                        <span class="quick-add-item-purge" onclick="event.stopPropagation(); promptDeleteTagCategoryFromVault('genre', '${{escapeHtml(g)}}')" title="Delete category '${{escapeHtml(g)}}' permanently from vault">&times;</span>
+                    </div>
                 </div>`;
             }});
 
@@ -6837,7 +7286,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span class="quick-add-item-name">
                         <span>🏷️</span> <span>${{escapeHtml(t)}}</span>
                     </span>
-                    <span class="quick-add-item-type tag-type">Tag</span>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <span class="quick-add-item-type tag-type">Tag</span>
+                        <span class="quick-add-item-purge" onclick="event.stopPropagation(); promptDeleteTagCategoryFromVault('tag', '${{escapeHtml(t)}}')" title="Delete tag '${{escapeHtml(t)}}' permanently from vault">&times;</span>
+                    </div>
                 </div>`;
             }});
 
@@ -6956,6 +7408,137 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     badgesContainer.innerHTML = renderCardBadgesHtml(f) + aliasBadge;
                 }}
             }});
+        }}
+
+        async function promptDeleteTagCategoryFromVault(type, name) {{
+            const isGenre = (type === 'genre' || type === 'category');
+            const typeLabel = isGenre ? 'Category' : 'Tag';
+            if (!confirm(`Permanently delete ${{typeLabel}} "${{name}}" from all videos in your entire vault?\n\nThis will remove it from all manifest records and Jellyfin .nfo files.`)) {{
+                return;
+            }}
+
+            try {{
+                const resp = await fetch('/api/tag-category/delete', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ type: isGenre ? 'genre' : 'tag', name: name }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(res.message || `Deleted ${{typeLabel}} "${{name}}"`, 'success');
+                    const targetLower = name.toLowerCase();
+                    const fieldName = isGenre ? 'genres' : 'tags';
+                    allFiles.forEach(f => {{
+                        if (f.metadata && f.metadata[fieldName]) {{
+                            f.metadata[fieldName] = f.metadata[fieldName].filter(x => String(x).trim().toLowerCase() !== targetLower);
+                        }}
+                    }});
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                    renderQuickAddSuggestions();
+                }} else {{
+                    alert('Delete failed: ' + (res.message || 'Unknown error'));
+                }}
+            }} catch (err) {{
+                alert('Request failed: ' + err);
+            }}
+        }}
+
+        function promptDeleteTagGlobally(tag, event) {{
+            if (event) event.stopPropagation();
+            promptDeleteTagCategoryFromVault('tag', tag);
+        }}
+
+        function promptDeleteCategoryGlobally(cat, event) {{
+            if (event) event.stopPropagation();
+            promptDeleteTagCategoryFromVault('genre', cat);
+        }}
+
+        async function promptRenameCategoryGlobally(oldName, event) {{
+            if (event) event.stopPropagation();
+            const newName = prompt(`Rename Category "${{oldName}}" across all videos in vault to:`, oldName);
+            if (!newName) return;
+            const cleanNew = newName.trim();
+            if (!cleanNew || cleanNew.toLowerCase() === oldName.toLowerCase()) return;
+
+            try {{
+                const resp = await fetch('/api/tag-category/rename', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ type: 'genre', old_name: oldName, new_name: cleanNew }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(res.message || `Renamed category to "${{cleanNew}}"`, 'success');
+                    const oldLower = oldName.toLowerCase();
+                    allFiles.forEach(f => {{
+                        if (f.metadata && f.metadata.genres) {{
+                            f.metadata.genres = f.metadata.genres.map(g => (String(g).trim().toLowerCase() === oldLower ? cleanNew : g));
+                        }}
+                    }});
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                    renderQuickAddSuggestions();
+                }} else {{
+                    alert('Rename failed: ' + (res.message || 'Unknown error'));
+                }}
+            }} catch (err) {{
+                alert('Request failed: ' + err);
+            }}
+        }}
+
+        async function promptRenameFolder(folderPath, currentName, count, event) {{
+            if (event) event.stopPropagation();
+            const promptMsg = `Rename tree folder "${{currentName}}" (${{count}} video(s)):\n\nThis updates all video paths, .strm URLs, categories, and Jellyfin .nfo files.`;
+            const newName = prompt(promptMsg, currentName);
+            if (!newName) return;
+            const cleanNew = newName.trim().replace(/[\\\\/]/g, '').trim();
+            if (!cleanNew || cleanNew.toLowerCase() === currentName.toLowerCase()) return;
+
+            try {{
+                const resp = await fetch('/api/folders/rename', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ folder_path: folderPath, new_name: cleanNew }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(res.message || `Renamed folder to "${{cleanNew}}"`, 'success');
+                    const oldFolder = res.old_folder || folderPath;
+                    const newFolder = res.new_folder;
+                    const oldPrefix = oldFolder + '/';
+
+                    allFiles.forEach(f => {{
+                        if (f.key === oldFolder || f.key.startsWith(oldPrefix)) {{
+                            if (f.key === oldFolder) {{
+                                f.key = newFolder;
+                            }} else {{
+                                f.key = newFolder + f.key.substring(oldFolder.length);
+                            }}
+                            if (f.file_names) {{
+                                f.file_names = f.file_names.map(fn => {{
+                                    if (fn === oldFolder) return newFolder;
+                                    if (fn.startsWith(oldPrefix)) return newFolder + fn.substring(oldFolder.length);
+                                    return fn;
+                                }});
+                            }}
+                            if (f.metadata && f.metadata.genres) {{
+                                f.metadata.genres = f.metadata.genres.map(g => (g.toLowerCase() === currentName.toLowerCase() || g.toLowerCase() === oldFolder.toLowerCase() ? (res.new_leaf || cleanNew) : g));
+                            }}
+                        }}
+                    }});
+
+                    const idx = openedTreesQueue.indexOf(oldFolder);
+                    if (idx !== -1) openedTreesQueue[idx] = newFolder;
+
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                }} else {{
+                    alert('Folder rename failed: ' + (res.message || 'Unknown error'));
+                }}
+            }} catch (err) {{
+                alert('Request failed: ' + err);
+            }}
         }}
 
         function renderCard(f, nodeName) {{
@@ -7321,7 +7904,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             ${{treeTagsHtml}}
                         </div>
                         <div class="folder-actions">
-                            <button onclick="event.stopPropagation(); promptDeleteFolder('${{escapeHtml(folderPath)}}', ${{totalDescendantFiles}})" class="btn btn-delete btn-sm" title="Delete entire folder and all contained videos">&#128465; Delete Folder</button>
+                            <button type="button" onclick="event.stopPropagation(); promptRenameFolder('${{escapeHtml(folderPath)}}', '${{escapeHtml(node.name)}}', ${{totalDescendantFiles}}, event)" class="btn btn-secondary btn-sm" title="Rename this folder or subfolder across all video paths and metadata">&#9998; Rename Folder</button>
+                            <button type="button" onclick="event.stopPropagation(); promptDeleteFolder('${{escapeHtml(folderPath)}}', ${{totalDescendantFiles}})" class="btn btn-delete btn-sm" title="Delete entire folder and all contained videos">&#128465; Delete Folder</button>
                         </div>
                     </div>
                     <div class="folder-children ${{isOpen ? '' : 'collapsed'}}">`;
@@ -7577,6 +8161,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         </label>
                         <div class="popover-item-actions" style="display: flex; gap: 4px; align-items: center;">
                             <button type="button" class="btn-tag-edit-mini" onclick="promptRenameTag('${{escapeHtml(t)}}', event)" title="Rename / edit tag '${{escapeHtml(t)}}' across all videos">&#9998;</button>
+                            <button type="button" class="btn-tag-del-mini" onclick="promptDeleteTagGlobally('${{escapeHtml(t)}}', event)" title="Permanently delete tag '${{escapeHtml(t)}}' from all videos in vault">&#128465;</button>
                             <button type="button" class="btn-tag-hide-toggle ${{isHidden ? 'is-hidden' : ''}}" onclick="toggleHideTag('${{escapeHtml(t)}}', event)" title="${{isHidden ? 'Tag is hidden on cards. Click to show on all cards' : 'Hide this tag across all video cards'}}">
                                 ${{isHidden ? '&#128584; Hidden' : '&#128065;&#65039; Hide'}}
                             </button>
@@ -7601,11 +8186,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 genreList.innerHTML = Object.keys(genreCounts).sort((a, b) => a.localeCompare(b)).map(g => {{
                     const isChecked = selectedGenres.has(g);
                     return `
-                    <label class="popover-item" data-val="${{escapeHtml(g)}}">
-                        <input type="checkbox" ${{isChecked ? 'checked' : ''}} onchange="toggleFilterSelection('genre', '${{escapeHtml(g)}}')">
-                        <span>${{escapeHtml(g)}}</span>
-                        <span class="popover-item-count">(${{genreCounts[g]}})</span>
-                    </label>`;
+                    <div class="popover-item" data-val="${{escapeHtml(g)}}">
+                        <label class="popover-item-left">
+                            <input type="checkbox" ${{isChecked ? 'checked' : ''}} onchange="toggleFilterSelection('genre', '${{escapeHtml(g)}}')">
+                            <span>${{escapeHtml(g)}}</span>
+                            <span class="popover-item-count">(${{genreCounts[g]}})</span>
+                        </label>
+                        <div class="popover-item-actions" style="display: flex; gap: 4px; align-items: center;">
+                            <button type="button" class="btn-tag-edit-mini" onclick="promptRenameCategoryGlobally('${{escapeHtml(g)}}', event)" title="Rename category '${{escapeHtml(g)}}' across all videos">&#9998;</button>
+                            <button type="button" class="btn-tag-del-mini" onclick="promptDeleteCategoryGlobally('${{escapeHtml(g)}}', event)" title="Permanently delete category '${{escapeHtml(g)}}' from all videos in vault">&#128465;</button>
+                        </div>
+                    </div>`;
                 }}).join('') || '<div style="color: #6b7280; font-size: 0.78rem; padding: 6px;">No categories found</div>';
             }}
 
