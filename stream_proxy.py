@@ -806,6 +806,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.send_error(400, "Missing 'key' in request")
             return
 
+        # Sanitize incoming metadata against test/conflict boilerplate
+        if isinstance(meta_in, dict):
+            ov_val = str(meta_in.get("overview", "")).strip()
+            if any(w in ov_val.lower() for w in ("conflict test", "dummy test", "test overview")):
+                meta_in["overview"] = ""
+            if "genres" in meta_in and isinstance(meta_in["genres"], list):
+                meta_in["genres"] = [g for g in meta_in["genres"] if "777" not in g and "dummy" not in str(g).lower()]
+
         manifest = load_manifest()
         if key not in manifest.get("files", {}):
             found_key = None
@@ -8759,8 +8767,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const subtitleHtml = showSubtitle ? `<div class="video-card-sub" title="${{escapeHtml(nodeName)}}">${{escapeHtml(nodeName)}}</div>` : '';
 
             const ov = (meta.overview || "").trim();
-            const showOv = (ov && !ov.startsWith('Encrypted vault stream:') && ov.toLowerCase() !== cleanTitle && ov.toLowerCase() !== cleanNode);
-            const overviewHtml = showOv ? `<div class="card-overview-snippet" title="${{escapeHtml(ov)}}">${{escapeHtml(ov)}}</div>` : '';
+            const isTestOv = /conflict test|dummy test|test overview/i.test(ov);
+            const showOv = (ov && !isTestOv && !ov.startsWith('Encrypted vault stream:') && ov.toLowerCase() !== cleanTitle && ov.toLowerCase() !== cleanNode);
+            const overviewHtml = showOv ? `<div class="card-overview-snippet" title="${{escapeHtml(ov)}}"><span style="color: #38bdf8; font-style: normal; margin-right: 4px;">&#128221; Plot:</span>${{escapeHtml(ov)}}</div>` : '';
 
             const accountOwner = f.account || primaryAccount;
             const isPrimary = (accountOwner === primaryAccount);
@@ -8943,8 +8952,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const subtitleHtml = showSubtitle ? `<span style="font-size: 0.75rem; color: #6b7280; font-family: monospace;">(${{escapeHtml(nodeName)}})</span>` : '';
 
             const ov = (meta.overview || "").trim();
-            const showOv = (ov && !ov.startsWith('Encrypted vault stream:') && ov.toLowerCase() !== cleanTitle && ov.toLowerCase() !== cleanNode);
-            const overviewHtml = showOv ? `<div class="file-overview-snippet" title="${{escapeHtml(ov)}}">${{escapeHtml(ov)}}</div>` : '';
+            const isTestOv = /conflict test|dummy test|test overview/i.test(ov);
+            const showOv = (ov && !isTestOv && !ov.startsWith('Encrypted vault stream:') && ov.toLowerCase() !== cleanTitle && ov.toLowerCase() !== cleanNode);
+            const overviewHtml = showOv ? `<div class="file-overview-snippet" title="${{escapeHtml(ov)}}"><span style="color: #38bdf8; font-style: normal; margin-right: 4px;">&#128221; Plot:</span>${{escapeHtml(ov)}}</div>` : '';
 
             const accountOwner = f.account || primaryAccount;
             const isPrimary = (accountOwner === primaryAccount);
