@@ -5481,6 +5481,139 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             from {{ transform: translate(-50%, 40px); opacity: 0; }}
             to {{ transform: translate(-50%, 0); opacity: 1; }}
         }}
+        .floating-quick-resume-bar {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: rgba(15, 23, 42, 0.94);
+            border: 1px solid rgba(56, 189, 248, 0.45);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 18px rgba(56, 189, 248, 0.28);
+            backdrop-filter: blur(14px);
+            border-radius: 40px;
+            padding: 7px 14px 7px 10px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            z-index: 1040;
+            max-width: 480px;
+            cursor: pointer;
+            animation: slideUpResumeBar 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+        }}
+        .floating-quick-resume-bar:hover {{
+            transform: translateY(-2px);
+            border-color: #38bdf8;
+            box-shadow: 0 14px 34px rgba(0, 0, 0, 0.85), 0 0 24px rgba(56, 189, 248, 0.45);
+        }}
+        @keyframes slideUpResumeBar {{
+            from {{ transform: translateY(40px); opacity: 0; }}
+            to {{ transform: translateY(0); opacity: 1; }}
+        }}
+        .resume-play-icon {{
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #0284c7, #38bdf8);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.6);
+            flex-shrink: 0;
+            padding-left: 2px;
+        }}
+        .resume-bar-info {{
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            max-width: 250px;
+        }}
+        .resume-bar-title {{
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #f8fafc;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.25;
+        }}
+        .resume-bar-meta {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 3px;
+        }}
+        .resume-badge-time {{
+            font-size: 0.72rem;
+            color: #94a3b8;
+            font-variant-numeric: tabular-nums;
+            font-weight: 500;
+            white-space: nowrap;
+        }}
+        .resume-track-mini {{
+            width: 55px;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 2px;
+            overflow: hidden;
+            flex-shrink: 0;
+        }}
+        .resume-fill-mini {{
+            height: 100%;
+            background: #38bdf8;
+            border-radius: 2px;
+            transition: width 0.2s ease;
+        }}
+        .resume-btn-action {{
+            padding: 5px 12px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            border-radius: 20px;
+            background: rgba(56, 189, 248, 0.16);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }}
+        .resume-btn-action:hover {{
+            background: #38bdf8;
+            color: #0f172a;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+        }}
+        .resume-btn-dismiss {{
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: transparent;
+            border: none;
+            color: #64748b;
+            font-size: 1.2rem;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            margin-left: -2px;
+            transition: all 0.15s ease;
+        }}
+        .resume-btn-dismiss:hover {{
+            color: #f87171;
+            background: rgba(239, 68, 68, 0.15);
+        }}
+        @media (max-width: 640px) {{
+            .floating-quick-resume-bar {{
+                bottom: 16px;
+                right: 16px;
+                max-width: calc(100vw - 32px);
+                gap: 8px;
+            }}
+            .resume-bar-info {{
+                max-width: 140px;
+            }}
+        }}
         .video-card {{
             background: #111827;
             border: 1px solid rgba(255, 255, 255, 0.08);
@@ -7046,6 +7179,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </span>
             </div>
             <div class="vault-actions-cluster">
+                <button onclick="resumeLastClosedVideo(event)" id="btnHeaderQuickResume" class="tool-btn" style="display: none; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Instantly resume last played video (Shortcut: R)">
+                    &#9654;&#65039; <span id="headerResumeLabel">Resume</span>
+                </button>
                 <button onclick="recheckCloudSync()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12);" title="Recheck Hugging Face for new cloud uploads and sync">
                     &#128260; Recheck Cloud
                 </button>
@@ -7367,6 +7503,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     </div>
 
                     <button onclick="resetAllFilters()" id="btnResetFilters" class="tool-btn" style="display: none;" title="Reset all active filters and search">&#128260; Reset</button>
+                    <button onclick="resumeLastClosedVideo(event)" id="btnStickyQuickResume" class="tool-btn" style="display: none; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Instantly resume last played video (Shortcut: R)">
+                        &#9654;&#65039; <span id="stickyResumeLabel">Resume</span>
+                    </button>
                     <span id="filterSummaryCount" class="filter-summary-count" style="display: none;"></span>
                 </div>
 
@@ -7423,6 +7562,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 &#128256; Merge Marked Videos &rarr;
             </button>
         </div>
+    </div>
+
+    <!-- Floating Quick Resume Bar (Instantly resume last closed video from exact timestamp) -->
+    <div id="floatingResumeBar" class="floating-quick-resume-bar" style="display: none;" onclick="resumeLastClosedVideo(event)">
+        <div class="resume-play-icon" title="Resume Playback">&#9654;</div>
+        <div class="resume-bar-info">
+            <div class="resume-bar-title" id="floatingResumeTitle">Last Played Video</div>
+            <div class="resume-bar-meta">
+                <span id="floatingResumeBadge" class="resume-badge-time">&#9201; 00:00 / 00:00</span>
+                <div class="resume-track-mini">
+                    <div id="floatingResumeProgress" class="resume-fill-mini" style="width: 0%;"></div>
+                </div>
+            </div>
+        </div>
+        <button type="button" class="resume-btn-action" onclick="resumeLastClosedVideo(event)" title="Resume Playback (or press 'R')">Resume</button>
+        <button type="button" class="resume-btn-dismiss" onclick="dismissQuickResume(event)" title="Dismiss Quick Resume">&times;</button>
     </div>
 
     <!-- Card Quick-Add Tag/Category Popover -->
@@ -10487,6 +10642,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             if (cur > 3 && cur < dur - 5) {{
                 saveVideoPosition(safeId, cur, dur);
+                saveLastClosedVideoSnapshot();
             }} else if (cur >= dur - 5) {{
                 clearVideoPosition(safeId);
             }}
@@ -10549,6 +10705,137 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     if (resumePill) resumePill.style.display = 'none';
                 }}
             }});
+        }}
+
+        function saveLastClosedVideoSnapshot() {{
+            const player = document.getElementById('videoPlayer');
+            const playerTitle = document.getElementById('playerTitle');
+            if (!player) return;
+
+            const cur = player.currentTime || 0;
+            const dur = player.duration || 0;
+            const key = currentVideoKey;
+            const fileObj = (allFiles || []).find(f => f.key === key || (f.file_names && f.file_names.includes(key)));
+            const safeId = currentPlayingSafeId || (fileObj ? fileObj.safe_id : key);
+            if (!safeId) return;
+
+            // If user finished video (< 5s left), wrap to 0:
+            const resumeTime = (dur > 0 && cur >= dur - 5) ? 0 : Math.floor(cur);
+
+            const snapshot = {{
+                key: key || safeId,
+                safeId: safeId,
+                title: (playerTitle ? playerTitle.textContent : '') || key || 'Video',
+                blobPath: currentBlobId || '',
+                time: resumeTime,
+                duration: Math.floor(dur),
+                updated: Date.now()
+            }};
+
+            try {{
+                localStorage.setItem('hfsync_last_closed_video', JSON.stringify(snapshot));
+            }} catch (e) {{}}
+        }}
+
+        function getLastClosedVideo() {{
+            try {{
+                const raw = localStorage.getItem('hfsync_last_closed_video');
+                if (raw) {{
+                    const data = JSON.parse(raw);
+                    if (data && data.safeId) return data;
+                }}
+            }} catch (e) {{}}
+            return null;
+        }}
+
+        function updateQuickResumeUI() {{
+            const box = document.getElementById('playerBox');
+            const isPlayerOpen = box && box.style.display !== 'none';
+            const floatingBar = document.getElementById('floatingResumeBar');
+            const btnHeader = document.getElementById('btnHeaderQuickResume');
+            const btnSticky = document.getElementById('btnStickyQuickResume');
+
+            // If player is currently open, hide all resume buttons
+            if (isPlayerOpen) {{
+                if (floatingBar) floatingBar.style.display = 'none';
+                if (btnHeader) btnHeader.style.display = 'none';
+                if (btnSticky) btnSticky.style.display = 'none';
+                return;
+            }}
+
+            const last = getLastClosedVideo();
+            if (!last || !last.safeId) {{
+                if (floatingBar) floatingBar.style.display = 'none';
+                if (btnHeader) btnHeader.style.display = 'none';
+                if (btnSticky) btnSticky.style.display = 'none';
+                return;
+            }}
+
+            // Populate Floating Bar
+            if (floatingBar) {{
+                const titleEl = document.getElementById('floatingResumeTitle');
+                const badgeEl = document.getElementById('floatingResumeBadge');
+                const progEl = document.getElementById('floatingResumeProgress');
+                if (titleEl) titleEl.textContent = last.title || last.key || 'Resume Video';
+                
+                const curFormatted = formatTime(last.time || 0);
+                const durFormatted = (last.duration && last.duration > 0) ? formatTime(last.duration) : '--:--';
+                if (badgeEl) badgeEl.textContent = `⏱️ ${{curFormatted}} / ${{durFormatted}} (Press R)`;
+                
+                if (progEl) {{
+                    const pct = (last.duration && last.duration > 0) ? Math.min(100, Math.max(0, (last.time / last.duration) * 100)) : 0;
+                    progEl.style.width = pct.toFixed(1) + '%';
+                }}
+                floatingBar.style.display = 'flex';
+            }}
+
+            // Populate Header & Sticky buttons
+            const rawTitle = (last.title || last.key || 'Video');
+            const shortTitle = rawTitle.length > 22 ? rawTitle.substring(0, 20) + '…' : rawTitle;
+            const timeLabel = last.time > 0 ? ` (${{formatTime(last.time)}})` : '';
+            const labelText = `Resume: ${{shortTitle}}${{timeLabel}}`;
+
+            if (btnHeader) {{
+                const headerLabel = document.getElementById('headerResumeLabel');
+                if (headerLabel) headerLabel.textContent = labelText;
+                btnHeader.title = `Resume playing "${{last.title}}" at ${{formatTime(last.time || 0)}} (Shortcut: R)`;
+                btnHeader.style.display = 'inline-flex';
+            }}
+
+            if (btnSticky) {{
+                const stickyLabel = document.getElementById('stickyResumeLabel');
+                if (stickyLabel) stickyLabel.textContent = labelText;
+                btnSticky.title = `Resume playing "${{last.title}}" at ${{formatTime(last.time || 0)}} (Shortcut: R)`;
+                btnSticky.style.display = 'inline-flex';
+            }}
+        }}
+
+        function resumeLastClosedVideo(event) {{
+            if (event) {{
+                event.stopPropagation();
+            }}
+            const last = getLastClosedVideo();
+            if (!last || !last.safeId) return;
+
+            const box = document.getElementById('playerBox');
+            if (box) {{
+                box.style.display = 'block';
+                box.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+            }}
+
+            const streamUrl = '/stream/play/' + encodeURIComponent(last.safeId);
+            playVideo(streamUrl, last.title || 'Video Stream', last.blobPath || streamUrl, last.time || 0);
+            updateQuickResumeUI();
+        }}
+
+        function dismissQuickResume(event) {{
+            if (event) {{
+                event.stopPropagation();
+            }}
+            try {{
+                localStorage.removeItem('hfsync_last_closed_video');
+            }} catch (e) {{}}
+            updateQuickResumeUI();
         }}
 
         function setMiniPlayerSize(size, event) {{
@@ -10727,6 +11014,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const container = document.getElementById('ytContainer');
 
             userClosedPlayer = false;
+            updateQuickResumeUI();
 
             currentBlobId = blobPath || url;
             currentVideoKey = (url.startsWith('/stream/') ? url.substring('/stream/'.length) : url);
@@ -10796,6 +11084,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function closePlayer() {{
+            saveLastClosedVideoSnapshot();
             captureCurrentVideoPosition();
             userClosedPlayer = true;
             deactivateFloatingMiniPlayer();
@@ -10820,6 +11109,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             box.style.display = 'none';
             box.style.minHeight = '';
             box.classList.remove('theater-mode');
+            updateQuickResumeUI();
         }}
 
         function togglePlayPause() {{
@@ -11216,13 +11506,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             // YouTube Keyboard Shortcuts
             window.addEventListener('keydown', (e) => {{
-                const box = document.getElementById('playerBox');
-                if (!box || box.style.display === 'none') return;
                 // Ignore shortcuts if user is typing in search or edit inputs
                 const tag = (e.target.tagName || '').toLowerCase();
                 if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
 
+                const box = document.getElementById('playerBox');
+                const isPlayerClosed = !box || box.style.display === 'none';
+
                 const key = e.key.toLowerCase();
+
+                // If player is closed, 'r' triggers instant resume of last played video:
+                if (isPlayerClosed) {{
+                    if (key === 'r') {{
+                        e.preventDefault();
+                        resumeLastClosedVideo();
+                    }}
+                    return;
+                }}
 
                 if (key === ' ' || key === 'k') {{
                     e.preventDefault();
@@ -13821,6 +14121,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         restoreUserPosition();
         applyHideTagsState();
         updateSystemStatusIndicators(true, 'idle');
+        updateQuickResumeUI();
 
         /* Privacy Blur Mode Controller */
         function isPrivacyBlurActive() {{
