@@ -1745,8 +1745,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
-                if audio_entry and audio_entry.get("size_bytes"):
-                    audio_size_str = f"{audio_entry['size_bytes'] / (1024 * 1024):.1f} MB"
+                audio_sz = (audio_entry.get("orig_size") or audio_entry.get("size_bytes")) if audio_entry else None
+                if audio_sz and audio_sz > 0:
+                    audio_size_str = f"{audio_sz / (1024 * 1024):.1f} MB"
                 elif dur_sec and dur_sec > 0:
                     audio_size_str = f"~{(dur_sec * 16 * 1024) / (1024 * 1024):.1f} MB"
                 else:
@@ -1868,8 +1869,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 sb_v = storyboard_helper.get_storyboard_version(safe_id)
 
                 audio_entry = info.get("audio")
-                if audio_entry and audio_entry.get("size_bytes"):
-                    audio_size_str = f"{audio_entry['size_bytes'] / (1024 * 1024):.1f} MB"
+                audio_sz = (audio_entry.get("orig_size") or audio_entry.get("size_bytes")) if audio_entry else None
+                if audio_sz and audio_sz > 0:
+                    audio_size_str = f"{audio_sz / (1024 * 1024):.1f} MB"
                 elif dur_sec and dur_sec > 0:
                     audio_size_str = f"~{(dur_sec * 16 * 1024) / (1024 * 1024):.1f} MB"
                 else:
@@ -2629,6 +2631,38 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             margin-top: 8px;
             margin-bottom: 0;
         }}
+        .filter-summary-count {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            background: rgba(99, 102, 241, 0.18);
+            border: 1px solid rgba(99, 102, 241, 0.45);
+            border-radius: 9999px;
+            color: #a5b4fc;
+            font-size: 0.82rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }}
+        .filter-count-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 10px;
+            background: rgba(99, 102, 241, 0.25);
+            border: 1px solid rgba(99, 102, 241, 0.5);
+            border-radius: 9999px;
+            color: #c7d2fe;
+            font-size: 0.76rem;
+            font-weight: 700;
+            margin-right: 6px;
+        }}
+        .folder-count.is-matching-filtered {{
+            background: rgba(99, 102, 241, 0.25) !important;
+            color: #c7d2fe !important;
+            border: 1px solid rgba(99, 102, 241, 0.5) !important;
+            font-weight: 700 !important;
+        }}
 
         .toolbar {{
             display: flex;
@@ -3031,15 +3065,21 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             bottom: 0;
             left: 0;
             width: 100%;
-            height: 3px;
-            background: rgba(255, 255, 255, 0.2);
+            height: 6px;
+            background: rgba(255, 255, 255, 0.25);
             opacity: 0;
-            transition: opacity 0.15s;
-            pointer-events: none;
-            z-index: 3;
+            transition: opacity 0.15s, height 0.15s;
+            pointer-events: auto;
+            cursor: pointer;
+            z-index: 5;
         }}
+        .card-thumb-wrap:hover .thumb-scrub-bar,
+        .list-thumb-wrap:hover .thumb-scrub-bar,
         .video-thumb-card:hover .thumb-scrub-bar {{
             opacity: 1;
+        }}
+        .thumb-scrub-bar:hover {{
+            height: 10px;
         }}
         .thumb-scrub-fill {{
             height: 100%;
@@ -4522,6 +4562,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     </div>
 
                     <button onclick="resetAllFilters()" id="btnResetFilters" class="tool-btn" style="display: none;" title="Reset all active filters and search">&#128260; Reset</button>
+                    <span id="filterSummaryCount" class="filter-summary-count" style="display: none;"></span>
                 </div>
 
                 <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
@@ -5422,18 +5463,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             renderActiveFilterChips();
         }}
 
-        function renderActiveFilterChips() {{
+        function renderActiveFilterChips(matchingCount) {{
             const bar = document.getElementById('activeFilterChipsBar');
             if (!bar) return;
             const totalActive = selectedTags.size + selectedGenres.size + selectedAccounts.size;
-            if (totalActive === 0) {{
+            const q = document.getElementById('searchInput') ? document.getElementById('searchInput').value.trim() : '';
+            if (totalActive === 0 && !q) {{
                 bar.style.display = 'none';
                 bar.innerHTML = '';
                 return;
             }}
             bar.style.display = 'flex';
-            let html = '<span style="font-size: 0.74rem; color: #9ca3af; margin-right: 4px;">Active Filters:</span>';
+            const mCount = (typeof matchingCount === 'number') ? matchingCount : (window.lastMatchingCount !== undefined ? window.lastMatchingCount : allFiles.length);
+            let html = `<span class="filter-count-badge">🎯 ${{mCount}} of ${{allFiles.length}} matching</span><span style="font-size: 0.74rem; color: #9ca3af; margin-right: 4px;">Active Filters:</span>`;
 
+            if (q) {{
+                html += `<span class="filter-chip">&#128269; "${{escapeHtml(q)}}" <span class="filter-chip-remove" onclick="clearSearchInput()">&times;</span></span>`;
+            }}
             selectedAccounts.forEach(acc => {{
                 html += `<span class="filter-chip">&#128100; ${{escapeHtml(acc)}} <span class="filter-chip-remove" onclick="toggleFilterSelection('account', '${{escapeHtml(acc)}}')">&times;</span></span>`;
             }});
@@ -5445,6 +5491,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }});
             html += `<span class="clear-all-chip" onclick="resetAllFilters()">Clear All</span>`;
             bar.innerHTML = html;
+        }}
+
+        function clearSearchInput() {{
+            const el = document.getElementById('searchInput');
+            if (el) {{
+                el.value = '';
+                filterTree();
+            }}
         }}
 
         function populateFilterDropdowns() {{
@@ -5849,22 +5903,37 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const allFolderGroups = document.querySelectorAll('.folder-group');
             allFolderGroups.forEach(fg => {{
                 const visibleCount = fg.querySelectorAll('.video-card:not(.is-filter-hidden), .file-row:not(.is-filter-hidden)').length;
+                const totalInFolder = fg.querySelectorAll('.video-card, .file-row').length;
                 const countBadge = fg.querySelector(':scope > .folder-header .folder-count');
 
                 if (visibleCount > 0) {{
                     fg.classList.remove('is-filter-hidden');
                     if (countBadge) {{
                         if (hasFilters) {{
-                            countBadge.textContent = `${{visibleCount}} match${{visibleCount === 1 ? '' : 'es'}}`;
+                            countBadge.textContent = `${{visibleCount}} of ${{totalInFolder}} matching`;
+                            countBadge.classList.add('is-matching-filtered');
                         }} else {{
-                            const totalFiles = fg.querySelectorAll('.video-card, .file-row').length;
-                            countBadge.textContent = `${{totalFiles}} video(s)`;
+                            countBadge.textContent = `${{totalInFolder}} video(s)`;
+                            countBadge.classList.remove('is-matching-filtered');
                         }}
                     }}
                 }} else {{
                     fg.classList.add('is-filter-hidden');
                 }}
             }});
+
+            // Update matching results badges next to filter bar
+            window.lastMatchingCount = matchingFileKeys.size;
+            const summaryEl = document.getElementById('filterSummaryCount');
+            if (summaryEl) {{
+                if (hasFilters) {{
+                    summaryEl.innerHTML = `🎯 <strong>${{matchingFileKeys.size}}</strong> of <strong>${{allFiles.length}}</strong> matching`;
+                    summaryEl.style.display = 'inline-flex';
+                }} else {{
+                    summaryEl.style.display = 'none';
+                }}
+            }}
+            renderActiveFilterChips(matchingFileKeys.size);
 
             // 3. Show/hide smooth Empty State Notice without wiping treeContainer
             const container = document.getElementById('treeContainer');
@@ -6025,6 +6094,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
             const frameIndex = Math.min(99, Math.floor(pct * 100));
             
+            card.dataset.lastScrubPct = pct;
+            card.dataset.scrubbing = '1';
             setThumbCardFrame(card, frameIndex);
 
             thumbManualScrubTimeout = setTimeout(() => {{
@@ -6049,6 +6120,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             if (activeHoveredThumb === card) {{
                 activeHoveredThumb = null;
             }}
+            delete card.dataset.scrubbing;
             const canvas = card.querySelector('.thumb-canvas');
             if (canvas) {{
                 if (canvas.dataset.staticBg) {{
@@ -6063,6 +6135,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         /* Advanced YouTube-Style Video Player Controller */
         let currentBlobId = "";
+        let currentVideoKey = "";
+        let currentPlayingSafeId = "";
         let activeStoryboard = null;
         let currentStoryboardKey = null;
 
@@ -6185,6 +6259,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         let lastPosSaveTime = 0;
+        function captureCurrentVideoPosition() {{
+            const player = document.getElementById('videoPlayer');
+            if (!player || !player.duration || player.duration < 10) return;
+            const cur = player.currentTime;
+            const dur = player.duration;
+            const key = currentVideoKey;
+            const fileObj = (allFiles || []).find(f => f.key === key || (f.file_names && f.file_names.includes(key)));
+            const safeId = currentPlayingSafeId || (fileObj ? fileObj.safe_id : key);
+            if (!safeId) return;
+
+            if (cur > 3 && cur < dur - 5) {{
+                saveVideoPosition(safeId, cur, dur);
+            }} else if (cur >= dur - 5) {{
+                clearVideoPosition(safeId);
+            }}
+        }}
+
         function saveVideoPosition(safeId, time, duration) {{
             if (!safeId) return;
             try {{
@@ -6219,7 +6310,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             cards.forEach(card => {{
                 let resumeBar = card.querySelector('.card-resume-bar');
                 let resumePill = card.querySelector('.card-resume-badge');
-                if (time > 5 && duration > 0) {{
+                if (time > 3 && duration > 0) {{
                     const pct = Math.min(100, Math.round((time / duration) * 100));
                     if (!resumeBar) {{
                         resumeBar = document.createElement('div');
@@ -6320,8 +6411,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const blobPath = fileObj ? (fileObj.blob_path || '') : '';
             const dur = fileObj ? (fileObj.duration_sec || 0) : 0;
 
+            const clickedScrubBar = Boolean(event && event.target && event.target.closest('.thumb-scrub-bar'));
+            const isActivelyScrubbing = card.classList.contains('is-scrubbing') || (card.dataset.scrubbing === '1');
+
             let seekTime = 0;
-            if (dur > 0 && event && event.clientX) {{
+            const savedPos = getSavedVideoPosition(safeId);
+
+            if (clickedScrubBar) {{
+                const scrubBar = card.querySelector('.thumb-scrub-bar') || card;
+                const rect = scrubBar.getBoundingClientRect();
+                const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+                seekTime = Math.floor(pct * dur);
+            }} else if (savedPos && savedPos.time > 5) {{
+                seekTime = savedPos.time;
+            }} else if (isActivelyScrubbing && event && event.clientX) {{
                 const rect = card.getBoundingClientRect();
                 const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
                 seekTime = Math.floor(pct * dur);
@@ -6413,6 +6516,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             
             const fileObj = (allFiles || []).find(f => f.key === currentVideoKey || (f.file_names && f.file_names.includes(currentVideoKey)));
             const safeId = fileObj ? fileObj.safe_id : currentVideoKey;
+            currentPlayingSafeId = safeId;
 
             highlightAndPromotePlayingVideo(currentVideoKey);
             playerTitle.textContent = title || "Decrypted Stream";
@@ -6474,6 +6578,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function closePlayer() {{
+            captureCurrentVideoPosition();
             userClosedPlayer = true;
             deactivateFloatingMiniPlayer();
             const box = document.getElementById('playerBox');
@@ -6514,8 +6619,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const player = document.getElementById('videoPlayer');
             if (!player.duration) return;
             player.currentTime = Math.max(0, Math.min(player.duration, player.currentTime + deltaSec));
+            captureCurrentVideoPosition();
             flashCenterFeedback(deltaSec > 0 ? `+${{deltaSec}}s` : `${{deltaSec}}s`);
         }}
+
+        window.addEventListener('beforeunload', () => {{
+            captureCurrentVideoPosition();
+        }});
+        window.addEventListener('pagehide', () => {{
+            captureCurrentVideoPosition();
+        }});
 
         function toggleMute() {{
             const player = document.getElementById('videoPlayer');
@@ -6667,7 +6780,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             player.addEventListener('pause', () => {{
                 if (playIcon) playIcon.style.display = 'block';
                 if (pauseIcon) pauseIcon.style.display = 'none';
+                captureCurrentVideoPosition();
                 resetControlsTimer();
+            }});
+            player.addEventListener('seeked', () => {{
+                captureCurrentVideoPosition();
             }});
 
             // Buffering Spinner
@@ -6700,26 +6817,17 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 // Save watched progress for resume
                 const now = Date.now();
-                if (now - lastPosSaveTime > 2000 && currentVideoKey && player.duration > 15) {{
+                if (now - lastPosSaveTime > 1000 && player.duration > 10) {{
                     lastPosSaveTime = now;
-                    const cur = player.currentTime;
-                    const dur = player.duration;
-                    const fileObj = (allFiles || []).find(f => f.key === currentVideoKey || (f.file_names && f.file_names.includes(currentVideoKey)));
-                    const safeId = fileObj ? fileObj.safe_id : currentVideoKey;
-                    if (cur > 5 && cur < dur - 10) {{
-                        saveVideoPosition(safeId, cur, dur);
-                    }} else if (cur >= dur - 10) {{
-                        clearVideoPosition(safeId);
-                    }}
+                    captureCurrentVideoPosition();
                 }}
 
                 updateStatsForNerds();
             }});
 
             player.addEventListener('ended', () => {{
-                const fileObj = (allFiles || []).find(f => f.key === currentVideoKey || (f.file_names && f.file_names.includes(currentVideoKey)));
-                const safeId = fileObj ? fileObj.safe_id : currentVideoKey;
-                clearVideoPosition(safeId);
+                const safeId = currentPlayingSafeId || (currentVideoKey ? ((allFiles || []).find(f => f.key === currentVideoKey)?.safe_id || currentVideoKey) : null);
+                if (safeId) clearVideoPosition(safeId);
             }});
 
             player.addEventListener('loadedmetadata', () => {{
@@ -6762,6 +6870,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (isScrubDragging) {{
                     isScrubDragging = false;
                     scrubContainer.classList.remove('is-dragging');
+                    captureCurrentVideoPosition();
                 }}
             }});
 
@@ -7005,7 +7114,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
 
         /* Subtitles & Audio Mode Engine */
-        let currentVideoKey = '';
         let currentSubLang = 'off';
         let isAudioMode = false;
         let pickedSubFile = null;
@@ -8293,19 +8401,20 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             import imageio_ffmpeg
             import subprocess
+            from urllib.parse import quote
             ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
             port = self.server.server_port if hasattr(self.server, "server_port") else 8080
-            stream_url = f"http://127.0.0.1:{port}/stream/{clean_key}"
+            stream_url = f"http://127.0.0.1:{port}/stream/{quote(clean_key)}?full=1"
             safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_key)
             tmp_m4a = f"temp_audio_{safe_id}.m4a"
 
             # 1. Fast copy
             cmd = [ffmpeg, "-y", "-i", stream_url, "-vn", "-c:a", "copy", tmp_m4a]
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
             if not os.path.exists(tmp_m4a) or os.path.getsize(tmp_m4a) < 500:
                 # 2. AAC encode fallback
                 cmd = [ffmpeg, "-y", "-i", stream_url, "-vn", "-c:a", "aac", "-b:a", "192k", tmp_m4a]
-                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
 
             if not os.path.exists(tmp_m4a) or os.path.getsize(tmp_m4a) < 500:
                 if os.path.exists(tmp_m4a):
@@ -8332,6 +8441,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 "repo_id": repo_id,
                 "account": file_info.get("account") or (repo_id.split("/")[0] if "/" in repo_id else self.hf_username),
                 "orig_size": orig_size,
+                "size_bytes": orig_size,
                 "enc_size": enc_size,
                 "format": "m4a",
                 "verifier": crypto_engine.create_verifier(self.password)
@@ -8432,7 +8542,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             # Open-ended range (e.g. bytes=0- or bytes=X- without specified end byte):
             # Stream in responsive 4MB bursts so initial loading and seeking start in milliseconds!
             STREAM_BURST = 4 * 1024 * 1024
-            is_full_stream = ('full=1' in self.path or 'no_burst=1' in self.path)
+            is_audio_stream = bool(custom_content_type and "audio" in custom_content_type) or "/stream/audio/" in self.path
+            is_full_stream = ('full=1' in self.path or 'no_burst=1' in self.path or is_audio_stream or 'download' in self.path)
             if match.group(2):
                 end = min(total_size - 1, int(match.group(2)))
             elif is_full_stream:
