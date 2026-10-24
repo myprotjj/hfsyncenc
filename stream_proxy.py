@@ -345,6 +345,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_rename_tag_category()
         elif path == "/api/videos/merge":
             self.handle_merge_videos()
+        elif path == "/api/folders/open-sync":
+            self.handle_open_sync_folder()
         elif path == "/api/videos/unlink-hash":
             self.handle_unlink_video_hash()
         else:
@@ -1749,6 +1751,53 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "message": f"Successfully renamed {'category' if is_genre else 'tag'} '{old_name}' to '{new_name}' across {len(updated_keys)} video(s)."
         }
         resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_open_sync_folder(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
+        try:
+            req_data = json.loads(body) if body else {}
+            rel_folder = str(req_data.get("folder_path", "")).strip().replace("\\", "/")
+        except Exception:
+            rel_folder = ""
+
+        # Normalize relative path to avoid path traversal
+        clean_parts = [p for p in rel_folder.split("/") if p and p not in (".", "..")]
+        clean_rel = os.path.join(*clean_parts) if clean_parts else ""
+
+        sync_base = os.path.abspath("videos_to_sync")
+        target_dir = os.path.normpath(os.path.join(sync_base, clean_rel))
+
+        # Security check: must reside inside sync_base
+        if not target_dir.startswith(sync_base):
+            target_dir = sync_base
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            if os.name == "nt":
+                try:
+                    os.startfile(target_dir)
+                except Exception:
+                    subprocess.Popen(["explorer", os.path.normpath(target_dir)])
+            else:
+                subprocess.Popen(["xdg-open", target_dir])
+
+            rel_display = os.path.relpath(target_dir, os.getcwd()).replace("\\", "/")
+            resp_body = json.dumps({
+                "success": True,
+                "path": target_dir,
+                "rel_path": rel_display,
+                "message": f"Opened sync folder: {rel_display}"
+            }).encode("utf-8")
+        except Exception as e:
+            resp_body = json.dumps({"success": False, "error": str(e)}).encode("utf-8")
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(resp_body)))
@@ -5097,6 +5146,37 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             gap: 6px;
             padding: 4px 0 10px 0;
         }}
+        .video-card-title-actions {{
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            flex-shrink: 0;
+        }}
+        .card-mark-merge-pill {{
+            background: rgba(168, 85, 247, 0.12);
+            border: 1px solid rgba(168, 85, 247, 0.38);
+            color: #c084fc;
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+            line-height: 1.3;
+        }}
+        .card-mark-merge-pill:hover {{
+            background: #9333ea;
+            color: #fff;
+            border-color: #a855f7;
+            transform: scale(1.04);
+        }}
+        .card-mark-merge-pill.active {{
+            background: #9333ea;
+            color: #fff;
+            border-color: #c084fc;
+            box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+        }}
         .video-card.is-marked-for-merge {{
             border-color: #a855f7 !important;
             box-shadow: 0 0 20px rgba(168, 85, 247, 0.45) !important;
@@ -6691,6 +6771,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn" title="Toggle tag badges visibility on video cards">&#127991; Tags: <span id="tagsStateLabel">Shown</span></button>
                 <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn" title="Merge marked duplicate videos and lock hashes">&#128256; Merge Videos <span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.65rem; padding: 1px 6px; margin-left: 4px;">0</span></button>
+                <button onclick="openSyncFolderInExplorer('', event)" class="tool-btn" title="Open root sync folder (videos_to_sync) in Windows File Explorer">&#128194; Sync Folder</button>
                 <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039; Sync to HF</button>
                 <button onclick="expandAll()" class="tool-btn">&#9660; Expand All</button>
                 <button onclick="collapseAll()" class="tool-btn">&#9654; Collapse All</button>
@@ -8104,7 +8185,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <div class="thumb-overlay-play">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M8 5v14l11-7z"/></svg>
                     </div>
-                    <button type="button" class="thumb-mark-merge-btn ${{isMarked ? 'active' : ''}}" onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" title="${{isMarked ? 'Unmark from merge' : 'Mark for duplicate merge'}}">&#128256; ${{isMarked ? 'Marked' : 'Merge'}}</button>
                     ${{canViewScreens ? `<button type="button" class="thumb-screens-btn" onmouseenter="handleScreensBtnEnter(this, event)" onmousemove="event.stopPropagation()" onmouseleave="handleScreensBtnLeave(this, event)" onclick="openScreensModal('${{safeId}}', '${{escapeHtml(title)}}', event)" title="Hover to view screens on card &bull; Click to open full sheet">&#128444;&#65039; Screens</button>` : ''}}
                     <div class="card-size-badge" title="Video size: ${{escapeHtml(f.size_str)}}, Audio: ${{escapeHtml(audioSizeStr)}}">
                         <span class="badge-vsize">💾 ${{escapeHtml(f.size_str)}}</span>
@@ -8120,9 +8200,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <div class="video-card-title" onclick="playVideo('/stream/${{escapeHtml(f.key)}}', '${{escapeHtml(title)}}', '${{escapeHtml(f.blob_path || '')}}')" title="Click to play: ${{escapeHtml(title)}}">
                             ${{escapeHtml(title)}}
                         </div>
-                        <button type="button" class="card-action-arrow-btn" onclick="toggleCardActions(this, event)" title="Toggle actions (Direct, HF, Edit, Delete)">
-                            <span class="card-arrow-icon">&#9662;</span>
-                        </button>
+                        <div class="video-card-title-actions">
+                            <button type="button" class="card-mark-merge-pill ${{isMarked ? 'active' : ''}}" onclick="toggleMarkForMerge('${{escapeHtml(f.key)}}', event)" title="${{isMarked ? 'Unmark from merge' : 'Mark this video for duplicate merge'}}">
+                                &#128256; ${{isMarked ? 'Marked' : 'Merge'}}
+                            </button>
+                            <button type="button" class="card-action-arrow-btn" onclick="toggleCardActions(this, event)" title="Toggle actions (Direct, HF, Edit, Delete)">
+                                <span class="card-arrow-icon">&#9662;</span>
+                            </button>
+                        </div>
                     </div>
                     ${{subtitleHtml}}
                     ${{overviewHtml}}
@@ -8373,6 +8458,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             ${{treeTagsHtml}}
                         </div>
                         <div class="folder-actions">
+                            <button type="button" onclick="event.stopPropagation(); openSyncFolderInExplorer('${{escapeHtml(folderPath)}}', event)" class="btn btn-secondary btn-sm" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Create this folder structure in local sync folder (videos_to_sync) and open in Windows File Explorer">&#128194; Open in Sync</button>
                             <button type="button" onclick="event.stopPropagation(); promptRenameFolder('${{escapeHtml(folderPath)}}', '${{escapeHtml(node.name)}}', ${{totalDescendantFiles}}, event)" class="btn btn-secondary btn-sm" title="Rename this folder or subfolder across all video paths and metadata">&#9998; Rename Folder</button>
                             <button type="button" onclick="event.stopPropagation(); promptDeleteFolder('${{escapeHtml(folderPath)}}', ${{totalDescendantFiles}})" class="btn btn-delete btn-sm" title="Delete entire folder and all contained videos">&#128465; Delete Folder</button>
                         </div>
@@ -10726,6 +10812,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
+        async function openSyncFolderInExplorer(folderPath, event) {{
+            if (event) event.stopPropagation();
+            try {{
+                const targetName = folderPath || 'videos_to_sync';
+                showToast(`Opening "${{targetName}}" in Windows Explorer...`, 'info');
+                const resp = await fetch('/api/folders/open-sync', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ folder_path: folderPath || '' }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    showToast(`&#128194; Opened sync folder: ${{res.rel_path}} (Paste new videos here!)`, 'success');
+                }} else {{
+                    alert('Could not open sync folder: ' + (res.error || 'Unknown error'));
+                }}
+            }} catch (e) {{
+                alert('Error opening sync folder: ' + e);
+            }}
+        }}
+
         function clearAllMergeMarks() {{
             markedForMergeKeys.clear();
             mergeKeptKey = null;
@@ -10747,10 +10854,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const isMarked = markedForMergeKeys.has(k);
                 el.classList.toggle('is-marked-for-merge', isMarked);
 
-                const markBtns = el.querySelectorAll('.btn-mark-merge, .thumb-mark-merge-btn');
+                const markBtns = el.querySelectorAll('.card-mark-merge-pill, .btn-mark-merge, .btn-card-merge');
                 markBtns.forEach(btn => {{
                     btn.classList.toggle('active', isMarked);
-                    if (btn.classList.contains('thumb-mark-merge-btn')) {{
+                    if (btn.classList.contains('card-mark-merge-pill') || btn.classList.contains('btn-mark-merge')) {{
                         btn.innerHTML = isMarked ? '&#10003; Marked' : '&#128256; Merge';
                     }}
                     btn.title = isMarked ? 'Click to unmark from merge' : 'Mark for duplicate merge';
