@@ -4134,15 +4134,28 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         files_json_str = json.dumps(files_data)
         skipped_json_str = json.dumps(skipped_files)
+        if total_bytes >= 1024 * 1024 * 1024 * 1024:
+            total_size_str = f"{total_bytes / (1024**4):.2f} TB"
+        elif total_bytes >= 1024 * 1024 * 1024:
+            total_size_str = f"{total_bytes / (1024**3):.2f} GB"
+        elif total_bytes >= 1024 * 1024:
+            total_size_str = f"{total_bytes / (1024**2):.2f} MB"
+        elif total_bytes >= 1024:
+            total_size_str = f"{total_bytes / 1024:.1f} KB"
+        else:
+            total_size_str = f"{total_bytes} B"
         total_size_mb = total_bytes / (1024 * 1024)
+
         c_stats = stream_cache.get_overall_stats()
         tot_c_bytes = c_stats.get("total_cached_bytes", 0)
-        if tot_c_bytes > 1024 * 1024 * 1024:
+        if tot_c_bytes >= 1024 * 1024 * 1024:
             total_cached_mb_str = f"{tot_c_bytes / (1024 * 1024 * 1024):.1f} GB"
-        elif tot_c_bytes > 1024 * 1024:
+        elif tot_c_bytes >= 1024 * 1024:
             total_cached_mb_str = f"{tot_c_bytes / (1024 * 1024):.1f} MB"
-        else:
+        elif tot_c_bytes >= 1024:
             total_cached_mb_str = f"{tot_c_bytes / 1024:.0f} KB"
+        else:
+            total_cached_mb_str = f"{tot_c_bytes} B"
 
         skipped_count = len(skipped_files)
 
@@ -4342,18 +4355,34 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .status-active .pill-dot {{ background: #38bdf8; box-shadow: 0 0 6px #38bdf8; }}
         .status-attention .pill-dot {{ background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }}
 
-        /* Minimalist Metrics Strip (Saves massive vertical space) */
-        .metrics-strip {{
+        /* Unified Metrics & Actions Toolbar (Single cohesive line, zero duplicates) */
+        .vault-unified-bar {{
             display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+            padding: 7px 14px;
+            background: rgba(15, 23, 42, 0.55);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+        }}
+        .unified-metrics-cluster {{
+            display: inline-flex;
             align-items: center;
             gap: 8px;
             flex-wrap: wrap;
-            margin-bottom: 12px;
-            padding: 6px 12px;
-            background: rgba(17, 24, 39, 0.65);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 8px;
-            backdrop-filter: blur(8px);
+            flex: 1;
+            min-width: 280px;
+        }}
+        .unified-actions-cluster {{
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
         }}
         .metric-chip {{
             display: inline-flex;
@@ -4382,56 +4411,68 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             font-size: 0.8rem;
         }}
 
-        /* Tree-Level Folder Tags Cluster */
+        /* Modern Flat Minimal Tree Folder Tags Cluster */
         .folder-tags-cluster {{
             display: inline-flex;
             align-items: center;
-            gap: 5px;
-            margin-left: 10px;
+            gap: 4px;
+            margin-left: 8px;
             flex-wrap: wrap;
         }}
         .tree-tag-chip {{
             display: inline-flex;
             align-items: center;
-            gap: 4px;
-            padding: 1px 7px;
-            background: rgba(147, 51, 234, 0.18);
-            border: 1px solid rgba(147, 51, 234, 0.4);
+            gap: 3px;
+            padding: 1px 6px;
+            background: rgba(168, 85, 247, 0.08);
+            border: 1px solid rgba(168, 85, 247, 0.2);
             border-radius: 4px;
-            color: #d8b4fe;
-            font-size: 0.72rem;
-            font-weight: 600;
+            color: #c084fc;
+            font-size: 0.71rem;
+            font-weight: 500;
             transition: all 0.15s ease;
+            user-select: none;
         }}
         .tree-tag-chip:hover {{
-            background: rgba(147, 51, 234, 0.3);
-            border-color: #a855f7;
+            background: rgba(168, 85, 247, 0.16);
+            border-color: rgba(168, 85, 247, 0.4);
+            color: #e9d5ff;
         }}
-        .tree-tag-remove {{
+        .tree-tag-edit, .tree-tag-remove {{
             cursor: pointer;
-            color: #fca5a5;
-            font-weight: bold;
-            margin-left: 2px;
-            padding: 0 2px;
+            opacity: 0.35;
+            transition: opacity 0.15s ease, color 0.15s ease;
+            font-size: 0.75rem;
+            padding: 0 1px;
             border-radius: 2px;
+            line-height: 1;
+        }}
+        .tree-tag-chip:hover .tree-tag-edit,
+        .tree-tag-chip:hover .tree-tag-remove {{
+            opacity: 0.85;
+        }}
+        .tree-tag-edit:hover {{
+            opacity: 1;
+            color: #38bdf8;
         }}
         .tree-tag-remove:hover {{
-            background: rgba(239, 68, 68, 0.3);
-            color: #fff;
+            opacity: 1;
+            color: #f87171;
         }}
         .btn-tree-add-tag {{
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px dashed rgba(255, 255, 255, 0.25);
+            background: transparent;
+            border: 1px dashed rgba(255, 255, 255, 0.16);
             border-radius: 4px;
-            color: #9ca3af;
+            color: #94a3b8;
             font-size: 0.68rem;
-            font-weight: 600;
+            font-weight: 500;
             padding: 1px 6px;
             cursor: pointer;
-            transition: all 0.15s;
+            transition: all 0.15s ease;
+            line-height: 1.3;
         }}
         .btn-tree-add-tag:hover {{
-            background: rgba(56, 189, 248, 0.15);
+            background: rgba(56, 189, 248, 0.08);
             border-color: #38bdf8;
             color: #38bdf8;
         }}
@@ -5568,13 +5609,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 8px 10px;
-            border-radius: 6px;
+            padding: 6px 12px;
+            min-height: 38px;
+            background: rgba(15, 23, 42, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
             font-weight: 600;
-            color: #e5e7eb;
-            transition: background 0.15s;
+            color: #e2e8f0;
+            transition: background 0.15s ease, border-color 0.15s ease;
         }}
-        .folder-header:hover {{ background: rgba(255,255,255,0.04); }}
+        .folder-header:hover {{
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.09);
+        }}
         .folder-left {{
             display: flex;
             align-items: center;
@@ -5582,27 +5629,53 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             cursor: pointer;
             user-select: none;
             flex: 1;
+            flex-wrap: wrap;
         }}
         .folder-actions {{
             display: flex;
-            gap: 8px;
+            gap: 4px;
             align-items: center;
+            flex-shrink: 0;
         }}
         .btn-sm {{
             padding: 4px 10px;
             font-size: 0.78rem;
         }}
-        .folder-icon {{ color: #fbbf24; font-size: 1.1rem; }}
-        .folder-arrow {{ font-size: 0.8rem; color: var(--text-muted); width: 14px; display: inline-block; transition: transform 0.2s; }}
-        .folder-arrow.open {{ transform: rotate(90deg); }}
-        .folder-count {{ font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 6px; }}
-        .folder-children {{ margin-left: 12px; border-left: 1px dashed #374151; padding-left: 8px; }}
+        .folder-icon {{ color: #fbbf24; font-size: 1rem; display: inline-flex; align-items: center; }}
+        .folder-arrow {{
+            font-size: 0.72rem;
+            color: #64748b;
+            width: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s ease, color 0.15s ease;
+        }}
+        .folder-header:hover .folder-arrow {{ color: #94a3b8; }}
+        .folder-arrow.open {{ transform: rotate(90deg); color: #38bdf8; }}
+        .folder-count {{
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: #94a3b8;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 9999px;
+            padding: 1px 7px;
+            margin-left: 6px;
+            white-space: nowrap;
+        }}
+        .folder-children {{
+            margin-left: 10px;
+            border-left: 1px solid rgba(255, 255, 255, 0.06);
+            padding-left: 10px;
+            margin-top: 4px;
+        }}
         .folder-children.collapsed {{ display: none; }}
         .is-filter-hidden {{ display: none !important; }}
         .video-card, .file-row {{ transition: opacity 0.15s ease; }}
 
         .folder-group {{
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             transition: all 0.25s ease;
         }}
         .folder-group.is-playing-group {{
@@ -7852,22 +7925,25 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             transform: translateY(-50%) scale(1);
         }}
 
-        /* Compact Folder Action Icons */
+        /* Modern Flat Minimal Folder Action Icons */
         .folder-action-icon-btn {{
-            width: 28px;
-            height: 28px;
+            width: 26px;
+            height: 26px;
             padding: 0;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            border-radius: 6px;
-            font-size: 0.95rem;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            color: var(--text-muted);
+            border-radius: 5px;
+            font-size: 0.85rem;
+            background: transparent;
+            border: 1px solid transparent;
+            color: #64748b;
             cursor: pointer;
             transition: all 0.15s ease;
             flex-shrink: 0;
+        }}
+        .folder-header:hover .folder-action-icon-btn {{
+            color: #94a3b8;
         }}
         .tool-btn-icon {{
             width: 32px !important;
@@ -8085,33 +8161,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         .folder-action-icon-btn:hover {{
-            transform: scale(1.1);
+            transform: scale(1.08);
         }}
-        .btn-sync-icon {{
+        .folder-action-icon-btn.btn-sync-icon:hover {{
+            background: rgba(56, 189, 248, 0.12) !important;
+            border-color: rgba(56, 189, 248, 0.25) !important;
             color: #38bdf8 !important;
-            border-color: rgba(56, 189, 248, 0.35) !important;
         }}
-        .btn-sync-icon:hover {{
-            background: rgba(56, 189, 248, 0.22) !important;
-            border-color: #38bdf8 !important;
-            color: #fff !important;
+        .folder-action-icon-btn.btn-rename-icon:hover {{
+            background: rgba(255, 255, 255, 0.08) !important;
+            border-color: rgba(255, 255, 255, 0.2) !important;
+            color: #f1f5f9 !important;
         }}
-        .btn-rename-icon {{
-            color: #e2e8f0 !important;
-        }}
-        .btn-rename-icon:hover {{
-            background: rgba(255, 255, 255, 0.18) !important;
-            border-color: rgba(255, 255, 255, 0.4) !important;
-            color: #fff !important;
-        }}
-        .btn-delete-icon {{
+        .folder-action-icon-btn.btn-delete-icon:hover {{
+            background: rgba(239, 68, 68, 0.12) !important;
+            border-color: rgba(239, 68, 68, 0.25) !important;
             color: #ef4444 !important;
-            border-color: rgba(239, 68, 68, 0.35) !important;
-        }}
-        .btn-delete-icon:hover {{
-            background: rgba(239, 68, 68, 0.22) !important;
-            border-color: #ef4444 !important;
-            color: #fff !important;
         }}
     </style>
 </head>
@@ -8127,17 +8192,60 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <span class="pill-dot"></span> Watcher: Idle
                 </span>
             </div>
-            <div class="vault-actions-cluster">
+        </header>
+
+        <!-- Unified Metrics & Action Toolbar (Merged into one cohesive line, deduplicated & responsive) -->
+        <div class="vault-unified-bar">
+            <div class="unified-metrics-cluster">
+                <div class="metric-chip" title="Playable decrypted videos">
+                    <span>&#127916;</span>
+                    <span class="metric-val" id="statVideos">{len(files_data)}</span>
+                    <span>Videos</span>
+                </div>
+                <span class="metric-divider">&bull;</span>
+                <div class="metric-chip" title="Encrypted stream chunks cached locally on disk (Zero-cloud playback for cached parts)">
+                    <span>&#128190;</span>
+                    <span class="metric-val" id="statCache">{total_cached_mb_str}</span>
+                    <span>Cached</span>
+                </div>
+                <span class="metric-divider">&bull;</span>
+                <div class="metric-chip" title="Total cloud storage across datasets">
+                    <span>&#9729;&#65039;</span>
+                    <span class="metric-val" id="statSize">{total_size_str}</span>
+                    <span>Storage</span>
+                </div>
+                <span class="metric-divider">&bull;</span>
+                <div class="metric-chip" title="Primary account for new uploads">
+                    <span>&#128081;</span>
+                    <span class="metric-val" style="color: var(--primary);">{primary_user}</span>
+                    <span>Primary</span>
+                </div>
+                <span class="metric-divider">&bull;</span>
+                <div class="metric-chip" title="Target repositories on Hugging Face">
+                    <span>&#128230;</span>
+                    <span class="metric-val" id="statRepos">{len(repos_set)}</span>
+                    <span>Repos</span>
+                </div>
+                <span class="metric-divider" id="divUndecryptable" style="display: none;">&bull;</span>
+                <div class="metric-chip clickable" id="chipUndecryptable" onclick="openUndecryptableModal()" style="display: none; border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.08); color: #fbbf24;" title="Cloud files that cannot be decrypted with current keyrings (Click to review/delete)">
+                    <span>&#9888;&#65039;</span>
+                    <span class="metric-val" id="statUndecryptable" style="color: #fbbf24;">0</span>
+                    <span style="color: #fbbf24;">Undecryptable</span>
+                </div>
+                {skipped_stat_html}
+            </div>
+
+            <div class="unified-actions-cluster">
                 <div class="jellyfin-sync-pill" onclick="toggleJellyfinSync()" id="btnJellyfinSyncToggle" title="When enabled, automatically generates and keeps Jellyfin .strm pointers and .nfo metadata synced in jellyfin_library. When disabled, runs 100% web-based without touching disk folders.">
                     <span>📺</span>
                     <span style="font-weight: 600;">Jellyfin Sync</span>
                     <span class="jellyfin-sync-badge {jelly_badge_cls}" id="jellyfinSyncBadge">{jelly_badge_text}</span>
                 </div>
                 <button onclick="openResyncModalAndStart()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Live transparent resync across all repositories and accounts with strict integrity verification">
-                    &#9889; Resync All Accounts
+                    &#9889; Resync All
                 </button>
                 <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" title="Extract resolution, audio, and video codecs">
-                    &#127916; Scan Tech Specs
+                    &#127916; Tech Specs
                 </button>
                 <button onclick="openAccountsModal()" class="tool-btn" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.12);" title="Manage connected Hugging Face accounts">
                     &#128101; Accounts (<span id="headerAccCount">{total_accounts}</span>)
@@ -8146,51 +8254,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     &#128220; Activity (<span id="eventCountBadge">0</span>)
                 </button>
             </div>
-        </header>
-
-        <!-- Minimalist Metrics Strip (Saves over 150px height!) -->
-        <div class="metrics-strip">
-            <div class="metric-chip" title="Playable decrypted videos">
-                <span>&#127916;</span>
-                <span class="metric-val" id="statVideos">{len(files_data)}</span>
-                <span>Videos</span>
-            </div>
-            <div class="metric-chip" title="Encrypted stream chunks cached locally on disk (Zero-cloud playback for cached parts)">
-                <span>&#128190;</span>
-                <span class="metric-val" id="statCache">{total_cached_mb_str}</span>
-                <span>Cached</span>
-            </div>
-            <span class="metric-divider">&bull;</span>
-            <div class="metric-chip" title="Total cloud storage across datasets">
-                <span>&#9729;&#65039;</span>
-                <span class="metric-val" id="statSize">{total_size_mb:.2f} MB</span>
-                <span>Storage</span>
-            </div>
-            <span class="metric-divider">&bull;</span>
-            <div class="metric-chip" title="Primary account for new uploads">
-                <span>&#128081;</span>
-                <span class="metric-val" style="color: var(--primary);">{primary_user}</span>
-                <span>Primary</span>
-            </div>
-            <span class="metric-divider">&bull;</span>
-            <div class="metric-chip clickable" onclick="openAccountsModal()" title="Connected Hugging Face accounts (Click to manage)">
-                <span>&#128101;</span>
-                <span class="metric-val" id="statAccounts">{total_accounts}</span>
-                <span>Accounts <span style="font-size: 0.72rem; color: var(--text-muted);">&#9881;&#65039;</span></span>
-            </div>
-            <span class="metric-divider">&bull;</span>
-            <div class="metric-chip" title="Target repositories on Hugging Face">
-                <span>&#128230;</span>
-                <span class="metric-val" id="statRepos">{len(repos_set)}</span>
-                <span>Repos</span>
-            </div>
-            <span class="metric-divider" id="divUndecryptable" style="display: none;">&bull;</span>
-            <div class="metric-chip clickable" id="chipUndecryptable" onclick="openUndecryptableModal()" style="display: none; border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.08); color: #fbbf24;" title="Cloud files that cannot be decrypted with current keyrings (Click to review/delete)">
-                <span>&#9888;&#65039;</span>
-                <span class="metric-val" id="statUndecryptable" style="color: #fbbf24;">0</span>
-                <span style="color: #fbbf24;">Undecryptable</span>
-            </div>
-            {skipped_stat_html}
         </div>
 
         {skipped_banner_html}
@@ -11029,10 +11092,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 }}
 
                 const treeTagsHtml = `
-                <div class="folder-tags-cluster">
+                <div class="folder-tags-cluster" onclick="event.stopPropagation()">
                     ${{commonTags.map(t => `
                         <span class="tree-tag-chip" title="Tag shared by all ${{descendantFiles.length}} videos in this folder">
-                            &#127991; ${{escapeHtml(t)}}
+                            <span>${{escapeHtml(t)}}</span>
                             <span class="tree-tag-edit" onclick="promptRenameTag('${{escapeHtml(t)}}', event)" title="Rename tag '${{escapeHtml(t)}}' across all videos">&#9998;</span>
                             <span class="tree-tag-remove" onclick="removeTagFromFolder('${{escapeHtml(folderPath)}}', '${{escapeHtml(t)}}', event)" title="Remove from this folder">&times;</span>
                         </span>
@@ -11050,7 +11113,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <div class="folder-left" onclick="toggleFolder(this.parentElement)">
                             <span class="folder-arrow ${{isOpen ? 'open' : ''}}">&#9654;</span>
                             <span class="folder-icon">&#128193;</span>
-                            <span>${{escapeHtml(node.name)}}</span>
+                            <span class="folder-name-text">${{escapeHtml(node.name)}}</span>
                             <span class="folder-count">${{totalDescendantFiles}} video(s)</span>
                             ${{treeTagsHtml}}
                         </div>
@@ -15340,12 +15403,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }});
 
+        function formatBytesDynamic(bytes) {{
+            if (!bytes || bytes <= 0) return '0 B';
+            if (bytes >= 1024 * 1024 * 1024 * 1024) return (bytes / (1024 ** 4)).toFixed(2) + ' TB';
+            if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 ** 3)).toFixed(2) + ' GB';
+            if (bytes >= 1024 * 1024) return (bytes / (1024 ** 2)).toFixed(2) + ' MB';
+            if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return bytes.toFixed(0) + ' B';
+        }}
+
         function updateStats() {{
-            document.getElementById('statVideos').textContent = allFiles.length;
-            const bytes = allFiles.reduce((acc, f) => acc + f.size_bytes, 0);
-            document.getElementById('statSize').textContent = (bytes / (1024 * 1024)).toFixed(2) + " MB";
+            const statVid = document.getElementById('statVideos');
+            if (statVid) statVid.textContent = allFiles.length;
+            const bytes = allFiles.reduce((acc, f) => acc + (f.size_bytes || 0), 0);
+            const statSz = document.getElementById('statSize');
+            if (statSz) statSz.textContent = formatBytesDynamic(bytes);
             const repos = new Set(allFiles.map(f => f.repo));
-            document.getElementById('statRepos').textContent = repos.size;
+            const statRp = document.getElementById('statRepos');
+            if (statRp) statRp.textContent = repos.size;
         }}
 
         function escapeHtml(str) {{
