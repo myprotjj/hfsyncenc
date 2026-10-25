@@ -4828,12 +4828,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             pointer-events: none;
             border-radius: 6px;
         }}
-        .sticky-status-cluster {{
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            margin-left: auto;
-        }}
         
         .skipped-banner {{
             background: rgba(245, 158, 11, 0.1);
@@ -8102,9 +8096,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </span>
             </div>
             <div class="vault-actions-cluster">
-                <button onclick="resumeLastClosedVideo(event)" id="btnHeaderQuickResume" class="tool-btn" style="display: none; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Instantly resume last played video (Shortcut: R)">
-                    &#9654;&#65039; <span id="headerResumeLabel">Resume</span>
-                </button>
                 <div class="jellyfin-sync-pill" onclick="toggleJellyfinSync()" id="btnJellyfinSyncToggle" title="When enabled, automatically generates and keeps Jellyfin .strm pointers and .nfo metadata synced in jellyfin_library. When disabled, runs 100% web-based without touching disk folders.">
                     <span>📺</span>
                     <span style="font-weight: 600;">Jellyfin Sync</span>
@@ -8160,6 +8151,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <span>&#128230;</span>
                 <span class="metric-val" id="statRepos">{len(repos_set)}</span>
                 <span>Repos</span>
+            </div>
+            <span class="metric-divider" id="divUndecryptable" style="display: none;">&bull;</span>
+            <div class="metric-chip clickable" id="chipUndecryptable" onclick="openUndecryptableModal()" style="display: none; border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.08); color: #fbbf24;" title="Cloud files that cannot be decrypted with current keyrings (Click to review/delete)">
+                <span>&#9888;&#65039;</span>
+                <span class="metric-val" id="statUndecryptable" style="color: #fbbf24;">0</span>
+                <span style="color: #fbbf24;">Undecryptable</span>
             </div>
             {skipped_stat_html}
         </div>
@@ -8436,9 +8433,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     </div>
 
                     <button onclick="resetAllFilters()" id="btnResetFilters" class="tool-btn" style="display: none;" title="Reset all active filters and search">&#128260; Reset</button>
-                    <button onclick="resumeLastClosedVideo(event)" id="btnStickyQuickResume" class="tool-btn" style="display: none; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Instantly resume last played video (Shortcut: R)">
-                        &#9654;&#65039; <span id="stickyResumeLabel">Resume</span>
-                    </button>
                     <span id="filterSummaryCount" class="filter-summary-count" style="display: none;"></span>
                 </div>
 
@@ -8453,15 +8447,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <div class="view-toggle-group">
                     <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon active is-active" title="Switch to Cards Grid View">&#127183;</button>
                     <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">&#9776;</button>
-                </div>
-
-                <div class="sticky-status-cluster">
-                    <span id="stickyServerStatus" class="status-pill status-online" title="Streaming Proxy Server Status">
-                        <span class="pill-dot"></span> 8080
-                    </span>
-                    <span id="stickyWatcherStatus" class="status-pill status-idle" title="Directory Watcher Service Status">
-                        <span class="pill-dot"></span> Watcher: Idle
-                    </span>
                 </div>
             </div>
 
@@ -8495,22 +8480,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 &#128256; Merge Marked Videos &rarr;
             </button>
         </div>
-    </div>
-
-    <!-- Floating Quick Resume Bar (Instantly resume last closed video from exact timestamp) -->
-    <div id="floatingResumeBar" class="floating-quick-resume-bar" style="display: none;" onclick="resumeLastClosedVideo(event)">
-        <div class="resume-play-icon" title="Resume Playback">&#9654;</div>
-        <div class="resume-bar-info">
-            <div class="resume-bar-title" id="floatingResumeTitle">Last Played Video</div>
-            <div class="resume-bar-meta">
-                <span id="floatingResumeBadge" class="resume-badge-time">&#9201; 00:00 / 00:00</span>
-                <div class="resume-track-mini">
-                    <div id="floatingResumeProgress" class="resume-fill-mini" style="width: 0%;"></div>
-                </div>
-            </div>
-        </div>
-        <button type="button" class="resume-btn-action" onclick="resumeLastClosedVideo(event)" title="Resume Playback (or press 'R')">Resume</button>
-        <button type="button" class="resume-btn-dismiss" onclick="dismissQuickResume(event)" title="Dismiss Quick Resume">&times;</button>
     </div>
 
     <!-- Card Quick-Add Tag/Category Popover -->
@@ -9916,38 +9885,36 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function updateSystemStatusIndicators(serverOnline, watcherState, watcherMsg) {{
-            const sPills = [document.getElementById('hdrServerStatus'), document.getElementById('stickyServerStatus')];
-            const wPills = [document.getElementById('hdrWatcherStatus'), document.getElementById('stickyWatcherStatus')];
+            const sPill = document.getElementById('hdrServerStatus');
+            const wPill = document.getElementById('hdrWatcherStatus');
 
-            sPills.forEach(p => {{
-                if (!p) return;
+            if (sPill) {{
                 if (serverOnline) {{
-                    p.className = 'status-pill status-online';
-                    p.innerHTML = '<span class="pill-dot"></span> Port 8080 Active';
-                    p.title = 'Streaming Proxy Server Connected';
+                    sPill.className = 'status-pill status-online';
+                    sPill.innerHTML = '<span class="pill-dot"></span> Port 8080 Active';
+                    sPill.title = 'Streaming Proxy Server Connected';
                 }} else {{
-                    p.className = 'status-pill status-offline';
-                    p.innerHTML = '<span class="pill-dot"></span> ⚠️ Server Disconnected!';
-                    p.title = 'Streaming Proxy Server is offline or unreachable!';
+                    sPill.className = 'status-pill status-offline';
+                    sPill.innerHTML = '<span class="pill-dot"></span> ⚠️ Server Disconnected!';
+                    sPill.title = 'Streaming Proxy Server is offline or unreachable!';
                 }}
-            }});
+            }}
 
-            wPills.forEach(p => {{
-                if (!p) return;
+            if (wPill) {{
                 if (watcherState === 'active') {{
-                    p.className = 'status-pill status-active';
-                    p.innerHTML = `<span class="pill-dot"></span> ⚡ ${{escapeHtml(watcherMsg || 'Syncing...')}}`;
-                    p.title = 'Watcher Service is actively syncing files to vault';
+                    wPill.className = 'status-pill status-active';
+                    wPill.innerHTML = `<span class="pill-dot"></span> ⚡ ${{escapeHtml(watcherMsg || 'Syncing...')}}`;
+                    wPill.title = 'Watcher Service is actively syncing files to vault';
                 }} else if (watcherState === 'attention') {{
-                    p.className = 'status-pill status-attention';
-                    p.innerHTML = `<span class="pill-dot"></span> ⚠️ ${{escapeHtml(watcherMsg || 'Attention')}}`;
-                    p.title = watcherMsg || 'Watcher alert';
+                    wPill.className = 'status-pill status-attention';
+                    wPill.innerHTML = `<span class="pill-dot"></span> ⚠️ ${{escapeHtml(watcherMsg || 'Attention')}}`;
+                    wPill.title = watcherMsg || 'Watcher alert';
                 }} else {{
-                    p.className = 'status-pill status-idle';
-                    p.innerHTML = '<span class="pill-dot"></span> Watcher: Idle';
-                    p.title = 'Watcher Service is running and waiting for videos';
+                    wPill.className = 'status-pill status-idle';
+                    wPill.innerHTML = '<span class="pill-dot"></span> Watcher: Idle';
+                    wPill.title = 'Watcher Service is running and waiting for videos';
                 }}
-            }});
+            }}
         }}
 
         let allFiles = {files_json_str};
@@ -12236,65 +12203,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function updateQuickResumeUI() {{
-            const box = document.getElementById('playerBox');
-            const isPlayerOpen = box && box.style.display !== 'none';
+            // Standalone resume buttons and floating bar have been removed per user preference.
+            // The built-in in-player resume modal handles resuming video playback seamlessly upon opening.
             const floatingBar = document.getElementById('floatingResumeBar');
             const btnHeader = document.getElementById('btnHeaderQuickResume');
             const btnSticky = document.getElementById('btnStickyQuickResume');
-
-            // If player is currently open, hide all resume buttons
-            if (isPlayerOpen) {{
-                if (floatingBar) floatingBar.style.display = 'none';
-                if (btnHeader) btnHeader.style.display = 'none';
-                if (btnSticky) btnSticky.style.display = 'none';
-                return;
-            }}
-
-            const last = getLastClosedVideo();
-            if (!last || !last.safeId) {{
-                if (floatingBar) floatingBar.style.display = 'none';
-                if (btnHeader) btnHeader.style.display = 'none';
-                if (btnSticky) btnSticky.style.display = 'none';
-                return;
-            }}
-
-            // Populate Floating Bar
-            if (floatingBar) {{
-                const titleEl = document.getElementById('floatingResumeTitle');
-                const badgeEl = document.getElementById('floatingResumeBadge');
-                const progEl = document.getElementById('floatingResumeProgress');
-                if (titleEl) titleEl.textContent = last.title || last.key || 'Resume Video';
-                
-                const curFormatted = formatTime(last.time || 0);
-                const durFormatted = (last.duration && last.duration > 0) ? formatTime(last.duration) : '--:--';
-                if (badgeEl) badgeEl.textContent = `⏱️ ${{curFormatted}} / ${{durFormatted}} (Press R)`;
-                
-                if (progEl) {{
-                    const pct = (last.duration && last.duration > 0) ? Math.min(100, Math.max(0, (last.time / last.duration) * 100)) : 0;
-                    progEl.style.width = pct.toFixed(1) + '%';
-                }}
-                floatingBar.style.display = 'flex';
-            }}
-
-            // Populate Header & Sticky buttons
-            const rawTitle = (last.title || last.key || 'Video');
-            const shortTitle = rawTitle.length > 22 ? rawTitle.substring(0, 20) + '…' : rawTitle;
-            const timeLabel = last.time > 0 ? ` (${{formatTime(last.time)}})` : '';
-            const labelText = `Resume: ${{shortTitle}}${{timeLabel}}`;
-
-            if (btnHeader) {{
-                const headerLabel = document.getElementById('headerResumeLabel');
-                if (headerLabel) headerLabel.textContent = labelText;
-                btnHeader.title = `Resume playing "${{last.title}}" at ${{formatTime(last.time || 0)}} (Shortcut: R)`;
-                btnHeader.style.display = 'inline-flex';
-            }}
-
-            if (btnSticky) {{
-                const stickyLabel = document.getElementById('stickyResumeLabel');
-                if (stickyLabel) stickyLabel.textContent = labelText;
-                btnSticky.title = `Resume playing "${{last.title}}" at ${{formatTime(last.time || 0)}} (Shortcut: R)`;
-                btnSticky.style.display = 'inline-flex';
-            }}
+            if (floatingBar) floatingBar.style.display = 'none';
+            if (btnHeader) btnHeader.style.display = 'none';
+            if (btnSticky) btnSticky.style.display = 'none';
         }}
 
         function resumeLastClosedVideo(event) {{
@@ -15626,12 +15542,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (res.ok) {{
                     const d = await res.json();
                     const count = (d.total_count || 0) + (d.empty_repo_count || 0);
-                    const badge = document.getElementById('accUndecryptableBadge');
-                    if (badge) {{
-                        badge.textContent = count;
-                        badge.style.color = count > 0 ? '#f87171' : '#94a3b8';
-                        if (count > 0) badge.style.fontWeight = 'bold';
-                    }}
+                    updateUndecryptableBadge(count);
                 }}
             }} catch (e) {{}}
         }}
@@ -15914,6 +15825,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         updateSystemStatusIndicators(true, 'idle');
         updateQuickResumeUI();
         startCacheStatsPolling();
+        fetchUndecryptableCountBadge();
 
         /* Privacy Blur Mode Controller */
         function isPrivacyBlurActive() {{
@@ -15980,11 +15892,23 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         function updateUndecryptableBadge(count) {{
             const badge = document.getElementById('accUndecryptableBadge');
             const headerBadge = document.getElementById('undecryptableCountHeader');
+            const statUndecryptable = document.getElementById('statUndecryptable');
+            const chipUndecryptable = document.getElementById('chipUndecryptable');
+            const divUndecryptable = document.getElementById('divUndecryptable');
+
             if (badge) {{
                 badge.textContent = count;
                 badge.style.color = count > 0 ? '#f87171' : '#94a3b8';
+                if (count > 0) badge.style.fontWeight = 'bold';
             }}
             if (headerBadge) headerBadge.textContent = count;
+            if (statUndecryptable) statUndecryptable.textContent = count;
+            if (chipUndecryptable) {{
+                chipUndecryptable.style.display = count > 0 ? 'inline-flex' : 'none';
+            }}
+            if (divUndecryptable) {{
+                divUndecryptable.style.display = count > 0 ? 'inline' : 'none';
+            }}
         }}
 
         function renderUndecryptableUI() {{
