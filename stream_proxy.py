@@ -4149,6 +4149,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         all_accounts = [a["username"] for a in self.acc_mgr.get_all_accounts()] if (hasattr(self, "acc_mgr") and self.acc_mgr) else [self.hf_username]
         primary_user = self.acc_mgr.primary_username if (hasattr(self, "acc_mgr") and self.acc_mgr) else self.hf_username
         total_accounts = len(all_accounts)
+        is_jelly_on = account_manager.is_jellyfin_sync_enabled()
+        jelly_badge_cls = "is-on" if is_jelly_on else "is-off"
+        jelly_badge_text = "ON" if is_jelly_on else "OFF"
 
         skipped_stat_html = ""
         skipped_banner_html = ""
@@ -4850,6 +4853,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             display: none;
             pointer-events: none;
             border-radius: 6px;
+        }}
+        .sticky-live-alert-cluster {{
+            display: inline-flex;
+            align-items: center;
+            margin-left: auto;
+            flex-shrink: 0;
         }}
         
         .skipped-banner {{
@@ -8122,7 +8131,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <div class="jellyfin-sync-pill" onclick="toggleJellyfinSync()" id="btnJellyfinSyncToggle" title="When enabled, automatically generates and keeps Jellyfin .strm pointers and .nfo metadata synced in jellyfin_library. When disabled, runs 100% web-based without touching disk folders.">
                     <span>📺</span>
                     <span style="font-weight: 600;">Jellyfin Sync</span>
-                    <span class="jellyfin-sync-badge is-on" id="jellyfinSyncBadge">ON</span>
+                    <span class="jellyfin-sync-badge {jelly_badge_cls}" id="jellyfinSyncBadge">{jelly_badge_text}</span>
                 </div>
                 <button onclick="openResyncModalAndStart()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Live transparent resync across all repositories and accounts with strict integrity verification">
                     &#9889; Resync All Accounts
@@ -8471,6 +8480,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon active is-active" title="Switch to Cards Grid View">&#127183;</button>
                     <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">&#9776;</button>
                 </div>
+
+                <!-- Sticky Live Alert Pill: Hidden during normal idle; pops up on top when active/alert/disconnected -->
+                <div id="stickyLiveAlertCluster" class="sticky-live-alert-cluster" style="display: none; margin-left: auto;">
+                    <span id="stickyLiveAlertPill" class="status-pill status-active" style="cursor: pointer;" onclick="toggleActivityLog()" title="Click to view live activity details">
+                        <span class="pill-dot"></span> <span id="stickyLiveAlertText">⚡ Syncing...</span>
+                    </span>
+                </div>
             </div>
 
             <div id="activeFilterChipsBar" class="active-chips-bar" style="display: none;"></div>
@@ -8503,6 +8519,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 &#128256; Merge Marked Videos &rarr;
             </button>
         </div>
+    </div>
+
+    <!-- Floating Quick Resume Bar (Bottom-Right popup for last played video) -->
+    <div id="floatingResumeBar" class="floating-quick-resume-bar" style="display: none;" onclick="resumeLastClosedVideo(event)">
+        <div class="resume-play-icon" title="Resume Playback">&#9654;</div>
+        <div class="resume-bar-info">
+            <div class="resume-bar-title" id="floatingResumeTitle">Last Played Video</div>
+            <div class="resume-bar-meta">
+                <span id="floatingResumeBadge" class="resume-badge-time">&#9201; 00:00 / 00:00</span>
+                <div class="resume-track-mini">
+                    <div id="floatingResumeProgress" class="resume-fill-mini" style="width: 0%;"></div>
+                </div>
+            </div>
+        </div>
+        <button type="button" class="resume-btn-action" onclick="resumeLastClosedVideo(event)" title="Resume Playback (or press 'R')">Resume</button>
+        <button type="button" class="resume-btn-dismiss" onclick="dismissQuickResume(event)" title="Dismiss Quick Resume">&times;</button>
     </div>
 
     <!-- Card Quick-Add Tag/Category Popover -->
@@ -9576,7 +9608,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
-        let isJellyfinSyncActive = true;
+        let isJellyfinSyncActive = false;
 
         async function checkJellyfinSyncStatus() {{
             try {{
@@ -9941,6 +9973,35 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     wPill.className = 'status-pill status-idle';
                     wPill.innerHTML = '<span class="pill-dot"></span> Watcher: Idle';
                     wPill.title = 'Watcher Service is running and waiting for videos';
+                }}
+            }}
+
+            // Sticky live status indicator:
+            // Hidden during normal idle state to prevent duplicate badges when viewing top of chart/page.
+            // Automatically appears on top while scrolling whenever:
+            // 1. Server disconnects (!serverOnline)
+            // 2. Watcher is actively syncing (watcherState === 'active')
+            // 3. Watcher has attention/alert (watcherState === 'attention')
+            const stickyAlertCluster = document.getElementById('stickyLiveAlertCluster');
+            const stickyAlertPill = document.getElementById('stickyLiveAlertPill');
+            if (stickyAlertCluster && stickyAlertPill) {{
+                if (!serverOnline) {{
+                    stickyAlertCluster.style.display = 'inline-flex';
+                    stickyAlertPill.className = 'status-pill status-offline';
+                    stickyAlertPill.innerHTML = '<span class="pill-dot"></span> ⚠️ Server Disconnected!';
+                    stickyAlertPill.title = 'Streaming Proxy Server is offline or unreachable!';
+                }} else if (watcherState === 'active') {{
+                    stickyAlertCluster.style.display = 'inline-flex';
+                    stickyAlertPill.className = 'status-pill status-active';
+                    stickyAlertPill.innerHTML = `<span class="pill-dot"></span> ⚡ ${{escapeHtml(watcherMsg || 'Syncing...')}}`;
+                    stickyAlertPill.title = 'Watcher Service is actively syncing files to vault (Click for activity log)';
+                }} else if (watcherState === 'attention') {{
+                    stickyAlertCluster.style.display = 'inline-flex';
+                    stickyAlertPill.className = 'status-pill status-attention';
+                    stickyAlertPill.innerHTML = `<span class="pill-dot"></span> ⚠️ ${{escapeHtml(watcherMsg || 'Attention')}}`;
+                    stickyAlertPill.title = watcherMsg || 'Watcher alert (Click for activity log)';
+                }} else {{
+                    stickyAlertCluster.style.display = 'none';
                 }}
             }}
         }}
@@ -12231,14 +12292,39 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function updateQuickResumeUI() {{
-            // Standalone resume buttons and floating bar have been removed per user preference.
-            // The built-in in-player resume modal handles resuming video playback seamlessly upon opening.
+            const box = document.getElementById('playerBox');
+            const isPlayerOpen = box && box.style.display !== 'none';
             const floatingBar = document.getElementById('floatingResumeBar');
-            const btnHeader = document.getElementById('btnHeaderQuickResume');
-            const btnSticky = document.getElementById('btnStickyQuickResume');
-            if (floatingBar) floatingBar.style.display = 'none';
-            if (btnHeader) btnHeader.style.display = 'none';
-            if (btnSticky) btnSticky.style.display = 'none';
+
+            // If player is currently open, hide floating resume popup
+            if (isPlayerOpen) {{
+                if (floatingBar) floatingBar.style.display = 'none';
+                return;
+            }}
+
+            const last = getLastClosedVideo();
+            if (!last || (!last.safeId && !last.key)) {{
+                if (floatingBar) floatingBar.style.display = 'none';
+                return;
+            }}
+
+            // Populate Floating Bottom-Right Popup Bar
+            if (floatingBar) {{
+                const titleEl = document.getElementById('floatingResumeTitle');
+                const badgeEl = document.getElementById('floatingResumeBadge');
+                const progEl = document.getElementById('floatingResumeProgress');
+                if (titleEl) titleEl.textContent = last.title || last.key || 'Resume Video';
+
+                const curFormatted = formatTime(last.time || 0);
+                const durFormatted = (last.duration && last.duration > 0) ? formatTime(last.duration) : '--:--';
+                if (badgeEl) badgeEl.textContent = `⏱️ ${{curFormatted}} / ${{durFormatted}} (Press R)`;
+
+                if (progEl) {{
+                    const pct = (last.duration && last.duration > 0) ? Math.min(100, Math.max(0, (last.time / last.duration) * 100)) : 0;
+                    progEl.style.width = pct.toFixed(1) + '%';
+                }}
+                floatingBar.style.display = 'flex';
+            }}
         }}
 
         function resumeLastClosedVideo(event) {{

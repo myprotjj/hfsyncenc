@@ -80,7 +80,7 @@ def load_env_config(env_path=ENV_FILE):
 def is_jellyfin_sync_enabled(env_path=ENV_FILE) -> bool:
     """Returns True if local Jellyfin folder sync is enabled in env.txt or system env."""
     cfg = load_env_config(env_path)
-    val = cfg.get("ENABLE_JELLYFIN_SYNC", "1").strip().lower()
+    val = cfg.get("ENABLE_JELLYFIN_SYNC", "0").strip().lower()
     return val in ("1", "true", "yes", "on")
 
 
