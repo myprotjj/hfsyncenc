@@ -444,6 +444,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_rename_folder()
         elif path in ("/api/folders/power-rename", "/api/files/power-rename"):
             self.handle_power_rename()
+        elif path in ("/api/system/purge-local-data", "/api/purge-local-data"):
+            self.handle_purge_local_data()
         elif path == "/api/tag-category/delete":
             self.handle_delete_tag_category()
         elif path == "/api/tag-category/rename":
@@ -2056,6 +2058,129 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(resp_body)
+
+    def handle_purge_local_data(self):
+        """
+        Purges all local cache files (encrypted_cache, storyboards, temp files, activity logs)
+        and deletes local upload_manifest.json, forcing it to recreate afresh from Hugging Face
+        Master Index (vault_index.enc) on reload, and restarts the server process.
+        """
+        logger.info("[Purge] Initiating full local data purge and cloud recreation...")
+        purged_cache_count = 0
+        ec = Path("encrypted_cache")
+        if ec.exists():
+            for f in ec.iterdir():
+                if f.is_file() and f.name != ".gitkeep":
+                    try:
+                        f.unlink()
+                        purged_cache_count += 1
+                    except Exception:
+                        pass
+
+        purged_storyboard_count = 0
+        sb = Path("storyboards")
+        if sb.exists():
+            for f in sb.glob("**/*"):
+                if f.is_file() and f.name != ".gitkeep":
+                    try:
+                        f.unlink()
+                        purged_storyboard_count += 1
+                    except Exception:
+                        pass
+            for d in list(sb.glob("**/*"))[::-1]:
+                if d.is_dir() and not any(d.iterdir()):
+                    try:
+                        d.rmdir()
+                    except Exception:
+                        pass
+
+        # Clean videos_to_sync companion files & root temp files
+        vts = Path("videos_to_sync")
+        if vts.exists():
+            for f in vts.glob("**/*.companion*"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        for p in Path(".").glob("temp_*"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
+        for p in Path(".").glob("*.tmp"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
+        for b in Path(".").glob("upload_manifest.json.safety*"):
+            try:
+                b.unlink()
+            except Exception:
+                pass
+
+        # Reset in-memory cache
+        FILE_CACHE.clear()
+        if hasattr(self, "stream_cache") and self.stream_cache:
+            try:
+                self.stream_cache.clear_cache()
+            except Exception:
+                pass
+
+        # Reset live_activity.json
+        try:
+            activity_tracker.tracker.reset()
+        except Exception:
+            pass
+
+        # Recreate manifest from Hugging Face Master Repository
+        recreated_count = 0
+        port = self.server.server_port if hasattr(self.server, "server_port") else 8080
+        acc_mgr = self.acc_mgr if hasattr(self, "acc_mgr") and self.acc_mgr else account_manager.AccountManager()
+        fresh_manifest = {"files": {}, "media_hashes": {}, "tombstones": {}}
+        try:
+            scan_res = acc_mgr.scan_and_merge_all_accounts(
+                fresh_manifest,
+                library_dir="jellyfin_library",
+                proxy_host=f"127.0.0.1:{port}"
+            )
+            save_manifest(fresh_manifest)
+            recreated_count = scan_res.get("discovered_count", len(fresh_manifest.get("files", {})))
+            logger.info("[Purge] Rebuilt fresh manifest with %d videos from cloud vault", recreated_count)
+        except Exception as ex:
+            logger.warning("[Purge] Warning recreating manifest from cloud: %s", ex)
+
+        resp = {
+            "success": True,
+            "purged_cache_files": purged_cache_count,
+            "purged_storyboard_files": purged_storyboard_count,
+            "recreated_files_count": recreated_count,
+            "message": f"Local data purged. Rebuilt {recreated_count} video(s) from cloud vault. Server restarting..."
+        }
+        resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
+
+        # Schedule asynchronous server restart
+        def _restart_server():
+            time.sleep(1.0)
+            logger.info("[Purge] Restarting server process...")
+            try:
+                self.server.server_close()
+            except Exception:
+                pass
+            import subprocess
+            subprocess.Popen([sys.executable] + sys.argv)
+            os._exit(0)
+
+        threading.Thread(target=_restart_server, daemon=True).start()
 
     def handle_delete_tag_category(self):
         content_length = int(self.headers.get("Content-Length", 0))
@@ -8810,6 +8935,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <button onclick="expandAll()" id="btnExpandAll" class="tool-btn tool-btn-icon" title="Expand All Folders in Library">&#9660;</button>
                 <button onclick="collapseAll()" id="btnCollapseAll" class="tool-btn tool-btn-icon" title="Collapse All Folders in Library">&#9654;</button>
                 <button onclick="openPowerRenameModal('', 'Entire Vault', event)" id="btnGlobalPowerRename" class="tool-btn tool-btn-icon" title="Power Rename Files across Vault or Folders (Name 1, Name 2, ...)">⚡</button>
+                <button onclick="openPurgeLocalDataModal()" id="btnPurgeLocalData" class="tool-btn tool-btn-icon" title="Purge Local Cache &amp; Rebuild Vault from Cloud (Full Reset)">🧹</button>
                 <div class="view-toggle-group">
                     <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon active is-active" title="Switch to Cards Grid View">&#127183;</button>
                     <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">&#9776;</button>
@@ -9618,6 +9744,52 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         <span>⚡ Apply Rename</span>
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Purge Local Data Modal -->
+    <div id="purgeLocalDataModal" class="modal-overlay" style="display: none; z-index: 1300;" onclick="if(event.target===this)closePurgeLocalDataModal()">
+        <div class="modal" style="max-width: 580px; width: 92vw; background: #0b1120; border: 1px solid rgba(239, 68, 68, 0.4); box-shadow: 0 25px 70px rgba(0,0,0,0.95); padding: 22px; border-radius: 12px;" onclick="event.stopPropagation()">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+                <h3 style="color: #f87171; margin: 0; display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">
+                    <span>🧹</span> Purge Local Data &amp; Rebuild Vault
+                </h3>
+                <button type="button" onclick="closePurgeLocalDataModal()" style="background: none; border: none; color: #94a3b8; font-size: 1.3rem; cursor: pointer; padding: 0 4px; line-height: 1;">&times;</button>
+            </div>
+
+            <p style="font-size: 0.85rem; color: #cbd5e1; line-height: 1.5; margin: 0 0 14px 0;">
+                Permanently wipes all local temporary data, video stream caches, thumbnails, and the local manifest. The server will immediately re-fetch the canonical index from your <b>Hugging Face Cloud Vault</b>, rebuild a fresh manifest, and restart.
+            </p>
+
+            <div style="background: rgba(239, 68, 68, 0.06); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; font-size: 0.82rem; color: #fca5a5; display: flex; flex-direction: column; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>🗑️</span> <span>Deletes all decrypted stream cache in <code>encrypted_cache/</code></span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>🖼️</span> <span>Deletes contact sheets, thumbnails &amp; previews in <code>storyboards/</code></span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>📋</span> <span>Deletes local <code>upload_manifest.json</code> and recreates from Cloud</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>☁️</span> <span style="color: #6ee7b7;">Cloud vault files on Hugging Face are 100% safe &amp; untouched</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>🔄</span> <span>Restarts server process &amp; reloads dashboard automatically</span>
+                </div>
+            </div>
+
+            <div id="purgeStatusMsg" style="display: none; padding: 10px 14px; border-radius: 6px; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; font-size: 0.84rem; margin-bottom: 14px; align-items: center; gap: 8px;">
+                <span class="status-spinner" style="display: inline-block; width: 14px; height: 14px; border: 2px solid #38bdf8; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;"></span>
+                <span id="purgeStatusText">Purging local caches &amp; rebuilding vault...</span>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 0; display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" onclick="closePurgeLocalDataModal()" class="tool-btn">Cancel</button>
+                <button type="button" id="btnConfirmPurgeLocal" onclick="executePurgeLocalData()" class="btn btn-delete" style="padding: 8px 18px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+                    <span>🧹 Purge &amp; Restart Server</span>
+                </button>
             </div>
         </div>
     </div>
@@ -14640,6 +14812,71 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }} finally {{
                 btn.disabled = false;
                 btn.innerHTML = prevText;
+            }}
+        }}
+
+        function openPurgeLocalDataModal() {{
+            const modal = document.getElementById('purgeLocalDataModal');
+            if (modal) {{
+                const statusBox = document.getElementById('purgeStatusMsg');
+                if (statusBox) statusBox.style.display = 'none';
+                const btn = document.getElementById('btnConfirmPurgeLocal');
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.innerHTML = '<span>🧹 Purge &amp; Restart Server</span>';
+                }}
+                modal.style.display = 'flex';
+            }}
+        }}
+
+        function closePurgeLocalDataModal() {{
+            const modal = document.getElementById('purgeLocalDataModal');
+            if (modal) modal.style.display = 'none';
+        }}
+
+        async function executePurgeLocalData() {{
+            const btn = document.getElementById('btnConfirmPurgeLocal');
+            const statusBox = document.getElementById('purgeStatusMsg');
+            const statusText = document.getElementById('purgeStatusText');
+
+            if (btn) btn.disabled = true;
+            if (statusBox) statusBox.style.display = 'flex';
+            if (statusText) statusText.textContent = 'Purging local data & rebuilding manifest from cloud...';
+
+            try {{
+                const resp = await fetch('/api/system/purge-local-data', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }}
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    if (statusText) statusText.innerHTML = `✓ Vault rebuilt with ${{res.recreated_files_count || 0}} files! Restarting server...`;
+                    showToast(`🧹 Purge complete! Rebuilt ${{res.recreated_files_count || 0}} files. Reloading...`, 'success');
+
+                    let attempts = 0;
+                    const maxAttempts = 20;
+                    const checkInterval = setInterval(async () => {{
+                        attempts++;
+                        try {{
+                            const ping = await fetch('/api/activity', {{ cache: 'no-store' }});
+                            if (ping.ok) {{
+                                clearInterval(checkInterval);
+                                window.location.reload();
+                            }}
+                        }} catch (_) {{}}
+                        if (attempts >= maxAttempts) {{
+                            clearInterval(checkInterval);
+                            window.location.reload();
+                        }}
+                    }}, 800);
+                }} else {{
+                    alert('Purge failed: ' + (res.message || 'Unknown error'));
+                    if (btn) btn.disabled = false;
+                    if (statusBox) statusBox.style.display = 'none';
+                }}
+            }} catch (err) {{
+                if (statusText) statusText.textContent = 'Server restarting... Reloading dashboard...';
+                setTimeout(() => window.location.reload(), 2500);
             }}
         }}
 

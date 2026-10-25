@@ -15,6 +15,14 @@ def _load_activity_raw():
         try:
             with open(ACTIVITY_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {}
+                if "active_tasks" not in data or not isinstance(data.get("active_tasks"), dict):
+                    data["active_tasks"] = {}
+                if "recent_events" not in data or not isinstance(data.get("recent_events"), list):
+                    data["recent_events"] = []
+                if "watcher_status" not in data:
+                    data["watcher_status"] = "idle"
                 # Ensure monotonic counters exist
                 if "total_completed_count" not in data:
                     data["total_completed_count"] = 0
@@ -192,6 +200,20 @@ class ActivityTracker:
         with self._lock:
             state = _load_activity_raw()
             state["recent_events"] = []
+            _save_activity_raw(state)
+
+    def reset(self):
+        with self._lock:
+            state = {
+                "active_tasks": {},
+                "recent_events": [],
+                "watcher_status": "idle",
+                "batch_total": 0,
+                "batch_completed": 0,
+                "total_completed_count": 0,
+                "manifest_version": 1,
+                "last_updated": time.time()
+            }
             _save_activity_raw(state)
 
     def set_idle(self):
