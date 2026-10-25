@@ -5,8 +5,9 @@ import re
 import subprocess
 import requests
 import xml.sax.saxutils as saxutils
+import time
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, CommitOperationAdd
 import imageio_ffmpeg
 import crypto_engine
 import commit_helper
@@ -586,6 +587,75 @@ def sync_item_metadata_to_hf(api: HfApi, repo_id: str, blob_path: str, record: d
     except Exception as e:
         print(f"[!] Warning syncing metadata to HF ({repo_id}/{meta_blob_path}): {e}")
         return False
+
+
+def sync_bulk_metadata_to_hf(
+    api: HfApi,
+    repo_id: str,
+    items_to_sync: list,
+    password: str,
+    chunk_size: int = 100,
+    max_retries: int = 3
+) -> int:
+    """
+    Encrypts and uploads metadata sidecars for multiple videos in ATOMIC BATCH COMMITS
+    using CommitOperationAdd, avoiding individual commit spam and Hugging Face rate limits.
+    Returns the count of successfully committed items.
+    """
+    if not items_to_sync:
+        return 0
+
+    import hf_rate_limiter
+    token = getattr(api, "token", None)
+    total_committed = 0
+
+    ops = []
+    added_paths = []
+    for blob_path, record in items_to_sync:
+        if not blob_path:
+            continue
+        try:
+            rec_copy = dict(record)
+            rec_copy["verifier"] = crypto_engine.create_verifier(password)
+            meta_blob_path = get_meta_blob_path(blob_path)
+            json_bytes = json.dumps(rec_copy, separators=(',', ':')).encode("utf-8")
+            encrypted_bytes = crypto_engine.encrypt_bytes(json_bytes, password)
+            ops.append(CommitOperationAdd(
+                path_in_repo=meta_blob_path,
+                path_or_fileobj=io.BytesIO(encrypted_bytes)
+            ))
+            added_paths.append(meta_blob_path)
+        except Exception as ex:
+            print(f"[!] Error preparing metadata for {blob_path}: {ex}")
+
+    if not ops:
+        return 0
+
+    for i in range(0, len(ops), chunk_size):
+        chunk_ops = ops[i:i + chunk_size]
+        chunk_paths = added_paths[i:i + chunk_size]
+        for attempt in range(max_retries):
+            try:
+                hf_rate_limiter.rate_limiter.wait_for_commit_slot(token)
+                api.create_commit(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    operations=chunk_ops,
+                    commit_message=commit_helper.get_human_commit_message("metadata")
+                )
+                hf_rate_limiter.repo_cache.record_added_files(repo_id, chunk_paths)
+                total_committed += len(chunk_ops)
+                break
+            except Exception as e:
+                err_msg = str(e).lower()
+                if attempt < max_retries - 1 and any(x in err_msg for x in ["conflict", "412", "commit", "parent"]):
+                    import random
+                    time.sleep(0.5 * (2 ** attempt) + random.uniform(0.1, 0.4))
+                    continue
+                print(f"[!] Warning syncing batch metadata to HF ({repo_id}, chunk {i//chunk_size}): {e}")
+                break
+
+    return total_committed
 
 
 def delete_item_metadata_from_hf(api: HfApi, repo_id: str, blob_path: str):

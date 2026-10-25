@@ -442,6 +442,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_merge_tags()
         elif path == "/api/folders/rename":
             self.handle_rename_folder()
+        elif path in ("/api/folders/power-rename", "/api/files/power-rename"):
+            self.handle_power_rename()
         elif path == "/api/tag-category/delete":
             self.handle_delete_tag_category()
         elif path == "/api/tag-category/rename":
@@ -1812,24 +1814,24 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         def _bg_sync_folder(new_keys_list):
             try:
                 m = load_manifest()
-                repos_touched = set()
+                items_by_repo = {}
                 for item_key in new_keys_list:
                     f = m.get("files", {}).get(item_key)
                     if not f:
                         continue
                     repo_id = f.get("repo_id", f"{self.hf_username}/{self.default_repo}")
-                    repos_touched.add(repo_id)
-                    api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
                     blob_path = f.get("blob_path") or f.get("remote_path")
                     if blob_path:
                         record = dict(f)
                         record["full_key"] = item_key
-                        metadata_helper.sync_item_metadata_to_hf(api, repo_id, blob_path, record, self.password)
-                for r_id in repos_touched:
+                        items_by_repo.setdefault(repo_id, []).append((blob_path, record))
+
+                for r_id, items in items_by_repo.items():
                     api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
-                    repo_files = {k: v for k, v in m.get("files", {}).items() if v.get("repo_id") == r_id}
-                    # Master Index Only mode: canonical index updated via sync_master_index_to_cloud
-                    self.sync_master_index_to_cloud()
+                    committed = metadata_helper.sync_bulk_metadata_to_hf(api, r_id, items, self.password)
+                    logger.info("Atomic folder rename committed %d metadata sidecars to %s", committed, r_id)
+
+                self.sync_master_index_to_cloud()
             except Exception as ex:
                 logger.warning("Background folder rename HF sync warning: %s", ex)
 
@@ -1844,6 +1846,210 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             "message": f"Successfully renamed folder '{folder_path}' to '{new_folder_path}' across {len(matched_keys)} video(s)."
         }
         resp_body = json.dumps(resp).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_power_rename(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+        except Exception:
+            self.send_error(400, "Invalid JSON payload")
+            return
+
+        folder_path = str(req_data.get("folder_path", "")).strip().replace("\\", "/").strip("/")
+        renames = req_data.get("renames")  # list of {"old_key": str, "new_key": str}
+
+        # If explicit renames not provided, generate from parameters
+        if not renames:
+            base_name = str(req_data.get("base_name", "")).strip()
+            if not base_name:
+                self.send_error(400, "'renames' list or 'base_name' is required")
+                return
+            start_num = int(req_data.get("start_num", 1))
+            padding = int(req_data.get("padding", 1))
+            separator = str(req_data.get("separator", " "))
+            format_style = str(req_data.get("format_style", "space"))
+            include_subfolders = bool(req_data.get("include_subfolders", True))
+            sort_by = str(req_data.get("sort_by", "name_asc"))
+
+            manifest = load_manifest()
+            files = manifest.get("files", {})
+            prefix = folder_path + "/" if folder_path else ""
+
+            candidate_keys = []
+            for k in files.keys():
+                k_clean = k.replace("\\", "/")
+                if prefix:
+                    if include_subfolders:
+                        if k_clean.startswith(prefix):
+                            candidate_keys.append(k)
+                    else:
+                        if k_clean.startswith(prefix) and "/" not in k_clean[len(prefix):]:
+                            candidate_keys.append(k)
+                else:
+                    if include_subfolders or "/" not in k_clean:
+                        candidate_keys.append(k)
+
+            # Natural Sort candidate keys
+            if sort_by == "name_desc":
+                candidate_keys.sort(key=lambda x: Path(x).name.lower(), reverse=True)
+            elif sort_by == "date_asc":
+                candidate_keys.sort(key=lambda x: float(files.get(x, {}).get("uploaded_at", 0) or 0))
+            elif sort_by == "date_desc":
+                candidate_keys.sort(key=lambda x: float(files.get(x, {}).get("uploaded_at", 0) or 0), reverse=True)
+            else:
+                def natural_sort_key(s):
+                    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', Path(s).name)]
+                candidate_keys.sort(key=natural_sort_key)
+
+            renames = []
+            for idx, old_k in enumerate(candidate_keys):
+                cur_num = start_num + idx
+                num_str = str(cur_num).zfill(padding) if padding > 1 else str(cur_num)
+                parent_dir = str(Path(old_k).parent).replace("\\", "/")
+                parent_dir = "" if parent_dir == "." else parent_dir
+                ext = Path(old_k).suffix or ".mp4"
+
+                if format_style == "hyphen":
+                    new_filename = f"{base_name} - {num_str}{ext}"
+                elif format_style == "underscore":
+                    new_filename = f"{base_name}_{num_str}{ext}"
+                elif format_style == "parentheses":
+                    new_filename = f"{base_name} ({num_str}){ext}"
+                elif format_style == "dot":
+                    new_filename = f"{base_name}.{num_str}{ext}"
+                else:
+                    new_filename = f"{base_name} {num_str}{ext}"
+
+                new_k = f"{parent_dir}/{new_filename}".lstrip("/") if parent_dir else new_filename
+                renames.append({"old_key": old_k, "new_key": new_k})
+
+        if not renames:
+            self.send_error(400, "No files found to rename")
+            return
+
+        manifest = load_manifest()
+        files = manifest.get("files", {})
+        port = self.server.server_port if hasattr(self.server, "server_port") else 8080
+        jelly_enabled = account_manager.is_jellyfin_sync_enabled()
+
+        applied_renames = []
+        sync_items_by_repo = {}
+
+        for item in renames:
+            old_k = item.get("old_key")
+            new_k = item.get("new_key")
+            if not old_k or not new_k or old_k == new_k:
+                continue
+            if old_k not in files:
+                continue
+
+            finfo = files.pop(old_k)
+            finfo["full_key"] = new_k
+
+            fns = finfo.get("file_names") or []
+            new_fns = []
+            for fn in fns:
+                if fn == old_k:
+                    new_fns.append(new_k)
+                else:
+                    new_fns.append(fn)
+            if new_k not in new_fns:
+                new_fns.append(new_k)
+            finfo["file_names"] = new_fns
+
+            clean_meta = finfo.get("metadata") or {}
+            clean_meta["title"] = Path(new_k).stem
+            finfo["metadata"] = clean_meta
+            finfo["verifier"] = crypto_engine.create_verifier(self.password)
+            finfo["updated_at"] = time.time()
+
+            files[new_k] = finfo
+            FILE_CACHE.pop(old_k, None)
+            FILE_CACHE[new_k] = finfo
+
+            media_hash = finfo.get("media_hash") or finfo.get("content_hash")
+            if media_hash and "media_hashes" in manifest:
+                manifest["media_hashes"][media_hash] = finfo
+
+            try:
+                local_old = Path("videos_to_sync") / old_k
+                if local_old.exists():
+                    local_new = Path("videos_to_sync") / new_k
+                    local_new.parent.mkdir(parents=True, exist_ok=True)
+                    local_old.rename(local_new)
+                    old_stem = local_old.stem
+                    for srt_cand in local_old.parent.glob(f"{old_stem}*.srt"):
+                        new_srt_name = srt_cand.name.replace(old_stem, Path(new_k).stem, 1)
+                        srt_cand.rename(srt_cand.parent / new_srt_name)
+            except Exception as e:
+                logger.warning("Error moving local sync file %s: %s", old_k, e)
+
+            if jelly_enabled:
+                try:
+                    old_strm = Path("jellyfin_library") / f"{old_k}.strm"
+                    if old_strm.exists():
+                        try: old_strm.unlink()
+                        except Exception: pass
+                    metadata_helper.delete_nfo_files("jellyfin_library", old_k)
+
+                    new_strm = Path("jellyfin_library") / f"{new_k}.strm"
+                    new_strm.parent.mkdir(parents=True, exist_ok=True)
+                    strm_url = f"http://127.0.0.1:{port}/stream/{quote(new_k)}"
+                    new_strm.write_text(strm_url, encoding="utf-8")
+                    metadata_helper.write_nfo_files("jellyfin_library", new_k, clean_meta, media_info=finfo.get("media_info"))
+                except Exception as ex:
+                    logger.warning("Error syncing Jellyfin for %s: %s", new_k, ex)
+
+            repo_id = finfo.get("repo_id", f"{self.hf_username}/{self.default_repo}")
+            blob_path = finfo.get("blob_path") or finfo.get("remote_path")
+            if blob_path:
+                sync_items_by_repo.setdefault(repo_id, []).append((blob_path, dict(finfo)))
+
+            applied_renames.append({"old_key": old_k, "new_key": new_k})
+
+        save_manifest(manifest)
+
+        activity_tracker.tracker.add_event(
+            "info",
+            "Power Rename Completed",
+            f"Power Renamed {len(applied_renames)} video(s) in '{folder_path or 'Vault'}' (Atomic HF Commit queued)"
+        )
+
+        def _bg_sync_power_rename(items_by_repo, cur_manifest):
+            try:
+                for r_id, items in items_by_repo.items():
+                    api = self.acc_mgr.get_api_for_repo(r_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
+                    committed = metadata_helper.sync_bulk_metadata_to_hf(api, r_id, items, self.password)
+                    logger.info("Atomic bulk rename committed %d metadata sidecars to %s", committed, r_id)
+
+                master_repo = self.acc_mgr.get_master_repo_id() if hasattr(self, "acc_mgr") and self.acc_mgr else (os.getenv("REPO_ID") or f"{self.hf_username}/{self.default_repo}")
+                m_api = self.acc_mgr.get_api_for_repo(master_repo) if hasattr(self, "acc_mgr") and self.acc_mgr else HfApi(token=self.token)
+                import hf_rate_limiter
+                hf_rate_limiter.debounced_syncer.queue_master_sync(
+                    m_api,
+                    master_repo,
+                    cur_manifest,
+                    self.password,
+                    metadata_helper.sync_master_manifest_to_hf
+                )
+            except Exception as ex:
+                logger.warning("Background power rename commit error: %s", ex)
+
+        threading.Thread(target=_bg_sync_power_rename, args=(sync_items_by_repo, manifest), daemon=True).start()
+
+        resp_body = json.dumps({
+            "success": True,
+            "renamed_count": len(applied_renames),
+            "folder_path": folder_path,
+            "renames": applied_renames
+        }).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(resp_body)))
@@ -8003,6 +8209,40 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             box-shadow: 0 0 10px rgba(56, 189, 248, 0.45), inset 0 0 6px rgba(56, 189, 248, 0.2) !important;
         }}
 
+        .folder-action-icon-btn.btn-power-rename-icon:hover {{
+            color: #38bdf8 !important;
+            background: rgba(56, 189, 248, 0.15) !important;
+            border-color: rgba(56, 189, 248, 0.4) !important;
+        }}
+        .pr-preview-row {{
+            display: grid;
+            grid-template-columns: 36px 36px 1fr 24px 1fr;
+            align-items: center;
+            padding: 7px 14px;
+            font-size: 0.82rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            transition: background 0.15s ease;
+        }}
+        .pr-preview-row:hover {{
+            background: rgba(255, 255, 255, 0.03);
+        }}
+        .pr-preview-row.is-excluded {{
+            opacity: 0.35;
+        }}
+        .pr-old-name {{
+            color: #94a3b8;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .pr-new-name {{
+            color: #38bdf8;
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+
         /* Glowing accent dot indicator on top-right of active icon buttons */
         .tool-btn-icon.is-active::after,
         .tool-btn-icon.active::after {{
@@ -8569,6 +8809,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <button onclick="expandVisible()" id="btnExpandVisible" class="tool-btn tool-btn-icon" title="Expand what is currently visible on screen (Folders & Cards)">&#128065;</button>
                 <button onclick="expandAll()" id="btnExpandAll" class="tool-btn tool-btn-icon" title="Expand All Folders in Library">&#9660;</button>
                 <button onclick="collapseAll()" id="btnCollapseAll" class="tool-btn tool-btn-icon" title="Collapse All Folders in Library">&#9654;</button>
+                <button onclick="openPowerRenameModal('', 'Entire Vault', event)" id="btnGlobalPowerRename" class="tool-btn tool-btn-icon" title="Power Rename Files across Vault or Folders (Name 1, Name 2, ...)">⚡</button>
                 <div class="view-toggle-group">
                     <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon active is-active" title="Switch to Cards Grid View">&#127183;</button>
                     <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">&#9776;</button>
@@ -9241,6 +9482,142 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     📋 Copy Path
                 </button>
                 <button type="button" onclick="closeSyncFolderModal()" class="tool-btn" style="background: #334155; color: #fff;">Got It</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Power Rename Modal -->
+    <div id="powerRenameModal" class="modal-overlay" style="display: none; z-index: 1250;" onclick="if(event.target===this)closePowerRenameModal()">
+        <div class="modal" style="max-width: 860px; width: 95%; max-height: 90vh; display: flex; flex-direction: column; padding: 0; background: #0b1120; border: 1px solid rgba(56, 189, 248, 0.35); box-shadow: 0 20px 60px rgba(0,0,0,0.9); border-radius: 12px; overflow: hidden;" onclick="event.stopPropagation()">
+            <!-- Header -->
+            <div style="padding: 16px 22px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: rgba(56, 189, 248, 0.04); display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 1.4rem;">⚡</span>
+                    <div>
+                        <h3 style="margin: 0; color: #38bdf8; font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                            Power Rename Files
+                            <span id="prFolderBadge" style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); padding: 2px 8px; border-radius: 999px; font-weight: 500;"></span>
+                        </h3>
+                        <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 2px;">
+                            Sequential numbering &amp; pattern-based bulk rename with atomic Hugging Face commit
+                        </div>
+                    </div>
+                </div>
+                <button type="button" onclick="closePowerRenameModal()" style="background: none; border: none; color: #94a3b8; font-size: 1.4rem; cursor: pointer; padding: 4px; line-height: 1;" title="Close">&times;</button>
+            </div>
+
+            <!-- Body / Controls -->
+            <div style="padding: 18px 22px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 14px;">
+                <!-- Pattern Settings Grid -->
+                <div style="display: grid; grid-template-columns: 2fr 1.2fr 1fr 1fr; gap: 12px; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 14px;">
+                    <div>
+                        <label style="display: block; font-size: 0.78rem; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">
+                            Base Name / Prefix
+                        </label>
+                        <input type="text" id="prBaseName" oninput="updatePowerRenamePreview()" placeholder="e.g. Episode or Naruto" style="width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; padding: 8px 10px; font-size: 0.88rem; outline: none;">
+                    </div>
+
+                    <div>
+                        <label style="display: block; font-size: 0.78rem; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">
+                            Format Style
+                        </label>
+                        <select id="prFormatStyle" onchange="updatePowerRenamePreview()" style="width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; padding: 8px 10px; font-size: 0.88rem; outline: none;">
+                            <option value="space">Name 1, Name 2</option>
+                            <option value="hyphen">Name - 1, Name - 2</option>
+                            <option value="underscore">Name_1, Name_2</option>
+                            <option value="parentheses">Name (1), Name (2)</option>
+                            <option value="dot">Name.1, Name.2</option>
+                            <option value="custom">Custom Pattern...</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label style="display: block; font-size: 0.78rem; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">
+                            Start Number
+                        </label>
+                        <input type="number" id="prStartNum" value="1" min="0" oninput="updatePowerRenamePreview()" style="width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; padding: 8px 10px; font-size: 0.88rem; outline: none;">
+                    </div>
+
+                    <div>
+                        <label style="display: block; font-size: 0.78rem; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">
+                            Padding
+                        </label>
+                        <select id="prPadding" onchange="updatePowerRenamePreview()" style="width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; padding: 8px 10px; font-size: 0.88rem; outline: none;">
+                            <option value="1">1, 2, ... 10 (None)</option>
+                            <option value="2">01, 02, ... 10 (2 Digits)</option>
+                            <option value="3">001, 002, ... 010 (3 Digits)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Custom pattern input row (hidden unless custom selected) -->
+                <div id="prCustomRow" style="display: none; background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 6px; padding: 8px 12px; font-size: 0.82rem; color: #94a3b8;">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <span style="font-weight: 600; color: #38bdf8;">Custom Pattern:</span>
+                        <input type="text" id="prCustomPattern" value="{{base}} {{n}}" oninput="updatePowerRenamePreview()" style="flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #f8fafc; padding: 4px 8px; font-size: 0.82rem;">
+                        <span style="font-size: 0.75rem; color: #64748b;">Tags: <code>{{base}}</code>, <code>{{n}}</code>, <code>{{orig}}</code></span>
+                    </div>
+                </div>
+
+                <!-- Sort and Scope Options Bar -->
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 2px;">
+                    <div style="display: flex; gap: 14px; align-items: center; font-size: 0.82rem; color: #94a3b8;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" id="prIncludeSubfolders" checked onchange="loadPowerRenameFiles()">
+                            <span>Include subfolders</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" id="prKeepOriginalExt" checked onchange="updatePowerRenamePreview()">
+                            <span>Keep original extension (<code>.mp4</code>, etc.)</span>
+                        </label>
+                    </div>
+
+                    <div style="display: flex; gap: 8px; align-items: center; font-size: 0.82rem; color: #94a3b8;">
+                        <span>Sort order:</span>
+                        <select id="prSortOrder" onchange="loadPowerRenameFiles()" style="background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #cbd5e1; padding: 3px 8px; font-size: 0.8rem;">
+                            <option value="name_asc">Alphabetical (A &#10140; Z)</option>
+                            <option value="name_desc">Alphabetical (Z &#10140; A)</option>
+                            <option value="date_asc">Oldest First</option>
+                            <option value="date_desc">Newest First</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Live Preview Table -->
+                <div style="border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; overflow: hidden; background: #090e1a; max-height: 340px; display: flex; flex-direction: column;">
+                    <div style="background: rgba(255, 255, 255, 0.04); border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding: 8px 14px; display: grid; grid-template-columns: 36px 36px 1fr 24px 1fr; align-items: center; font-size: 0.74rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px;">
+                        <input type="checkbox" id="prSelectAll" checked onchange="toggleSelectAllPowerRename(this.checked)" title="Select/Deselect All">
+                        <span>#</span>
+                        <span>Original Name</span>
+                        <span></span>
+                        <span>New Renamed Name</span>
+                    </div>
+                    <div id="prPreviewList" style="overflow-y: auto; flex: 1;">
+                        <!-- Generated dynamically -->
+                    </div>
+                </div>
+
+                <!-- HF Rate Limit Protected Notice -->
+                <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 6px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; font-size: 0.8rem; color: #a7f3d0;">
+                    <span style="font-size: 1.1rem;">⚡</span>
+                    <div>
+                        <strong style="color: #34d399;">HF Rate Limit Protected:</strong>
+                        All renames are bundled into <b>1 single atomic commit</b> per repository via <code>CommitOperationAdd</code>. Media files are not re-uploaded, and zero commit quota is wasted.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer Actions -->
+            <div style="padding: 14px 22px; border-top: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.02); display: flex; justify-content: space-between; align-items: center;">
+                <div id="prSelectionSummary" style="font-size: 0.82rem; color: #94a3b8;">
+                    0 files selected
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" onclick="closePowerRenameModal()" class="tool-btn" style="padding: 8px 16px;">Cancel</button>
+                    <button type="button" id="btnApplyPowerRename" onclick="applyPowerRename()" class="btn btn-play" style="background: #0284c7; border-color: #38bdf8; padding: 8px 20px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+                        <span>⚡ Apply Rename</span>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -11149,6 +11526,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         </div>
                         <div class="folder-actions">
                             <button type="button" onclick="event.stopPropagation(); openSyncFolderInExplorer('${{escapeHtml(folderPath)}}', event)" class="folder-action-icon-btn btn-sync-icon" title="Open in Local Sync Folder (videos_to_sync)">&#128194;</button>
+                            <button type="button" onclick="event.stopPropagation(); openPowerRenameModal('${{escapeHtml(folderPath)}}', '${{escapeHtml(node.name)}}', event)" class="folder-action-icon-btn btn-power-rename-icon" title="Power Rename all files in this folder (Name 1, Name 2, ...)">⚡</button>
                             <button type="button" onclick="event.stopPropagation(); promptRenameFolder('${{escapeHtml(folderPath)}}', '${{escapeHtml(node.name)}}', ${{totalDescendantFiles}}, event)" class="folder-action-icon-btn btn-rename-icon" title="Rename Folder across all video paths and metadata">&#9998;</button>
                             <button type="button" onclick="event.stopPropagation(); promptDeleteFolder('${{escapeHtml(folderPath)}}', ${{totalDescendantFiles}})" class="folder-action-icon-btn btn-delete-icon" title="Delete Folder and all contained videos">&#128465;</button>
                         </div>
@@ -14002,6 +14380,267 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         function closeSyncFolderModal() {{
             const modal = document.getElementById('syncFolderModal');
             if (modal) modal.style.display = 'none';
+        }}
+
+        let currentPowerRenameFolder = '';
+        let currentPowerRenameFiles = [];
+        let powerRenameExcludedKeys = new Set();
+
+        function openPowerRenameModal(folderPath, folderName, event) {{
+            if (event) event.stopPropagation();
+            currentPowerRenameFolder = folderPath || '';
+            powerRenameExcludedKeys.clear();
+
+            const badge = document.getElementById('prFolderBadge');
+            if (badge) {{
+                badge.textContent = folderPath || 'All Library';
+            }}
+
+            const defaultBase = folderName ? folderName.trim() : (folderPath ? folderPath.split('/').pop().trim() : 'Video');
+            const baseInput = document.getElementById('prBaseName');
+            if (baseInput) {{
+                baseInput.value = defaultBase;
+            }}
+
+            const startInput = document.getElementById('prStartNum');
+            if (startInput) startInput.value = '1';
+            const fmtSelect = document.getElementById('prFormatStyle');
+            if (fmtSelect) fmtSelect.value = 'space';
+            const subChk = document.getElementById('prIncludeSubfolders');
+            if (subChk) subChk.checked = true;
+            const extChk = document.getElementById('prKeepOriginalExt');
+            if (extChk) extChk.checked = true;
+            const sortSel = document.getElementById('prSortOrder');
+            if (sortSel) sortSel.value = 'name_asc';
+
+            loadPowerRenameFiles();
+
+            const modal = document.getElementById('powerRenameModal');
+            if (modal) {{
+                modal.style.display = 'flex';
+                if (baseInput) {{
+                    setTimeout(() => {{ baseInput.focus(); baseInput.select(); }}, 60);
+                }}
+            }}
+        }}
+
+        function closePowerRenameModal() {{
+            const modal = document.getElementById('powerRenameModal');
+            if (modal) modal.style.display = 'none';
+        }}
+
+        function loadPowerRenameFiles() {{
+            const includeSubs = document.getElementById('prIncludeSubfolders')?.checked !== false;
+            const sortOrder = document.getElementById('prSortOrder')?.value || 'name_asc';
+            const folderPrefix = currentPowerRenameFolder ? currentPowerRenameFolder + '/' : '';
+
+            let matches = (allFiles || []).filter(f => {{
+                const k = (f.key || '').replace(/\\\\/g, '/');
+                if (!folderPrefix) {{
+                    return includeSubs ? true : !k.includes('/');
+                }}
+                if (!k.startsWith(folderPrefix) && k !== currentPowerRenameFolder) return false;
+                if (!includeSubs) {{
+                    const rel = k.substring(folderPrefix.length);
+                    if (rel.includes('/')) return false;
+                }}
+                return true;
+            }});
+
+            matches.sort((a, b) => {{
+                if (sortOrder === 'date_asc') return (a.uploaded_at || 0) - (b.uploaded_at || 0);
+                if (sortOrder === 'date_desc') return (b.uploaded_at || 0) - (a.uploaded_at || 0);
+
+                const nameA = (a.name || a.key || '').toLowerCase();
+                const nameB = (b.name || b.key || '').toLowerCase();
+                const cmp = nameA.localeCompare(nameB, undefined, {{ numeric: true, sensitivity: 'base' }});
+                return sortOrder === 'name_desc' ? -cmp : cmp;
+            }});
+
+            currentPowerRenameFiles = matches;
+
+            const padSelect = document.getElementById('prPadding');
+            if (padSelect) {{
+                if (matches.length >= 100) padSelect.value = '3';
+                else if (matches.length >= 10) padSelect.value = '2';
+                else padSelect.value = '1';
+            }}
+
+            updatePowerRenamePreview();
+        }}
+
+        function updatePowerRenamePreview() {{
+            const baseName = (document.getElementById('prBaseName')?.value || '').trim();
+            const formatStyle = document.getElementById('prFormatStyle')?.value || 'space';
+            const startNum = parseInt(document.getElementById('prStartNum')?.value, 10) || 1;
+            const padding = parseInt(document.getElementById('prPadding')?.value, 10) || 1;
+            const keepExt = document.getElementById('prKeepOriginalExt')?.checked !== false;
+            const customPattern = document.getElementById('prCustomPattern')?.value || '{{base}} {{n}}';
+
+            const customRow = document.getElementById('prCustomRow');
+            if (customRow) customRow.style.display = (formatStyle === 'custom') ? 'block' : 'none';
+
+            const listElem = document.getElementById('prPreviewList');
+            if (!listElem) return;
+
+            if (currentPowerRenameFiles.length === 0) {{
+                listElem.innerHTML = `<div style="padding: 28px; text-align: center; color: #64748b; font-size: 0.85rem;">No video files found in this folder.</div>`;
+                const summary = document.getElementById('prSelectionSummary');
+                if (summary) summary.textContent = '0 files';
+                const applyBtn = document.getElementById('btnApplyPowerRename');
+                if (applyBtn) applyBtn.disabled = true;
+                return;
+            }}
+
+            let seqIndex = 0;
+            let activeCount = 0;
+            let html = '';
+
+            currentPowerRenameFiles.forEach((f) => {{
+                const oldKey = f.key || '';
+                const isExcluded = powerRenameExcludedKeys.has(oldKey);
+                if (!isExcluded) activeCount++;
+
+                const curNum = startNum + seqIndex;
+                if (!isExcluded) seqIndex++;
+
+                const numStr = padding > 1 ? String(curNum).padStart(padding, '0') : String(curNum);
+                const oldName = f.name || oldKey.split('/').pop();
+                const extIndex = oldName.lastIndexOf('.');
+                const origExt = (extIndex !== -1 && extIndex > 0) ? oldName.substring(extIndex) : '.mp4';
+                const origStem = extIndex !== -1 ? oldName.substring(0, extIndex) : oldName;
+
+                let newName = '';
+                if (!baseName) {{
+                    newName = oldName;
+                }} else if (formatStyle === 'hyphen') {{
+                    newName = `${{baseName}} - ${{numStr}}${{keepExt ? origExt : ''}}`;
+                }} else if (formatStyle === 'underscore') {{
+                    newName = `${{baseName}}_${{numStr}}${{keepExt ? origExt : ''}}`;
+                }} else if (formatStyle === 'parentheses') {{
+                    newName = `${{baseName}} (${{numStr}})${{keepExt ? origExt : ''}}`;
+                }} else if (formatStyle === 'dot') {{
+                    newName = `${{baseName}}.${{numStr}}${{keepExt ? origExt : ''}}`;
+                }} else if (formatStyle === 'custom') {{
+                    newName = customPattern.split('{{base}}').join(baseName).split('{{n}}').join(numStr).split('{{orig}}').join(origStem);
+                    if (keepExt && !newName.endsWith(origExt)) newName += origExt;
+                }} else {{
+                    newName = `${{baseName}} ${{numStr}}${{keepExt ? origExt : ''}}`;
+                }}
+
+                html += `
+                <div class="pr-preview-row ${{isExcluded ? 'is-excluded' : ''}}" data-key="${{escapeHtml(oldKey)}}" data-newname="${{escapeHtml(newName)}}">
+                    <input type="checkbox" ${{isExcluded ? '' : 'checked'}} onchange="toggleFilePowerRename('${{escapeHtml(oldKey)}}', this.checked)">
+                    <span style="color: #64748b; font-size: 0.75rem;">${{isExcluded ? '-' : seqIndex}}</span>
+                    <span class="pr-old-name" title="${{escapeHtml(oldName)}}">${{escapeHtml(oldName)}}</span>
+                    <span style="color: #64748b; text-align: center;">&#10140;</span>
+                    <span class="pr-new-name" title="${{escapeHtml(newName)}}">${{escapeHtml(newName)}}</span>
+                </div>`;
+            }});
+
+            listElem.innerHTML = html;
+            const summary = document.getElementById('prSelectionSummary');
+            if (summary) {{
+                summary.innerHTML = `<strong style="color: #f8fafc;">${{activeCount}}</strong> of ${{currentPowerRenameFiles.length}} files selected to rename`;
+            }}
+            const applyBtn = document.getElementById('btnApplyPowerRename');
+            if (applyBtn) applyBtn.disabled = (activeCount === 0);
+        }}
+
+        function toggleFilePowerRename(oldKey, isChecked) {{
+            if (isChecked) {{
+                powerRenameExcludedKeys.delete(oldKey);
+            }} else {{
+                powerRenameExcludedKeys.add(oldKey);
+            }}
+            updatePowerRenamePreview();
+        }}
+
+        function toggleSelectAllPowerRename(isChecked) {{
+            if (isChecked) {{
+                powerRenameExcludedKeys.clear();
+            }} else {{
+                currentPowerRenameFiles.forEach(f => powerRenameExcludedKeys.add(f.key));
+            }}
+            updatePowerRenamePreview();
+        }}
+
+        async function applyPowerRename() {{
+            const btn = document.getElementById('btnApplyPowerRename');
+            const previewRows = document.querySelectorAll('.pr-preview-row:not(.is-excluded)');
+            if (previewRows.length === 0) {{
+                alert('No files selected to rename.');
+                return;
+            }}
+
+            const renames = [];
+            previewRows.forEach(row => {{
+                const oldKey = row.getAttribute('data-key');
+                const newName = row.getAttribute('data-newname');
+                if (!oldKey || !newName) return;
+
+                const parentDir = oldKey.includes('/') ? oldKey.substring(0, oldKey.lastIndexOf('/')) : '';
+                const newKey = parentDir ? `${{parentDir}}/${{newName}}` : newName;
+                if (oldKey !== newKey) {{
+                    renames.push({{ old_key: oldKey, new_key: newKey, new_name: newName }});
+                }}
+            }});
+
+            if (renames.length === 0) {{
+                alert('None of the selected files require renaming (names are unchanged).');
+                return;
+            }}
+
+            const confirmMsg = `Apply Power Rename to ${{renames.length}} file(s)?\\n\\nThis updates all video paths, metadata, and pushes 1 atomic batch commit to Hugging Face.`;
+            if (!confirm(confirmMsg)) return;
+
+            btn.disabled = true;
+            const prevText = btn.innerHTML;
+            btn.innerHTML = `<span>&#9203; Renaming ${{renames.length}} files...</span>`;
+
+            try {{
+                const resp = await fetch('/api/files/power-rename', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        folder_path: currentPowerRenameFolder,
+                        renames: renames.map(r => ({{ old_key: r.old_key, new_key: r.new_key }}))
+                    }})
+                }});
+                const res = await resp.json();
+                if (res.success) {{
+                    const renameMap = new Map();
+                    renames.forEach(r => renameMap.set(r.old_key, r));
+
+                    (allFiles || []).forEach(f => {{
+                        const r = renameMap.get(f.key);
+                        if (r) {{
+                            f.key = r.new_key;
+                            f.name = r.new_name;
+                            if (f.file_names) {{
+                                f.file_names = f.file_names.map(fn => fn === r.old_key ? r.new_key : fn);
+                                if (!f.file_names.includes(r.new_key)) f.file_names.push(r.new_key);
+                            }}
+                            if (f.metadata) {{
+                                const stem = r.new_name.lastIndexOf('.') !== -1 ? r.new_name.substring(0, r.new_name.lastIndexOf('.')) : r.new_name;
+                                f.metadata.title = stem;
+                            }}
+                        }}
+                    }});
+
+                    closePowerRenameModal();
+                    populateFilterDropdowns();
+                    refreshTreeDisplay();
+                    showToast(`&#10003; Power Renamed ${{res.renamed_count}} files! Atomic commit queued to cloud.`, 'success');
+                }} else {{
+                    alert('Power rename failed: ' + (res.message || 'Unknown error'));
+                }}
+            }} catch (err) {{
+                alert('Request failed: ' + err);
+            }} finally {{
+                btn.disabled = false;
+                btn.innerHTML = prevText;
+            }}
         }}
 
         function clearAllMergeMarks() {{
