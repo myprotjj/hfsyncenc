@@ -737,6 +737,8 @@ def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, passwor
         encrypted_bytes = crypto_engine.encrypt_bytes(compressed_payload, password)
 
         try:
+            import hf_rate_limiter
+            hf_rate_limiter.rate_limiter.wait_for_commit_slot(token)
             api.upload_file(
                 path_or_fileobj=io.BytesIO(encrypted_bytes),
                 path_in_repo="vault_index.enc",
@@ -744,6 +746,7 @@ def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, passwor
                 repo_type="dataset",
                 commit_message=commit_helper.get_human_commit_message("metadata")
             )
+            hf_rate_limiter.repo_cache.record_added_files(repo_id, ["vault_index.enc"])
             return True
         except Exception as e:
             err_msg = str(e).lower()
@@ -837,6 +840,8 @@ def sync_master_manifest_to_hf(
         encrypted_bytes = crypto_engine.encrypt_bytes(compressed_payload, password)
 
         try:
+            import hf_rate_limiter
+            hf_rate_limiter.rate_limiter.wait_for_commit_slot(token)
             api.upload_file(
                 path_or_fileobj=io.BytesIO(encrypted_bytes),
                 path_in_repo="vault_index.enc",
@@ -844,6 +849,7 @@ def sync_master_manifest_to_hf(
                 repo_type="dataset",
                 commit_message=commit_helper.get_human_commit_message("metadata")
             )
+            hf_rate_limiter.repo_cache.record_added_files(master_repo_id, ["vault_index.enc"])
             return True
         except Exception as e:
             err_msg = str(e).lower()

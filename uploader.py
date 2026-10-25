@@ -7,6 +7,7 @@ from pathlib import Path
 from huggingface_hub import HfApi
 import crypto_engine
 import commit_helper
+import hf_rate_limiter
 
 # Common video and media extensions
 SUPPORTED_EXTENSIONS = {
@@ -128,6 +129,7 @@ def sync_folder(
 
             # 2. Upload encrypted file to HF dataset
             print(f"    2. Uploading to HF dataset ({remote_enc_name})...")
+            hf_rate_limiter.rate_limiter.wait_for_commit_slot(token)
             commit_info = api.upload_file(
                 path_or_fileobj=temp_enc_file,
                 path_in_repo=remote_enc_name,
