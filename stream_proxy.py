@@ -8083,7 +8083,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         body.privacy-blur-active .card-overview-snippet,
         body.privacy-blur-active .video-list-title,
         body.privacy-blur-active .tree-file-label,
-        body.privacy-blur-active .alias-card-name {{
+        body.privacy-blur-active .file-name,
+        body.privacy-blur-active .alias-card-name,
+        body.privacy-blur-active .resume-bar-title,
+        body.privacy-blur-active #floatingResumeTitle,
+        body.privacy-blur-active .floating-quick-resume-bar .resume-bar-title {{
             filter: blur(6px) !important;
             user-select: none !important;
             transition: filter 0.2s ease;
@@ -8093,7 +8097,11 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         body.privacy-blur-active .video-card:hover .card-overview-snippet,
         body.privacy-blur-active .video-card-title:hover,
         body.privacy-blur-active .video-list-row:hover .video-list-title,
-        body.privacy-blur-active .video-card:hover .alias-card-name {{
+        body.privacy-blur-active .video-list-row:hover .file-name,
+        body.privacy-blur-active .file-name:hover,
+        body.privacy-blur-active .video-card:hover .alias-card-name,
+        body.privacy-blur-active .floating-quick-resume-bar:hover .resume-bar-title,
+        body.privacy-blur-active #floatingResumeTitle:hover {{
             filter: blur(0px) !important;
             user-select: auto !important;
         }}
