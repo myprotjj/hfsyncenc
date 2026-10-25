@@ -214,7 +214,10 @@ class EncryptedStreamCache:
         self._stop_downloads: Set[str] = set()
         self._global_lock = threading.Lock()
 
-        # Start background 24-hour expiration cleaner thread
+        # Purge any unpinned cache on startup (only pinned offline videos remain on disk)
+        self.purge_unpinned_cache()
+
+        # Start background cleaner thread
         self._cleaner_thread = threading.Thread(target=self._expiration_cleaner_loop, daemon=True)
         self._cleaner_thread.start()
 
@@ -381,8 +384,35 @@ class EncryptedStreamCache:
         idx.touch()
         return idx.get_chunk_spans(first_chunk, last_chunk)
 
+    def is_pinned_offline(self, cache_id: str) -> bool:
+        """Checks if a video is explicitly pinned for offline playback."""
+        idx = self._indices.get(cache_id)
+        if idx:
+            return bool(idx.pinned_offline)
+        idx_path = self._get_idx_path(cache_id)
+        if not os.path.exists(idx_path):
+            return False
+        try:
+            with open(idx_path, "rb") as f:
+                loaded = VideoChunkIndex.deserialize(cache_id, f.read())
+            if loaded:
+                self._indices[cache_id] = loaded
+                return bool(loaded.pinned_offline)
+        except Exception:
+            pass
+        return False
+
+    def is_downloading_offline(self, cache_id: str) -> bool:
+        """Checks if a video is currently being downloaded offline in background."""
+        with self._global_lock:
+            return bool(cache_id in self._active_downloads)
+
     def set_pinned_offline(self, cache_id: str, pinned: bool, total_size: int = 0, chunk_size: int = 0):
-        """Toggle pinned offline status for a video."""
+        """Toggle pinned offline status for a video. If unpinned, immediately clears offline cache."""
+        if not pinned:
+            # When unpinned, immediately clear cache so no 24h unpinned cache remains on disk
+            self.clear_cache(cache_id=cache_id)
+            return
         idx = self.get_or_load_index(cache_id, total_size, chunk_size)
         if idx:
             idx.set_pinned_offline(pinned)
@@ -611,16 +641,13 @@ class EncryptedStreamCache:
             "files": file_stats
         }
 
-    def purge_expired_cache(self, max_age_seconds: Optional[int] = None) -> int:
+    def purge_unpinned_cache(self) -> int:
         """
-        Deletes cached video files that are NOT pinned offline and whose
-        last_accessed timestamp is older than max_age_seconds (default 24h).
+        Deletes all cached video files that are NOT pinned offline.
+        Ensures videos are only stored locally when offline is explicitly selected.
         Returns number of purged files.
         """
-        max_age = max_age_seconds if max_age_seconds is not None else self.max_age_seconds
-        now = int(time.time())
         purged_count = 0
-
         with self._global_lock:
             if not os.path.exists(self.cache_dir):
                 return 0
@@ -629,33 +656,45 @@ class EncryptedStreamCache:
                 if not fname.endswith(".idx"):
                     continue
                 cache_id = fname[:-4]
+                if cache_id in self._active_downloads:
+                    continue
                 idx_path = self._get_idx_path(cache_id)
                 enc_path = self._get_enc_path(cache_id)
 
                 try:
-                    with open(idx_path, "rb") as f:
-                        idx = VideoChunkIndex.deserialize(cache_id, f.read())
+                    idx = self._indices.get(cache_id)
+                    if not idx and os.path.exists(idx_path):
+                        with open(idx_path, "rb") as f:
+                            idx = VideoChunkIndex.deserialize(cache_id, f.read())
                     if idx and not idx.pinned_offline:
-                        age = now - idx.last_accessed
-                        if age > max_age:
-                            self._indices.pop(cache_id, None)
-                            self._locks.pop(cache_id, None)
-                            if os.path.exists(enc_path):
+                        self._indices.pop(cache_id, None)
+                        self._locks.pop(cache_id, None)
+                        if os.path.exists(enc_path):
+                            try:
                                 os.remove(enc_path)
-                            if os.path.exists(idx_path):
+                            except Exception:
+                                pass
+                        if os.path.exists(idx_path):
+                            try:
                                 os.remove(idx_path)
-                            purged_count += 1
+                            except Exception:
+                                pass
+                        purged_count += 1
                 except Exception:
                     pass
 
         return purged_count
 
+    def purge_expired_cache(self, max_age_seconds: Optional[int] = None) -> int:
+        """Purges any unpinned cache files."""
+        return self.purge_unpinned_cache()
+
     def _expiration_cleaner_loop(self):
-        """Background cleaner that runs every 15 minutes to purge expired 24-hour cache files."""
+        """Background cleaner that runs every 15 minutes to purge any unpinned cache files."""
         while True:
             try:
                 time.sleep(900)  # 15 minutes
-                self.purge_expired_cache()
+                self.purge_unpinned_cache()
             except Exception:
                 pass
 

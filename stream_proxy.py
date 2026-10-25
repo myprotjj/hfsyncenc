@@ -281,7 +281,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 working_pw = candidate_keys[0] if candidate_keys else self.password
             key = crypto_engine.derive_key(working_pw, hdr["salt"])
             aesgcm = AESGCM(key)
-            stream_cache.write_header_bytes(cache_id, resp.content, hdr["total_size"], hdr["chunk_size"])
+            if stream_cache.is_pinned_offline(cache_id) or stream_cache.is_downloading_offline(cache_id):
+                stream_cache.write_header_bytes(cache_id, resp.content, hdr["total_size"], hdr["chunk_size"])
         except Exception as e:
             print(f"[!] Header parsing error: {e}")
             return None
@@ -505,13 +506,26 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             else:
                 stream_cache.stop_offline_download(safe_id)
                 stream_cache.set_pinned_offline(safe_id, False, meta["header"]["total_size"], meta["header"]["chunk_size"])
-                msg = "Offline pin removed. 24h expiration timer active."
+                msg = "Offline pin removed and local cache cleared."
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "message": msg, "pinned_offline": enabled}).encode("utf-8"))
+            return
+        elif path == "/api/cache/stop_playback":
+            data = self.read_json_body()
+            safe_id = data.get("safe_id") if data else None
+            if safe_id:
+                stream_cache.stop_offline_download(safe_id)
+                if not stream_cache.is_pinned_offline(safe_id):
+                    stream_cache.clear_cache(cache_id=safe_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
             return
         else:
             self.send_error(404, "Not Found")
@@ -12555,21 +12569,21 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     pill.className = 'card-cache-pill is-downloading';
                     pill.innerHTML = `<span class="cache-pulse-icon">⏳</span> <span class="cache-pill-text">Downloading ${{numPct}}%</span> <span class="cache-pill-size">(${{sizeStr}})</span>`;
                     pill.title = `⏳ Downloading Offline: ${{numPct}}% (${{sizeStr}}) • Saving full video locally`;
-                }} else if (numPct > 0) {{
+                }} else if (numPct > 0 && isPinned) {{
                     pill.className = 'card-cache-pill is-cached';
-                    pill.innerHTML = `<span class="cache-pill-icon">💾</span> <span class="cache-pill-text">${{numPct}}%</span> <span class="cache-pill-size">(${{sizeStr}})</span> <span class="cache-pill-exp">⏱️ 24h</span>`;
-                    pill.title = `💾 Local Encrypted Cache: ${{numPct}}% (${{sizeStr}}) • Expires 24h after last play`;
+                    pill.innerHTML = `<span class="cache-pill-icon">💾</span> <span class="cache-pill-text">${{numPct}}%</span> <span class="cache-pill-size">(${{sizeStr}})</span>`;
+                    pill.title = `💾 Local Encrypted Cache: ${{numPct}}% (${{sizeStr}})`;
                 }} else {{
                     pill.className = 'card-cache-pill is-cloud';
                     pill.innerHTML = `<span class="cache-pill-icon">☁️</span> <span class="cache-pill-text">Cloud Stream</span>`;
-                    pill.title = '☁️ Cloud Stream: 0% cached locally';
+                    pill.title = '☁️ Cloud Stream: Decrypted in real-time on demand (Zero disk space used)';
                 }}
             }}
 
             const fill = document.getElementById(`cacheFill_${{safeId}}`);
             if (fill) {{
                 fill.className = `thumb-cache-fill ${{isFullyOffline ? 'is-pinned-fill' : (isProcessing ? 'is-downloading-fill' : '')}}`;
-                fill.style.width = Math.min(100, Math.max(0, numPct)) + '%';
+                fill.style.width = isPinned ? (Math.min(100, Math.max(0, numPct)) + '%') : '0%';
             }}
 
             const btn = document.getElementById(`btnOffline_${{safeId}}`);
@@ -12577,7 +12591,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (isFullyOffline) {{
                     btn.className = 'card-icon-btn btn-card-offline is-pinned-active';
                     btn.innerHTML = '📌';
-                    btn.title = '📌 Offline Ready (Pinned Forever). Click to unpin and allow 24h auto-expiry.';
+                    btn.title = '📌 Offline Ready (Pinned Forever). Click to remove offline cache.';
                 }} else if (isProcessing) {{
                     btn.className = 'card-icon-btn btn-card-offline is-downloading-active';
                     btn.innerHTML = '⏳';
@@ -12594,7 +12608,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (isFullyOffline) {{
                     tagBtn.className = 'card-offline-tag-btn active';
                     tagBtn.innerHTML = '📌';
-                    tagBtn.title = `📌 Offline Ready: 100% saved locally forever (${{sizeStr}}). Click to unpin.`;
+                    tagBtn.title = `📌 Offline Ready: 100% saved locally forever (${{sizeStr}}). Click to remove.`;
                 }} else if (isProcessing) {{
                     tagBtn.className = 'card-offline-tag-btn downloading';
                     tagBtn.innerHTML = '<span class="cache-pulse-icon">⏳</span>';
@@ -12873,10 +12887,22 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         }}
 
         function closePlayer() {{
+            const closingKey = currentVideoKey;
+            const closingSafeId = currentPlayingSafeId || (currentVideoKey ? ((allFiles || []).find(f => f.key === currentVideoKey)?.safe_id || currentVideoKey) : null);
             saveLastClosedVideoSnapshot();
             captureCurrentVideoPosition();
             userClosedPlayer = true;
             deactivateFloatingMiniPlayer();
+            // Stop background download / streaming and clear unpinned cache when closed
+            if (closingSafeId) {{
+                fetch('/api/cache/stop_playback', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ safe_id: closingSafeId, key: closingKey }})
+                }}).then(() => {{
+                    if (typeof updateStats === 'function') updateStats();
+                }}).catch(() => {{}});
+            }}
             const box = document.getElementById('playerBox');
             const player = document.getElementById('videoPlayer');
             const container = document.getElementById('ytContainer');
@@ -16556,7 +16582,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             from urllib.parse import quote
             ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
             port = self.server.server_port if hasattr(self.server, "server_port") else 8080
-            stream_url = f"http://127.0.0.1:{port}/stream/{quote(clean_key)}?full=1"
+            stream_url = f"http://127.0.0.1:{port}/stream/{quote(clean_key)}?full=1&no_cache=1"
             safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_key)
             tmp_m4a = f"temp_audio_{safe_id}.m4a"
 
@@ -16654,7 +16680,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             import imageio_ffmpeg
             ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
             port = self.server.server_port if hasattr(self.server, "server_port") else 8080
-            stream_url = f"http://127.0.0.1:{port}/stream/{quote(clean_key)}?full=1"
+            stream_url = f"http://127.0.0.1:{port}/stream/{quote(clean_key)}?full=1&no_cache=1"
             cmd = [ffmpeg, "-y", "-i", stream_url, "-vn", "-c:a", "copy", local_m4a]
             subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
             if not os.path.exists(local_m4a) or os.path.getsize(local_m4a) < 1000:
@@ -16795,6 +16821,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             first_chunk = range_info["first_chunk"]
             last_chunk = range_info["last_chunk"]
 
+            is_no_cache = ("no_cache=1" in self.path) or (self.headers.get("X-Internal-No-Cache") == "1")
+            is_pinned_offline = (stream_cache.is_pinned_offline(cache_id) or stream_cache.is_downloading_offline(cache_id)) and not is_no_cache
+
             # Query the encrypted chunk cache for contiguous spans (cached vs missing)
             spans = stream_cache.get_chunk_spans(cache_id, first_chunk, last_chunk, total_size, chunk_size)
 
@@ -16853,8 +16882,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
                             decrypted_block = aesgcm.decrypt(nonce, chunk_cipher, None)
 
-                            # Save verified encrypted chunk dynamically to local sparse cache
-                            stream_cache.write_chunk_ciphertext(cache_id, c_idx, chunk_cipher, total_size, chunk_size)
+                            # Save verified encrypted chunk dynamically to local sparse cache ONLY if pinned offline
+                            if is_pinned_offline:
+                                stream_cache.write_chunk_ciphertext(cache_id, c_idx, chunk_cipher, total_size, chunk_size)
 
                             chunk_start_plain = c_idx * chunk_size
                             slice_start = max(0, start - chunk_start_plain)
@@ -16883,6 +16913,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
             total_chunks = (total_size + chunk_size - 1) // chunk_size
+            is_no_cache = ("no_cache=1" in self.path) or (self.headers.get("X-Internal-No-Cache") == "1")
+            is_pinned_offline = (stream_cache.is_pinned_offline(cache_id) or stream_cache.is_downloading_offline(cache_id)) and not is_no_cache
             spans = stream_cache.get_chunk_spans(cache_id, 0, total_chunks - 1, total_size, chunk_size)
 
             try:
@@ -16918,7 +16950,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                             nonce = crypto_engine.get_chunk_nonce(hdr["base_nonce"], c_idx)
                             decrypted = aesgcm.decrypt(nonce, chunk_cipher, None)
-                            stream_cache.write_chunk_ciphertext(cache_id, c_idx, chunk_cipher, total_size, chunk_size)
+                            if is_pinned_offline:
+                                stream_cache.write_chunk_ciphertext(cache_id, c_idx, chunk_cipher, total_size, chunk_size)
                             self.wfile.write(decrypted)
                             self.wfile.flush()
 

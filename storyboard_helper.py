@@ -457,9 +457,9 @@ def generate_storyboard(key: str, duration: float = 0, port: int = 8080, local_p
         if local_path and os.path.exists(local_path):
             input_source = local_path
         else:
-            # Fallback to streaming proxy endpoint with clean quoting
+            # Fallback to streaming proxy endpoint with clean quoting and no_cache flag to never pollute stream cache
             encoded_key = quote(ck, safe="/")
-            input_source = f"http://127.0.0.1:{port}/stream/{encoded_key}?full=1"
+            input_source = f"http://127.0.0.1:{port}/stream/{encoded_key}?full=1&no_cache=1"
 
         cols = 10
         rows = 10

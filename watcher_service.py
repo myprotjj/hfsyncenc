@@ -772,29 +772,58 @@ def process_file_pipeline(
 
         temp_enc_file = f"{str_path}.tmp.enc"
 
-        # 3. Fast AES-256-GCM Encryption (Pure throughput, no extra hashing)
-        activity_tracker.tracker.update_stage(full_key, "encrypting", "AES-256-GCM Encryption", 40, details="Encrypting 64KB blocks...")
-        t0 = time.time()
-        safe_print(f"[{time.strftime('%H:%M:%S')}] [Encrypting] AES-256-GCM (64KB chunks)...")
-        enc_size = crypto_engine.encrypt_file(str_path, temp_enc_file, password)
-        enc_time = time.time() - t0
-        enc_speed = (file_size / (1024 * 1024)) / max(0.01, enc_time)
-        safe_print(f"[{time.strftime('%H:%M:%S')}] [Encrypted] {rel_to_base} in {enc_time:.2f}s ({enc_speed:.1f} MB/s)")
+        # Check if video blob was already uploaded to HF prior to a server restart/interruption
+        blob_already_on_hf = False
+        try:
+            if hasattr(api, "file_exists") and api.file_exists(repo_id=repo_id, filename=obfuscated_blob_path, repo_type="dataset"):
+                blob_already_on_hf = True
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume Detected] Video blob already uploaded to {repo_id} ({obfuscated_blob_path}). Skipping re-upload.")
+        except Exception as ex_chk:
+            safe_print(f"[!] Note checking HF blob existence: {ex_chk}")
 
-        # 4. Multi-Threaded Upload to Hugging Face
-        activity_tracker.tracker.update_stage(full_key, "uploading", f"Uploading to {repo_id}", 65, speed_str=f"{enc_speed:.1f} MB/s enc", details=f"Uploading encrypted blob to {repo_id}")
-        t_up = time.time()
-        safe_print(f"[{time.strftime('%H:%M:%S')}] [Uploading via {hf_username}] -> {repo_id} ({obfuscated_blob_path}) ...")
-        api.upload_file(
-            path_or_fileobj=temp_enc_file,
-            path_in_repo=obfuscated_blob_path,
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=commit_helper.get_human_commit_message("upload")
-        )
-        up_time = time.time() - t_up
-        upload_speed_mbps = (enc_size * 8 / (1024 * 1024)) / max(0.01, up_time)
-        safe_print(f"[{time.strftime('%H:%M:%S')}] [Upload Complete] {rel_to_base} in {up_time:.2f}s ({upload_speed_mbps:.1f} Mbps)")
+        enc_speed = 0.0
+        up_time = 0.01
+        upload_speed_mbps = 0.0
+
+        if blob_already_on_hf:
+            total_chunks = (file_size + crypto_engine.DEFAULT_CHUNK_SIZE - 1) // crypto_engine.DEFAULT_CHUNK_SIZE if file_size > 0 else 0
+            enc_size = crypto_engine.HEADER_SIZE + file_size + (total_chunks * crypto_engine.TAG_SIZE)
+            activity_tracker.tracker.update_stage(full_key, "uploading", f"Resumed from {repo_id}", 65, details="Video blob already on cloud; resuming companions")
+        else:
+            # 3. Check for existing valid encrypted file on disk to resume smoothly without re-encrypting
+            activity_tracker.tracker.update_stage(full_key, "encrypting", "AES-256-GCM Encryption", 40, details="Encrypting 64KB blocks...")
+            if crypto_engine.is_valid_encrypted_file(temp_enc_file, file_size, password):
+                enc_size = os.path.getsize(temp_enc_file)
+                enc_speed = (file_size / (1024 * 1024)) / 0.1
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume Encryption] Reusing existing valid encrypted file ({enc_size / (1024 * 1024):.2f} MB)")
+            else:
+                # Discard partial / incomplete file before fresh encryption
+                if os.path.exists(temp_enc_file):
+                    try:
+                        os.remove(temp_enc_file)
+                    except Exception:
+                        pass
+                t0 = time.time()
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [Encrypting] AES-256-GCM (64KB chunks)...")
+                enc_size = crypto_engine.encrypt_file(str_path, temp_enc_file, password)
+                enc_time = time.time() - t0
+                enc_speed = (file_size / (1024 * 1024)) / max(0.01, enc_time)
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [Encrypted] {rel_to_base} in {enc_time:.2f}s ({enc_speed:.1f} MB/s)")
+
+            # 4. Multi-Threaded Upload to Hugging Face (resumes chunk upload on HF LFS)
+            activity_tracker.tracker.update_stage(full_key, "uploading", f"Uploading to {repo_id}", 65, speed_str=f"{enc_speed:.1f} MB/s enc", details=f"Uploading encrypted blob to {repo_id}")
+            t_up = time.time()
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [Uploading via {hf_username}] -> {repo_id} ({obfuscated_blob_path}) ...")
+            api.upload_file(
+                path_or_fileobj=temp_enc_file,
+                path_in_repo=obfuscated_blob_path,
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=commit_helper.get_human_commit_message("upload")
+            )
+            up_time = time.time() - t_up
+            upload_speed_mbps = (enc_size * 8 / (1024 * 1024)) / max(0.01, up_time)
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [Upload Complete] {rel_to_base} in {up_time:.2f}s ({upload_speed_mbps:.1f} Mbps)")
 
         # 4a. Discard external companion thumbnail/screen if found (generated 100-frame storyboard serves all purposes)
         screens_record = None
@@ -830,13 +859,21 @@ def process_file_pipeline(
                             pass
 
                     sb_blob = obfuscated_blob_path.replace(".enc", ".storyboard.jpg.enc")
-                    api.upload_file(
-                        path_or_fileobj=temp_sb_enc,
-                        path_in_repo=sb_blob,
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                        commit_message=commit_helper.get_human_commit_message("upload")
-                    )
+                    sb_exists = False
+                    try:
+                        if hasattr(api, "file_exists") and api.file_exists(repo_id=repo_id, filename=sb_blob, repo_type="dataset"):
+                            sb_exists = True
+                            safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume] Storyboard already on HF: {sb_blob}")
+                    except Exception:
+                        pass
+                    if not sb_exists:
+                        api.upload_file(
+                            path_or_fileobj=temp_sb_enc,
+                            path_in_repo=sb_blob,
+                            repo_id=repo_id,
+                            repo_type="dataset",
+                            commit_message=commit_helper.get_human_commit_message("upload")
+                        )
                     storyboard_record = {
                         "blob_path": sb_blob,
                         "repo_id": repo_id,
@@ -867,13 +904,21 @@ def process_file_pipeline(
                 a_orig = os.path.getsize(temp_audio)
                 a_enc = crypto_engine.encrypt_file(temp_audio, temp_audio_enc, password)
                 a_blob = obfuscated_blob_path.replace(".enc", ".audio.m4a.enc")
-                api.upload_file(
-                    path_or_fileobj=temp_audio_enc,
-                    path_in_repo=a_blob,
-                    repo_id=repo_id,
-                    repo_type="dataset",
-                    commit_message=commit_helper.get_human_commit_message("upload")
-                )
+                a_exists = False
+                try:
+                    if hasattr(api, "file_exists") and api.file_exists(repo_id=repo_id, filename=a_blob, repo_type="dataset"):
+                        a_exists = True
+                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume] Companion audio already on HF: {a_blob}")
+                except Exception:
+                    pass
+                if not a_exists:
+                    api.upload_file(
+                        path_or_fileobj=temp_audio_enc,
+                        path_in_repo=a_blob,
+                        repo_id=repo_id,
+                        repo_type="dataset",
+                        commit_message=commit_helper.get_human_commit_message("upload")
+                    )
                 audio_record = {
                     "blob_path": a_blob,
                     "repo_id": repo_id,
@@ -917,13 +962,21 @@ def process_file_pipeline(
                         temp_sub_enc = f"{str(srt_file)}.enc"
                         sub_enc_size = crypto_engine.encrypt_file(str(srt_file), temp_sub_enc, password)
                         sub_blob = obfuscated_blob_path.replace(".enc", f".sub.{lang_code}.srt.enc")
-                        api.upload_file(
-                            path_or_fileobj=temp_sub_enc,
-                            path_in_repo=sub_blob,
-                            repo_id=repo_id,
-                            repo_type="dataset",
-                            commit_message=commit_helper.get_human_commit_message("upload")
-                        )
+                        sub_exists = False
+                        try:
+                            if hasattr(api, "file_exists") and api.file_exists(repo_id=repo_id, filename=sub_blob, repo_type="dataset"):
+                                sub_exists = True
+                                safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume] Subtitle already on HF: {sub_blob}")
+                        except Exception:
+                            pass
+                        if not sub_exists:
+                            api.upload_file(
+                                path_or_fileobj=temp_sub_enc,
+                                path_in_repo=sub_blob,
+                                repo_id=repo_id,
+                                repo_type="dataset",
+                                commit_message=commit_helper.get_human_commit_message("upload")
+                            )
                         sub_info = {
                             "lang": lang_code,
                             "label": lang_name,
@@ -1099,6 +1152,29 @@ def watch_and_sync(
 
     base_dir = Path(watch_dir).resolve()
     base_archive = Path(archive_dir).resolve()
+
+    # Clean up any orphaned .tmp.enc files that have no matching plaintext source file
+    if base_dir.exists():
+        for root, _, files in os.walk(base_dir):
+            for file in files:
+                if file.endswith(".tmp.enc"):
+                    enc_f = Path(root) / file
+                    plain_f = Path(root) / file[:-8]
+                    if not plain_f.exists() or enc_f.stat().st_size == 0:
+                        try:
+                            enc_f.unlink()
+                            safe_print(f"[*] Cleaned abandoned temp file on startup: {file}")
+                        except Exception:
+                            pass
+
+    # Reset any stale active tasks in activity tracker from prior runs
+    try:
+        cur_act = activity_tracker.tracker.get_state()
+        for tid, tinfo in list(cur_act.get("active_tasks", {}).items()):
+            if tinfo.get("stage") in ("uploading", "encrypting", "hashing"):
+                activity_tracker.tracker.update_stage(tid, "resuming", "Resuming Upload Pipeline", 50, details="Server restarted. Resuming smoothly...")
+    except Exception:
+        pass
 
     executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="Uploader")
 

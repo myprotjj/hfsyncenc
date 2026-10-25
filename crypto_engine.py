@@ -128,6 +128,39 @@ def encrypt_file(input_path: str, output_path: str, password: str, chunk_size: i
     return os.path.getsize(output_path)
 
 
+def is_valid_encrypted_file(enc_path: str, expected_plain_size: int, password: str, chunk_size: int = DEFAULT_CHUNK_SIZE) -> bool:
+    """Checks if an existing .tmp.enc file is complete, valid, and matches the expected plaintext size."""
+    if not os.path.exists(enc_path):
+        return False
+    try:
+        actual_enc_size = os.path.getsize(enc_path)
+        total_chunks = (expected_plain_size + chunk_size - 1) // chunk_size if expected_plain_size > 0 else 0
+        expected_enc_size = HEADER_SIZE + expected_plain_size + (total_chunks * TAG_SIZE)
+        if actual_enc_size != expected_enc_size:
+            return False
+        with open(enc_path, "rb") as f:
+            header_bytes = f.read(HEADER_SIZE)
+        if len(header_bytes) < HEADER_SIZE:
+            return False
+        hdr = read_header(header_bytes)
+        if hdr["total_size"] != expected_plain_size:
+            return False
+        # Test decrypting chunk 0 to verify password & integrity
+        key = derive_key(password, hdr["salt"])
+        aesgcm = AESGCM(key)
+        c0_len = min(chunk_size, expected_plain_size) + TAG_SIZE
+        with open(enc_path, "rb") as f:
+            f.seek(HEADER_SIZE)
+            c0_data = f.read(c0_len)
+        if len(c0_data) != c0_len:
+            return False
+        nonce0 = get_chunk_nonce(hdr["base_nonce"], 0)
+        aesgcm.decrypt(nonce0, c0_data, None)
+        return True
+    except Exception:
+        return False
+
+
 def read_header(header_bytes: bytes):
     """Parses and validates the 64-byte header."""
     if len(header_bytes) < HEADER_SIZE:
