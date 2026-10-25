@@ -415,6 +415,10 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_accounts_set_primary()
         elif path == "/api/accounts/delete":
             self.handle_accounts_delete()
+        elif path == "/api/undecryptable-files/delete":
+            self.handle_delete_undecryptable_files()
+        elif path == "/api/undecryptable-files/delete-repo":
+            self.handle_delete_undecryptable_repo()
         elif path == "/api/aliases/remove":
             self.handle_remove_alias()
         elif path == "/api/aliases/add":
@@ -3697,6 +3701,71 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp_body)
 
+    def handle_api_undecryptable_files(self):
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        force_refresh = qs.get("refresh", ["0"])[0] in ("1", "true")
+        try:
+            res = self.acc_mgr.scan_undecryptable_cloud_files(force_refresh=force_refresh)
+            resp_body = json.dumps({"success": True, **res}).encode("utf-8")
+        except Exception as e:
+            resp_body = json.dumps({"success": False, "error": str(e), "items": [], "empty_repos": []}).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_delete_undecryptable_files(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            items = req_data.get("items", [])
+            res = self.acc_mgr.delete_bulk_cloud_files(items)
+            activity_tracker.tracker.add_event(
+                "warning",
+                "Purged Undecryptable Cloud Files",
+                res.get("message", "Deleted undecryptable files from Hugging Face.")
+            )
+            resp_body = json.dumps(res).encode("utf-8")
+        except Exception as e:
+            resp_body = json.dumps({"success": False, "error": str(e)}).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_delete_undecryptable_repo(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            req_data = json.loads(body)
+            repo_id = req_data.get("repo_id", "").strip()
+            if not repo_id:
+                raise ValueError("Missing 'repo_id'")
+            res = self.acc_mgr.delete_cloud_repo(repo_id)
+            activity_tracker.tracker.add_event(
+                "warning",
+                f"Deleted Cloud Dataset: {repo_id}",
+                res.get("message", f"Deleted repository {repo_id} from Hugging Face.")
+            )
+            resp_body = json.dumps(res).encode("utf-8")
+        except Exception as e:
+            resp_body = json.dumps({"success": False, "error": str(e)}).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
     def do_GET(self):
         cloud_watcher.notify_client_active()
         parsed = urlparse(self.path)
@@ -3718,6 +3787,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_cloud_sync_trigger()
         elif path == "/api/accounts":
             self.handle_api_accounts()
+        elif path == "/api/undecryptable-files":
+            self.handle_api_undecryptable_files()
         elif path == "/api/activity":
             self.handle_api_activity()
         elif path == "/api/storyboard":
@@ -7374,61 +7445,87 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .badge-error {{ background: rgba(239, 68, 68, 0.2); color: #f87171; }}
         .badge-info {{ background: rgba(168, 85, 247, 0.2); color: #c084fc; }}
 
-        /* Accounts Modal Styling */
+        /* Modern, Clean & Minimal Accounts Modal Styling */
         .account-card {{
-            background: #090d16;
-            border: 1px solid var(--panel-border);
-            border-radius: 8px;
-            padding: 12px 14px;
+            background: #0b1120;
+            border: 1px solid #1e293b;
+            border-radius: 10px;
+            padding: 13px 16px;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            transition: border-color 0.2s;
+            flex-direction: column;
+            gap: 10px;
+            transition: all 0.2s ease;
+            box-sizing: border-box;
+            width: 100%;
         }}
         .account-card:hover {{
-            border-color: #374151;
+            border-color: #334155;
+            background: #0e1626;
         }}
         .account-card.is-primary {{
             border-color: rgba(168, 85, 247, 0.45);
-            background: rgba(168, 85, 247, 0.05);
+            background: rgba(168, 85, 247, 0.04);
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.05);
         }}
         .account-card.is-disabled {{
-            opacity: 0.55;
+            opacity: 0.6;
             border-style: dashed;
         }}
-        .acc-left {{
+        .acc-row-top {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            width: 100%;
+        }}
+        .acc-identity {{
             display: flex;
             align-items: center;
             gap: 10px;
+            flex-wrap: wrap;
         }}
         .acc-avatar {{
-            width: 36px;
-            height: 36px;
+            width: 34px;
+            height: 34px;
             border-radius: 8px;
-            background: #1f2937;
+            background: #1e293b;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 1.1rem;
+            flex-shrink: 0;
         }}
-        .acc-name {{
-            font-weight: 600;
-            font-size: 0.95rem;
-            color: #f9fafb;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }}
-        .acc-token {{
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            font-family: monospace;
+        .acc-username {{
+            font-weight: 700;
+            font-size: 1rem;
+            color: #f8fafc;
+            letter-spacing: -0.01em;
         }}
         .acc-actions {{
             display: flex;
             align-items: center;
             gap: 6px;
+            flex-wrap: wrap;
+        }}
+        .acc-row-bottom {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+            font-size: 0.78rem;
+            color: #94a3b8;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding-top: 8px;
+        }}
+        .acc-token-code {{
+            font-family: monospace;
+            background: rgba(0, 0, 0, 0.25);
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            color: #cbd5e1;
         }}
         .btn-xs {{
             padding: 4px 8px;
@@ -8733,25 +8830,35 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         <!-- Accounts Management Modal -->
     <div id="accountsModal" class="modal-overlay">
-        <div class="modal" style="max-width: 680px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-                <h3 style="color: var(--primary); margin: 0; display: flex; align-items: center; gap: 8px;">
+        <div class="modal" style="max-width: 740px; width: 95vw; background: #0b1120; border: 1px solid #1e293b; box-shadow: 0 25px 70px rgba(0,0,0,0.9); padding: 22px; border-radius: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+                <h3 style="color: var(--primary); margin: 0; display: flex; align-items: center; gap: 8px; font-size: 1.1rem;">
                     &#128101; Hugging Face Accounts
                 </h3>
                 <button onclick="closeAccountsModal()" class="tool-btn btn-xs" style="font-size: 1.1rem; padding: 2px 8px;">&times;</button>
             </div>
-            <p style="margin-top: 0; margin-bottom: 16px; font-size: 0.84rem; color: var(--text-muted); line-height: 1.5;">
-                Connect multiple Hugging Face accounts to distribute storage. Each account can have its own dedicated encryption key or inherit the Master Password. Keys are verified instantly against existing repositories.
+            <p style="margin-top: 0; margin-bottom: 14px; font-size: 0.83rem; color: var(--text-muted); line-height: 1.5;">
+                Connect multiple Hugging Face accounts to distribute storage. Each account can have its own dedicated encryption key(s) or inherit the Master Password. Keys are verified instantly against existing cloud repositories.
             </p>
 
-            <!-- Accounts List -->
-            <div id="accountsListContainer" style="margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px; max-height: 320px; overflow-y: auto;">
+            <!-- Subheader Bar with Account Count & Undecryptable Cloud Files Shortcut -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                <div style="font-size: 0.82rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">
+                    Connected Accounts (<span id="accListHeaderCount">0</span>)
+                </div>
+                <button onclick="openUndecryptableModal()" class="tool-btn btn-xs" id="btnOpenUndecryptable" style="border-color: rgba(248, 113, 113, 0.4); color: #f87171; background: rgba(239, 68, 68, 0.08); font-size: 0.78rem; padding: 4px 10px; display: flex; align-items: center; gap: 6px;" title="Inspect and delete files that failed encryption key verification">
+                    ⚠️ Undecryptable Cloud Files (<span id="accUndecryptableBadge">...</span>)
+                </button>
+            </div>
+
+            <!-- Accounts List (No horizontal scrollbar!) -->
+            <div id="accountsListContainer" style="margin-bottom: 18px; display: flex; flex-direction: column; gap: 10px; max-height: 380px; overflow-y: auto; overflow-x: hidden; padding-right: 2px;">
                 <!-- Populated dynamically via JS -->
             </div>
 
             <!-- Add New Account Form -->
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--panel-border); border-radius: 8px; padding: 14px;">
-                <div style="font-weight: 600; font-size: 0.9rem; color: #fff; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+            <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; padding: 14px;">
+                <div style="font-weight: 600; font-size: 0.88rem; color: #f8fafc; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
                     &#10133; Connect New Hugging Face Account
                 </div>
                 <div class="form-group" style="margin-bottom: 10px;">
@@ -8760,24 +8867,82 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </div>
                 <div class="form-group" style="margin-bottom: 10px;">
                     <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
-                        <span>Encryption Key (Password)</span>
+                        <span>Encryption Key(s)</span>
                         <span style="font-weight: normal; font-size: 0.74rem; color: var(--text-muted);">Optional (defaults to Master Password)</span>
                     </label>
                     <input type="password" id="newAccountPassword" class="form-input" placeholder="Leave empty to use Master Password" autocomplete="off">
                 </div>
-                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.84rem; cursor: pointer; color: var(--text);">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 6px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.83rem; cursor: pointer; color: var(--text);">
                         <input type="checkbox" id="chkSetPrimary" style="cursor: pointer;">
                         Set as Primary Upload Account (&#128081; All new uploads)
                     </label>
-                    <button id="btnAddAccount" onclick="submitAddAccount()" class="btn btn-play" style="padding: 7px 16px;">
+                    <button id="btnAddAccount" onclick="submitAddAccount()" class="btn btn-play" style="padding: 7px 16px; font-size: 0.84rem;">
                         &#129303; Validate &amp; Connect
                     </button>
                 </div>
             </div>
 
-            <div class="modal-actions" style="margin-top: 18px;">
+            <div class="modal-actions" style="margin-top: 16px;">
                 <button onclick="closeAccountsModal()" class="tool-btn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Undecryptable Cloud Files Modal -->
+    <div id="undecryptableModal" class="modal-overlay" style="z-index: 1300; display: none;">
+        <div class="modal" style="max-width: 860px; width: 95vw; background: #0b1120; border: 1px solid #1e293b; box-shadow: 0 25px 70px rgba(0,0,0,0.9); padding: 22px; border-radius: 12px; max-height: 90vh; display: flex; flex-direction: column;">
+            <!-- Header -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;">
+                <h3 style="color: #f87171; margin: 0; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;">
+                    ⚠️ Undecryptable Cloud Files (<span id="undecryptableCountHeader">0</span>)
+                </h3>
+                <button onclick="closeUndecryptableModal()" class="tool-btn btn-xs" style="font-size: 1.1rem; padding: 2px 8px;">&times;</button>
+            </div>
+            
+            <p style="font-size: 0.83rem; color: var(--text-muted); line-height: 1.5; margin-top: 0; margin-bottom: 14px;">
+                These files exist on your Hugging Face cloud repositories but <b>cannot be decrypted</b> with any key in your active or historical keyrings (AES-GCM authentication failed). They are safely hidden from your dashboard. You can inspect and delete them individually or in bulk to reclaim storage.
+            </p>
+
+            <!-- Toolbar: Filter, Search, Bulk Actions -->
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 10px; border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <input type="text" id="undecryptableSearchInput" oninput="filterUndecryptableTable()" placeholder="Search repo or file..." class="form-input" style="width: 200px; padding: 5px 10px; font-size: 0.8rem;">
+                    <select id="undecryptableRepoFilterSelect" onchange="filterUndecryptableTable()" class="form-input" style="width: 210px; padding: 5px 8px; font-size: 0.8rem;">
+                        <option value="">All Repositories</option>
+                    </select>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <button id="btnDeleteSelectedUndecryptable" onclick="deleteSelectedUndecryptable()" class="btn btn-delete btn-xs" style="display: none; padding: 5px 12px; font-weight: 600;">
+                        🗑️ Delete Selected (<span id="selectedUndecryptableCount">0</span>)
+                    </button>
+                    <button id="btnDeleteRepoUndecryptable" onclick="deleteRepoUndecryptable()" class="btn btn-delete btn-xs" style="display: none; padding: 5px 12px; font-weight: 600;">
+                        🗑️ Delete All in Filtered Repo
+                    </button>
+                    <button onclick="promptPurgeAllUndecryptable()" class="btn btn-delete btn-xs" style="padding: 5px 12px; font-weight: 600;" title="Permanently delete all undecryptable files across all repos">
+                        💥 Purge All Undecryptable
+                    </button>
+                    <button onclick="loadUndecryptableFiles(true)" class="tool-btn btn-xs" style="padding: 5px 10px;">
+                        🔄 Refresh
+                    </button>
+                </div>
+            </div>
+
+            <!-- List / Table Area with scroll -->
+            <div id="undecryptableListContainer" style="flex: 1; overflow-y: auto; max-height: 380px; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; background: rgba(0,0,0,0.2);">
+                <!-- Populated dynamically via JS -->
+            </div>
+
+            <!-- Empty / Obsolete Repositories Section -->
+            <div id="emptyReposSection" style="margin-top: 14px; display: none;">
+                <div style="font-weight: 600; font-size: 0.86rem; color: #cbd5e1; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                    📁 Empty / Obsolete Cloud Repositories (<span id="emptyReposCount">0</span>)
+                </div>
+                <div id="emptyReposList" style="display: flex; flex-direction: column; gap: 6px; max-height: 140px; overflow-y: auto;"></div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+                <button onclick="closeUndecryptableModal()" class="tool-btn">Close</button>
             </div>
         </div>
     </div>
@@ -15446,6 +15611,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         async function openAccountsModal() {{
             document.getElementById('accountsModal').style.display = 'flex';
             await loadAccountsList();
+            fetchUndecryptableCountBadge();
         }}
 
         function closeAccountsModal() {{
@@ -15454,9 +15620,25 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             document.getElementById('chkSetPrimary').checked = false;
         }}
 
+        async function fetchUndecryptableCountBadge() {{
+            try {{
+                const res = await fetch('/api/undecryptable-files');
+                if (res.ok) {{
+                    const d = await res.json();
+                    const count = (d.total_count || 0) + (d.empty_repo_count || 0);
+                    const badge = document.getElementById('accUndecryptableBadge');
+                    if (badge) {{
+                        badge.textContent = count;
+                        badge.style.color = count > 0 ? '#f87171' : '#94a3b8';
+                        if (count > 0) badge.style.fontWeight = 'bold';
+                    }}
+                }}
+            }} catch (e) {{}}
+        }}
+
         async function loadAccountsList() {{
             const container = document.getElementById('accountsListContainer');
-            container.innerHTML = '<div style="color: #9ca3af; padding: 12px; text-align: center;">Loading accounts...</div>';
+            container.innerHTML = '<div style="color: #94a3b8; padding: 16px; text-align: center;"><span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px;"></span> Loading connected accounts...</div>';
 
             try {{
                 const res = await fetch('/api/accounts');
@@ -15464,7 +15646,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 const data = await res.json();
                 renderAccountsList(data.accounts || [], data.primary_account);
             }} catch (err) {{
-                container.innerHTML = `<div style="color: #f87171; padding: 12px;">Error loading accounts: ${{err}}</div>`;
+                container.innerHTML = `<div style="color: #f87171; padding: 14px; text-align: center;">Error loading accounts: ${{escapeHtml(err.message)}}</div>`;
             }}
         }}
 
@@ -15472,11 +15654,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const container = document.getElementById('accountsListContainer');
             const headerCount = document.getElementById('headerAccCount');
             const statAccounts = document.getElementById('statAccounts');
+            const listHeaderCount = document.getElementById('accListHeaderCount');
             if (headerCount) headerCount.textContent = accounts.length;
+            if (listHeaderCount) listHeaderCount.textContent = accounts.length;
             if (statAccounts) statAccounts.innerHTML = `${{accounts.length}} <span style="font-size: 0.78rem; font-weight: normal; color: var(--text-muted);">&#9881;&#65039; Manage</span>`;
 
             if (accounts.length === 0) {{
-                container.innerHTML = '<div style="color: #9ca3af; padding: 12px;">No connected accounts found.</div>';
+                container.innerHTML = '<div style="color: #9ca3af; padding: 16px; text-align: center; background: rgba(0,0,0,0.2); border-radius: 8px;">No connected accounts found.</div>';
                 return;
             }}
 
@@ -15486,38 +15670,46 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
                 return `
                 <div class="account-card ${{isPrimary ? 'is-primary' : ''}} ${{!isEnabled ? 'is-disabled' : ''}}">
-                    <div class="acc-left">
-                        <div class="acc-avatar">${{isPrimary ? '👑' : '👤'}}</div>
-                        <div>
-                            <div class="acc-name">
-                                <span>${{escapeHtml(acc.username)}}</span>
-                                ${{isPrimary ? '<span class="account-pill is-primary" style="font-size: 0.68rem;">👑 Primary Uploader</span>' : ''}}
-                                ${{isEnabled ? '<span class="meta-pill genre-pill" style="font-size: 0.68rem;">Active</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: #374151; color: #9ca3af;">Disabled</span>'}}
-                                ${{acc.can_write ? '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3);">&#9997;&#65039; Write</span>' : `<span class="meta-pill" style="font-size: 0.68rem; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3);" title="${{escapeHtml(acc.role_desc || 'Read-Only')}}">&#128274; Read-Only (Write Disabled)</span>`}}
-                                ${{acc.has_custom_key ? `<span class="meta-pill" style="font-size: 0.68rem; background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">🔑 ${{escapeHtml(acc.key_status || 'Custom Key')}}</span>` : '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25);">🔑 Master Key</span>'}}
+                    <!-- Top Row: Identity, Badges & Action Buttons -->
+                    <div class="acc-row-top">
+                        <div class="acc-identity">
+                            <div class="acc-avatar" style="${{isPrimary ? 'border: 1px solid rgba(168, 85, 247, 0.4); background: rgba(168, 85, 247, 0.1);' : ''}}">
+                                ${{isPrimary ? '👑' : '👤'}}
                             </div>
-                            <div class="acc-token">
-                                Token: ${{escapeHtml(acc.token_masked)}} &bull; Hosted: ${{acc.video_count || 0}} videos (${{acc.size_str || '0 MB'}})
-                            </div>
+                            <span class="acc-username">${{escapeHtml(acc.username)}}</span>
+                            ${{isPrimary ? '<span class="account-pill is-primary" style="font-size: 0.68rem; padding: 2px 8px;">👑 Primary</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: #1e293b; color: #94a3b8;">Secondary</span>'}}
+                            ${{isEnabled ? '<span class="meta-pill genre-pill" style="font-size: 0.68rem;">Active</span>' : '<span class="meta-pill" style="font-size: 0.68rem; background: #334155; color: #94a3b8;">Paused</span>'}}
+                            ${{acc.has_custom_key ? `<span class="meta-pill" style="font-size: 0.68rem; background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">🔑 ${{escapeHtml(acc.key_status || 'Custom Key')}}</span>` : '<span class="meta-pill" style="font-size: 0.68rem; background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25);">🔑 Master Key</span>'}}
+                        </div>
+                        <div class="acc-actions">
+                            <button onclick="openEditKeyModal('${{escapeHtml(acc.username)}}', ${{Boolean(acc.has_custom_key)}}, ${{Number(acc.key_count || 1)}}, '${{escapeHtml(acc.key_status || '')}}')" class="btn btn-link btn-xs" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" title="Configure encryption keyring for this account">
+                                🔑 Keyring
+                            </button>
+                            ${{!isPrimary ? `
+                                <button onclick="setPrimaryAccount('${{escapeHtml(acc.username)}}')" class="btn btn-link btn-xs" title="Make this account the primary upload target">
+                                    👑 Make Primary
+                                </button>
+                                <button onclick="toggleAccount('${{escapeHtml(acc.username)}}', ${{!isEnabled}})" class="btn ${{isEnabled ? 'btn-hf' : 'btn-play'}} btn-xs" title="${{isEnabled ? 'Pause syncing for this account' : 'Resume syncing for this account'}}">
+                                    ${{isEnabled ? '⏸️ Pause' : '▶️ Resume'}}
+                                </button>
+                                <button onclick="promptDeleteAccount('${{escapeHtml(acc.username)}}')" class="btn btn-delete btn-xs" title="Disconnect account">
+                                    🗑️ Delete
+                                </button>
+                            ` : `
+                                <span style="font-size: 0.74rem; color: #c084fc; font-weight: 600; padding: 2px 6px;">👑 Upload Target</span>
+                            `}}
                         </div>
                     </div>
-                    <div class="acc-actions">
-                        <button onclick="openEditKeyModal('${{escapeHtml(acc.username)}}', ${{Boolean(acc.has_custom_key)}}, ${{Number(acc.key_count || 1)}}, '${{escapeHtml(acc.key_status || '')}}')" class="btn btn-link btn-xs" style="color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" title="Configure encryption keyring for this account">
-                            🔑 Keyring
-                        </button>
-                        ${{!isPrimary ? `
-                            <button onclick="setPrimaryAccount('${{escapeHtml(acc.username)}}')" class="btn btn-link btn-xs" title="Make this account the primary uploader">
-                                👑 Make Primary
-                            </button>
-                            <button onclick="toggleAccount('${{escapeHtml(acc.username)}}', ${{!isEnabled}})" class="btn ${{isEnabled ? 'btn-hf' : 'btn-play'}} btn-xs">
-                                ${{isEnabled ? '⏸️ Disable' : '▶️ Enable'}}
-                            </button>
-                            <button onclick="promptDeleteAccount('${{escapeHtml(acc.username)}}')" class="btn btn-delete btn-xs" title="Remove account">
-                                🗑️ Delete
-                            </button>
-                        ` : `
-                            <span style="font-size: 0.75rem; color: #c084fc; font-weight: 600; padding: 4px 8px;">Upload Destination</span>
-                        `}}
+                    <!-- Bottom Row: Token, Hosted Storage & Write Capabilities -->
+                    <div class="acc-row-bottom">
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <span>Token: <span class="acc-token-code">${{escapeHtml(acc.token_masked)}}</span></span>
+                            <span>&bull;</span>
+                            <span>Hosted: <b>${{acc.video_count || 0}}</b> videos (<b>${{acc.size_str || '0 MB'}}</b>)</span>
+                        </div>
+                        <div>
+                            ${{acc.can_write ? '<span style="color: #4ade80;">✍️ Write Enabled</span>' : `<span style="color: #f87171;" title="${{escapeHtml(acc.role_desc || 'Read-Only')}}">🔒 Read-Only</span>`}}
+                        </div>
                     </div>
                 </div>`;
             }}).join('');
@@ -15751,6 +15943,337 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             localStorage.setItem('hfsync_privacy_blur', next ? '1' : '0');
             applyPrivacyBlur(next);
             showToast(next ? '🔒 Privacy Blur enabled (Thumbnails & titles blurred)' : '👁️ Privacy Blur disabled');
+        }}
+
+        /* Undecryptable Cloud Files Management */
+        let undecryptableData = {{ items: [], empty_repos: [] }};
+        let selectedUndecryptable = new Set();
+
+        async function openUndecryptableModal() {{
+            const modal = document.getElementById('undecryptableModal');
+            if (modal) modal.style.display = 'flex';
+            await loadUndecryptableFiles();
+        }}
+
+        function closeUndecryptableModal() {{
+            const modal = document.getElementById('undecryptableModal');
+            if (modal) modal.style.display = 'none';
+        }}
+
+        async function loadUndecryptableFiles(forceRefresh = false) {{
+            const container = document.getElementById('undecryptableListContainer');
+            if (container) container.innerHTML = '<div style="color: #94a3b8; padding: 24px; text-align: center;"><span class="status-spinner" style="display:inline-block;width:14px;height:14px;border:2px solid #f87171;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:8px;"></span> Scanning cloud repositories for undecryptable files...</div>';
+
+            try {{
+                const url = forceRefresh ? '/api/undecryptable-files?refresh=1' : '/api/undecryptable-files';
+                const res = await fetch(url);
+                if (!res.ok) throw new Error("Failed to scan cloud files");
+                undecryptableData = await res.json();
+                selectedUndecryptable.clear();
+                updateUndecryptableBadge(undecryptableData.total_count || 0);
+                renderUndecryptableUI();
+            }} catch (err) {{
+                if (container) container.innerHTML = `<div style="color: #f87171; padding: 20px; text-align: center;">Error scanning cloud files: ${{escapeHtml(err.message)}}</div>`;
+            }}
+        }}
+
+        function updateUndecryptableBadge(count) {{
+            const badge = document.getElementById('accUndecryptableBadge');
+            const headerBadge = document.getElementById('undecryptableCountHeader');
+            if (badge) {{
+                badge.textContent = count;
+                badge.style.color = count > 0 ? '#f87171' : '#94a3b8';
+            }}
+            if (headerBadge) headerBadge.textContent = count;
+        }}
+
+        function renderUndecryptableUI() {{
+            const items = undecryptableData.items || [];
+            const emptyRepos = undecryptableData.empty_repos || [];
+            const container = document.getElementById('undecryptableListContainer');
+            const selectDropdown = document.getElementById('undecryptableRepoFilterSelect');
+
+            if (selectDropdown) {{
+                const reposSet = new Set(items.map(it => it.repo_id));
+                const currentVal = selectDropdown.value;
+                let optHtml = '<option value="">All Repositories (' + items.length + ' files)</option>';
+                reposSet.forEach(r => {{
+                    const count = items.filter(it => it.repo_id === r).length;
+                    optHtml += `<option value="${{escapeHtml(r)}}">${{escapeHtml(r)}} (${{count}})</option>`;
+                }});
+                selectDropdown.innerHTML = optHtml;
+                selectDropdown.value = currentVal;
+            }}
+
+            const emptySection = document.getElementById('emptyReposSection');
+            const emptyCount = document.getElementById('emptyReposCount');
+            const emptyList = document.getElementById('emptyReposList');
+            if (emptySection && emptyList) {{
+                if (emptyRepos.length > 0) {{
+                    emptySection.style.display = 'block';
+                    if (emptyCount) emptyCount.textContent = emptyRepos.length;
+                    emptyList.innerHTML = emptyRepos.map(r => `
+                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 8px 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <b style="color: #f8fafc; font-size: 0.84rem;">${{escapeHtml(r.repo_id)}}</b>
+                                <span style="color: #94a3b8; font-size: 0.76rem; margin-left: 8px;">(${{r.file_count || 0}} non-media file(s)) &bull; ${{escapeHtml(r.reason)}}</span>
+                            </div>
+                            <button onclick="promptDeleteCloudRepo('${{escapeHtml(r.repo_id)}}')" class="btn btn-delete btn-xs" style="padding: 3px 8px; font-size: 0.74rem;">
+                                🗑️ Delete Repo
+                            </button>
+                        </div>
+                    `).join('');
+                }} else {{
+                    emptySection.style.display = 'none';
+                }}
+            }}
+
+            filterUndecryptableTable();
+        }}
+
+        function filterUndecryptableTable() {{
+            const container = document.getElementById('undecryptableListContainer');
+            if (!container) return;
+            const searchVal = (document.getElementById('undecryptableSearchInput')?.value || '').toLowerCase().trim();
+            const repoVal = document.getElementById('undecryptableRepoFilterSelect')?.value || '';
+
+            let filtered = (undecryptableData.items || []).filter(it => {{
+                if (repoVal && it.repo_id !== repoVal) return false;
+                if (searchVal) {{
+                    const matchRepo = it.repo_id.toLowerCase().includes(searchVal);
+                    const matchFile = (it.file_path || '').toLowerCase().includes(searchVal);
+                    if (!matchRepo && !matchFile) return false;
+                }}
+                return true;
+            }});
+
+            const btnDeleteRepo = document.getElementById('btnDeleteRepoUndecryptable');
+            if (btnDeleteRepo) {{
+                btnDeleteRepo.style.display = repoVal && filtered.length > 0 ? 'inline-block' : 'none';
+            }}
+
+            if (filtered.length === 0) {{
+                container.innerHTML = `
+                    <div style="padding: 36px 20px; text-align: center; color: #94a3b8;">
+                        <div style="font-size: 1.8rem; margin-bottom: 8px;">🎉</div>
+                        <div style="font-size: 0.95rem; font-weight: 600; color: #f8fafc; margin-bottom: 4px;">Zero Undecryptable Files</div>
+                        <div style="font-size: 0.8rem; color: #64748b;">All files in selected cloud repositories can be decrypted cleanly with your keyrings.</div>
+                    </div>`;
+                updateSelectedCount();
+                return;
+            }}
+
+            let html = `
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+                <thead>
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: #94a3b8;">
+                        <th style="padding: 8px 10px; width: 34px; text-align: center;">
+                            <input type="checkbox" id="chkSelectAllUndecryptable" onchange="toggleSelectAllUndecryptable(this.checked)" style="cursor: pointer;">
+                        </th>
+                        <th style="padding: 8px 10px;">Repository</th>
+                        <th style="padding: 8px 10px;">Cloud File Path</th>
+                        <th style="padding: 8px 10px;">Size</th>
+                        <th style="padding: 8px 10px;">Failure Reason</th>
+                        <th style="padding: 8px 10px; text-align: right;">Action</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+            filtered.forEach(it => {{
+                const isChecked = selectedUndecryptable.has(it.id);
+                html += `
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.02)'" onmouseout="this.style.background='transparent'">
+                        <td style="padding: 8px 10px; text-align: center;">
+                            <input type="checkbox" onchange="toggleSelectUndecryptable('${{escapeHtml(it.id)}}', this.checked)" ${{isChecked ? 'checked' : ''}} style="cursor: pointer;">
+                        </td>
+                        <td style="padding: 8px 10px;">
+                            <span class="meta-pill" style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.2);">${{escapeHtml(it.repo_id)}}</span>
+                        </td>
+                        <td style="padding: 8px 10px; font-family: monospace; color: #f1f5f9; word-break: break-all;">
+                            ${{escapeHtml(it.file_path)}}
+                            ${{it.blob_path && it.blob_path !== it.file_path ? `<div style="font-size: 0.72rem; color: #64748b;">Blob: ${{escapeHtml(it.blob_path)}}</div>` : ''}}
+                        </td>
+                        <td style="padding: 8px 10px; color: #94a3b8; white-space: nowrap;">
+                            ${{escapeHtml(it.size_str || 'N/A')}}
+                        </td>
+                        <td style="padding: 8px 10px; color: #f87171; font-size: 0.75rem;">
+                            ${{escapeHtml(it.reason || 'Authentication Tag Mismatch')}}
+                        </td>
+                        <td style="padding: 8px 10px; text-align: right; white-space: nowrap;">
+                            <button onclick="deleteSingleUndecryptable('${{escapeHtml(it.id)}}')" class="btn btn-delete btn-xs" style="padding: 3px 8px; font-size: 0.74rem;" title="Delete this file from Hugging Face">
+                                🗑️ Delete
+                            </button>
+                        </td>
+                    </tr>`;
+            }});
+
+            html += `</tbody></table>`;
+            container.innerHTML = html;
+            updateSelectedCount();
+        }}
+
+        function toggleSelectUndecryptable(id, checked) {{
+            if (checked) selectedUndecryptable.add(id);
+            else selectedUndecryptable.delete(id);
+            updateSelectedCount();
+        }}
+
+        function toggleSelectAllUndecryptable(checked) {{
+            const searchVal = (document.getElementById('undecryptableSearchInput')?.value || '').toLowerCase().trim();
+            const repoVal = document.getElementById('undecryptableRepoFilterSelect')?.value || '';
+
+            (undecryptableData.items || []).forEach(it => {{
+                if (repoVal && it.repo_id !== repoVal) return;
+                if (searchVal) {{
+                    const matchRepo = it.repo_id.toLowerCase().includes(searchVal);
+                    const matchFile = (it.file_path || '').toLowerCase().includes(searchVal);
+                    if (!matchRepo && !matchFile) return;
+                }}
+                if (checked) selectedUndecryptable.add(it.id);
+                else selectedUndecryptable.delete(it.id);
+            }});
+            filterUndecryptableTable();
+        }}
+
+        function updateSelectedCount() {{
+            const count = selectedUndecryptable.size;
+            const btn = document.getElementById('btnDeleteSelectedUndecryptable');
+            const lbl = document.getElementById('selectedUndecryptableCount');
+            if (lbl) lbl.textContent = count;
+            if (btn) btn.style.display = count > 0 ? 'inline-block' : 'none';
+        }}
+
+        async function deleteSingleUndecryptable(id) {{
+            const item = (undecryptableData.items || []).find(it => it.id === id);
+            if (!item) return;
+            if (!confirm(`Are you sure you want to permanently delete this undecryptable file from Hugging Face?` + String.fromCharCode(10) + String.fromCharCode(10) + `Repository: ${{item.repo_id}}` + String.fromCharCode(10) + `File: ${{item.file_path}}` + String.fromCharCode(10) + String.fromCharCode(10) + `This cannot be undone.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast("🗑️ Deleting cloud file...");
+                const res = await fetch('/api/undecryptable-files/delete', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ items: [item] }})
+                }});
+                const result = await res.json();
+                if (result.success) {{
+                    showToast("✅ File deleted from Hugging Face");
+                    await loadUndecryptableFiles(true);
+                }} else {{
+                    alert("Error deleting file: " + (result.error || result.message));
+                }}
+            }} catch (err) {{
+                alert("Network error deleting file: " + err.message);
+            }}
+        }}
+
+        async function deleteSelectedUndecryptable() {{
+            const itemsToDelete = (undecryptableData.items || []).filter(it => selectedUndecryptable.has(it.id));
+            if (itemsToDelete.length === 0) return;
+            if (!confirm(`Permanently delete ${{itemsToDelete.length}} selected undecryptable file(s) across your cloud repositories?` + String.fromCharCode(10) + String.fromCharCode(10) + `This will remove them permanently from Hugging Face.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast(`🗑️ Deleting ${{itemsToDelete.length}} file(s)...`);
+                const res = await fetch('/api/undecryptable-files/delete', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ items: itemsToDelete }})
+                }});
+                const result = await res.json();
+                if (result.success) {{
+                    showToast(`✅ ${{result.deleted_count || itemsToDelete.length}} file(s) deleted`);
+                    await loadUndecryptableFiles(true);
+                }} else {{
+                    alert("Error: " + (result.error || result.message));
+                }}
+            }} catch (err) {{
+                alert("Network error: " + err.message);
+            }}
+        }}
+
+        async function deleteRepoUndecryptable() {{
+            const repoVal = document.getElementById('undecryptableRepoFilterSelect')?.value;
+            if (!repoVal) return;
+            const itemsInRepo = (undecryptableData.items || []).filter(it => it.repo_id === repoVal);
+            if (!confirm(`Permanently delete all ${{itemsInRepo.length}} undecryptable file(s) in repository '${{repoVal}}'?`)) {{
+                return;
+            }}
+
+            try {{
+                showToast(`🗑️ Purging ${{itemsInRepo.length}} file(s) in '${{repoVal}}'...`);
+                const res = await fetch('/api/undecryptable-files/delete', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ items: itemsInRepo }})
+                }});
+                const result = await res.json();
+                if (result.success) {{
+                    showToast(`✅ All undecryptable files in '${{repoVal}}' purged`);
+                    await loadUndecryptableFiles(true);
+                }} else {{
+                    alert("Error: " + (result.error || result.message));
+                }}
+            }} catch (err) {{
+                alert("Network error: " + err.message);
+            }}
+        }}
+
+        async function promptPurgeAllUndecryptable() {{
+            const allItems = undecryptableData.items || [];
+            if (allItems.length === 0) {{
+                alert("No undecryptable files to purge.");
+                return;
+            }}
+            if (!confirm(`⚠️ DANGER: Are you sure you want to permanently delete ALL ${{allItems.length}} undecryptable file(s) across all Hugging Face repositories?` + String.fromCharCode(10) + String.fromCharCode(10) + `This will delete these unopenable files from the cloud.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast(`💥 Purging all ${{allItems.length}} undecryptable file(s)...`);
+                const res = await fetch('/api/undecryptable-files/delete', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ items: allItems }})
+                }});
+                const result = await res.json();
+                if (result.success) {{
+                    showToast(`✅ ${{result.deleted_count || allItems.length}} file(s) purged`);
+                    await loadUndecryptableFiles(true);
+                }} else {{
+                    alert("Error: " + (result.error || result.message));
+                }}
+            }} catch (err) {{
+                alert("Network error: " + err.message);
+            }}
+        }}
+
+        async function promptDeleteCloudRepo(repoId) {{
+            if (!confirm(`⚠️ Delete Repository: Are you sure you want to permanently delete the entire dataset '${{repoId}}' from Hugging Face?` + String.fromCharCode(10) + String.fromCharCode(10) + `This will completely delete the cloud repository.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast(`🗑️ Deleting cloud repository '${{repoId}}'...`);
+                const res = await fetch('/api/undecryptable-files/delete-repo', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ repo_id: repoId }})
+                }});
+                const result = await res.json();
+                if (result.success) {{
+                    showToast(`✅ Repository '${{repoId}}' deleted from Hugging Face`);
+                    await loadUndecryptableFiles(true);
+                    await loadAccountsList();
+                }} else {{
+                    alert("Error deleting repo: " + (result.error || result.message));
+                }}
+            }} catch (err) {{
+                alert("Network error: " + err.message);
+            }}
         }}
 
         // Init Privacy Blur state

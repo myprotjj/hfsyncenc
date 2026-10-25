@@ -2,6 +2,7 @@ import os
 import re
 import json
 import shutil
+import time
 from pathlib import Path
 from huggingface_hub import HfApi
 import requests
@@ -1457,3 +1458,251 @@ class AccountManager:
             })
 
         return summary
+
+    def scan_undecryptable_cloud_files(self, force_refresh: bool = False) -> dict:
+        """
+        Scans all dataset repositories across all connected Hugging Face accounts for files
+        that cannot be decrypted with any configured key (active keyring, historical keys, or master password).
+        Also identifies orphaned encrypted blobs and obsolete empty/broken repositories.
+        """
+        if not force_refresh and hasattr(self, "cached_undecryptable_files") and self.cached_undecryptable_files:
+            return self.cached_undecryptable_files
+
+        items = []
+        empty_repos = []
+        master_repo = self.get_master_repo_id().lower()
+
+        for user, acc in self.accounts.items():
+            api = acc.get("api")
+            token = acc.get("token")
+            if not api or not token:
+                continue
+
+            try:
+                datasets = list(api.list_datasets(author=user))
+            except Exception as e:
+                print(f"[!] Warning: Failed to list datasets for {user}: {e}")
+                continue
+
+            for ds in datasets:
+                repo_id = ds.id
+                if repo_id.lower() == master_repo:
+                    continue
+
+                candidate_keys = self.get_candidate_keys_for_repo(repo_id)
+
+                try:
+                    repo_files = list(api.list_repo_files(repo_id=repo_id, repo_type="dataset"))
+                except Exception as fe:
+                    print(f"[!] Warning: Could not list files in {repo_id}: {fe}")
+                    continue
+
+                sidecars = [f for f in repo_files if f.endswith(".meta.enc")]
+                blobs = [f for f in repo_files if f.endswith(".enc") and not f.endswith(".meta.enc") and f != "vault_index.enc"]
+                has_index = "vault_index.enc" in repo_files
+
+                # If repository has zero encrypted media and zero sidecars
+                if not sidecars and not blobs:
+                    empty_repos.append({
+                        "repo_id": repo_id,
+                        "account": user,
+                        "file_count": len(repo_files),
+                        "files": repo_files,
+                        "has_index": has_index,
+                        "reason": "Obsolete/Empty dataset with no encrypted media blobs"
+                    })
+                    continue
+
+                # Test each sidecar in parallel using thread pool
+                from concurrent.futures import ThreadPoolExecutor
+                decryptable_prefixes = set()
+                session = requests.Session()
+                session.headers.update({"Authorization": f"Bearer {token}"})
+
+                def _check_sidecar(sc):
+                    url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{sc}"
+                    try:
+                        resp = session.get(url, timeout=8)
+                        if resp.status_code == 200 and resp.content:
+                            matched_pw, dec = crypto_engine.find_working_key_for_bytes(candidate_keys, resp.content)
+                            if matched_pw and dec:
+                                pfx = sc.split(".meta.enc")[0]
+                                return {"valid": True, "pfx": pfx}
+                            else:
+                                pfx = sc.split(".meta.enc")[0]
+                                # Find all companion files sharing this prefix
+                                matching_blobs = [f for f in repo_files if f.startswith(pfx) and f != sc]
+                                paths = [sc] + matching_blobs
+                                return {
+                                    "valid": False,
+                                    "item": {
+                                        "id": f"{repo_id}:{sc}",
+                                        "repo_id": repo_id,
+                                        "account": user,
+                                        "file_path": sc,
+                                        "sidecar_path": sc,
+                                        "blob_path": matching_blobs[0] if matching_blobs else None,
+                                        "paths_to_delete": paths,
+                                        "size_bytes": len(resp.content),
+                                        "size_str": f"{len(resp.content) / 1024:.1f} KB",
+                                        "error_type": "InvalidTag",
+                                        "reason": "Authentication tag failed (None of your configured keys can decrypt this sidecar)"
+                                    }
+                                }
+                    except Exception as de:
+                        return {
+                            "valid": False,
+                            "item": {
+                                "id": f"{repo_id}:{sc}",
+                                "repo_id": repo_id,
+                                "account": user,
+                                "file_path": sc,
+                                "sidecar_path": sc,
+                                "blob_path": None,
+                                "paths_to_delete": [sc],
+                                "size_bytes": 0,
+                                "size_str": "0 KB",
+                                "error_type": "FetchError",
+                                "reason": f"Network error fetching sidecar: {de}"
+                            }
+                        }
+
+                with ThreadPoolExecutor(max_workers=min(12, max(1, len(sidecars)))) as ex:
+                    res_list = list(ex.map(_check_sidecar, sidecars))
+
+                for r in res_list:
+                    if r.get("valid") and r.get("pfx"):
+                        decryptable_prefixes.add(r["pfx"])
+                    elif r.get("item"):
+                        items.append(r["item"])
+
+                # Check for orphaned blobs (blobs that do not match any decryptable sidecar prefix)
+                for b in blobs:
+                    b_pfx = b.split(".")[0]
+                    is_claimed = any(b.startswith(pfx) for pfx in decryptable_prefixes)
+                    already_queued = any(b in it.get("paths_to_delete", []) for it in items)
+                    if not is_claimed and not already_queued:
+                        # Orphan blob
+                        items.append({
+                            "id": f"{repo_id}:{b}",
+                            "repo_id": repo_id,
+                            "account": user,
+                            "file_path": b,
+                            "sidecar_path": None,
+                            "blob_path": b,
+                            "paths_to_delete": [b],
+                            "size_bytes": 0,
+                            "size_str": "Cloud Blob",
+                            "error_type": "OrphanBlob",
+                            "reason": "Orphaned encrypted blob without matching decryptable metadata sidecar"
+                        })
+
+        result = {
+            "items": items,
+            "empty_repos": empty_repos,
+            "total_count": len(items),
+            "empty_repo_count": len(empty_repos),
+            "scanned_at": time.time()
+        }
+        self.cached_undecryptable_files = result
+        return result
+
+    def delete_cloud_files(self, repo_id: str, file_paths: list) -> dict:
+        """
+        Deletes specified files from a Hugging Face dataset in a single atomic git commit.
+        """
+        from huggingface_hub import CommitOperationDelete
+        api = self.get_api_for_repo(repo_id)
+        if not api:
+            raise ValueError(f"No API authorization available for repository '{repo_id}'.")
+
+        ops = [CommitOperationDelete(path_in_repo=p) for p in file_paths]
+        api.create_commit(
+            repo_id=repo_id,
+            repo_type="dataset",
+            operations=ops,
+            commit_message=f"Purge {len(file_paths)} undecryptable cloud file(s)"
+        )
+
+        # Invalidate cache entries
+        if hasattr(self, "cached_undecryptable_files") and self.cached_undecryptable_files:
+            del_set = set(file_paths)
+            self.cached_undecryptable_files["items"] = [
+                it for it in self.cached_undecryptable_files["items"]
+                if not (it.get("repo_id") == repo_id and any(p in del_set for p in it.get("paths_to_delete", [it.get("file_path")])))
+            ]
+            self.cached_undecryptable_files["total_count"] = len(self.cached_undecryptable_files["items"])
+
+        return {
+            "success": True,
+            "repo_id": repo_id,
+            "deleted_count": len(file_paths),
+            "message": f"Successfully deleted {len(file_paths)} file(s) from '{repo_id}'."
+        }
+
+    def delete_cloud_repo(self, repo_id: str) -> dict:
+        """
+        Deletes an entire dataset repository from Hugging Face.
+        Protected: Will refuse to delete the Master Repository.
+        """
+        master_repo = self.get_master_repo_id().lower()
+        if repo_id.lower() == master_repo:
+            raise ValueError("The Master Repository containing vault_index.enc cannot be deleted.")
+
+        api = self.get_api_for_repo(repo_id)
+        if not api:
+            raise ValueError(f"No API authorization available for repository '{repo_id}'.")
+
+        api.delete_repo(repo_id=repo_id, repo_type="dataset")
+
+        # Invalidate cache entries
+        if hasattr(self, "cached_undecryptable_files") and self.cached_undecryptable_files:
+            self.cached_undecryptable_files["items"] = [
+                it for it in self.cached_undecryptable_files["items"]
+                if it.get("repo_id") != repo_id
+            ]
+            self.cached_undecryptable_files["empty_repos"] = [
+                r for r in self.cached_undecryptable_files["empty_repos"]
+                if r.get("repo_id") != repo_id
+            ]
+            self.cached_undecryptable_files["total_count"] = len(self.cached_undecryptable_files["items"])
+            self.cached_undecryptable_files["empty_repo_count"] = len(self.cached_undecryptable_files["empty_repos"])
+
+        return {
+            "success": True,
+            "repo_id": repo_id,
+            "message": f"Successfully deleted repository '{repo_id}' from Hugging Face."
+        }
+
+    def delete_bulk_cloud_files(self, items: list) -> dict:
+        """
+        Bulk deletes undecryptable files across multiple repositories.
+        Groups files by repository and executes one atomic commit per repository.
+        """
+        repo_groups = {}
+        for it in items:
+            repo_id = it.get("repo_id")
+            paths = it.get("paths_to_delete") or [it.get("file_path")]
+            if repo_id and paths:
+                if repo_id not in repo_groups:
+                    repo_groups[repo_id] = set()
+                for p in paths:
+                    if p:
+                        repo_groups[repo_id].add(p)
+
+        total_deleted = 0
+        errors = []
+        for repo_id, paths in repo_groups.items():
+            try:
+                res = self.delete_cloud_files(repo_id, list(paths))
+                total_deleted += res.get("deleted_count", 0)
+            except Exception as e:
+                errors.append(f"Error deleting in {repo_id}: {e}")
+
+        return {
+            "success": len(errors) == 0,
+            "deleted_count": total_deleted,
+            "repos_affected": len(repo_groups),
+            "errors": errors,
+            "message": f"Successfully deleted {total_deleted} file(s) across {len(repo_groups)} repository/repositories on Hugging Face." if not errors else f"Deleted {total_deleted} file(s) with errors: {'; '.join(errors)}"
+        }
