@@ -679,7 +679,25 @@ class AccountManager:
         master_repo = self.get_master_repo_id()
         tombstones = set(manifest.get("tombstones", {}).keys())
 
+        # Collect all active accounts and their datasets
+        all_repo_targets = []
+        for user, acc in self.accounts.items():
+            if not acc.get("enabled", True):
+                continue
+            api = acc["api"]
+            token = acc["token"]
+            try:
+                datasets = list(api.list_datasets(author=user))
+                for ds in datasets:
+                    all_repo_targets.append((ds.id, token, user))
+            except Exception as e:
+                print(f"[!] Error listing datasets for user {user}: {e}")
+
+        files = manifest.setdefault("files", {})
+        media_hashes = manifest.setdefault("media_hashes", {})
+
         # Fast Path 0: Check Master Index on master_repo (<0.5s)
+        master_records = {}
         if self.password and not deep_scan:
             token = self.get_token_for_repo(master_repo)
             if token:
@@ -695,8 +713,6 @@ class AccountManager:
                             master_records = json.loads(dec.decode("utf-8"))
 
                         if master_records:
-                            files = manifest.setdefault("files", {})
-                            media_hashes = manifest.setdefault("media_hashes", {})
                             for k, rec in master_records.items():
                                 if k in tombstones:
                                     continue
@@ -711,57 +727,69 @@ class AccountManager:
                                 m_hash = rec.get("media_hash")
                                 if m_hash:
                                     media_hashes[m_hash] = rec
-
-                            print(f"[*] Fast Path: Resynced from Master Index {master_repo} ({len(files)} total, +{discovered_count} new) in <0.5s")
-                            return {
-                                "discovered_count": discovered_count,
-                                "skipped_count": 0,
-                                "skipped_items": [],
-                                "total_accounts": len(self.accounts)
-                            }
                 except Exception as e:
                     print(f"[!] Master index fast path fallback: {e}")
 
-        # Deep Fallback or deep_scan=True: Parallel Git Batch Fetch across all accounts & repos
-        repo_targets = []
-        for user, acc in self.accounts.items():
-            if not acc.get("enabled", True):
-                continue
-            api = acc["api"]
-            token = acc["token"]
-            try:
-                datasets = list(api.list_datasets(author=user))
-                for ds in datasets:
-                    if ds.id != master_repo:
-                        repo_targets.append((ds.id, token, user))
-            except Exception as e:
-                print(f"[!] Error listing datasets for user {user}: {e}")
+        # Check repository coverage: Which active datasets are represented in master_records?
+        represented_repos = set(rec.get("repo_id") for rec in master_records.values() if rec.get("repo_id"))
 
-        # Execute parallel sidecar fetch across all targets with 4 bounded workers
-        parallel_records, fetch_errors, _ = self.batch_fetch_all_repos_parallel(repo_targets, max_workers=4)
-
-        files = manifest.setdefault("files", {})
-        media_hashes = manifest.setdefault("media_hashes", {})
-        for k, rec in parallel_records.items():
-            if k in tombstones:
-                continue
-            if k not in files:
-                files[k] = rec
-                discovered_count += 1
+        # Repositories to scan:
+        # If deep_scan is True, scan all repos except master.
+        # Otherwise, scan any repos that are completely missing from represented_repos!
+        unindexed_targets = []
+        for target in all_repo_targets:
+            r_id, tok, usr = target
+            if deep_scan:
+                if r_id != master_repo:
+                    unindexed_targets.append(target)
             else:
-                r_ts = float(rec.get("updated_at") or 0.0)
-                l_ts = float(files[k].get("updated_at") or 0.0)
-                if r_ts > l_ts:
-                    files[k] = rec
-            m_hash = rec.get("media_hash")
-            if m_hash:
-                media_hashes[m_hash] = rec
+                if r_id != master_repo and r_id not in represented_repos:
+                    unindexed_targets.append(target)
 
-        print(f"[*] Parallel Deep Resync complete: Discovered {discovered_count} new video(s) across {len(repo_targets)} repositories.")
+        if unindexed_targets:
+            print(f"[*] Discovered {len(unindexed_targets)} unindexed repository/repositories: {[t[0] for t in unindexed_targets]}. Fetching sidecars in parallel...")
+            parallel_records, fetch_errors, _ = self.batch_fetch_all_repos_parallel(unindexed_targets, max_workers=4)
+            for k, rec in parallel_records.items():
+                if k in tombstones:
+                    # If sidecar exists in remote repo with updated_at >= tombstone timestamp (or within 300s),
+                    # it is a valid active file that was erroneously tombstoned by watcher. Recover it!
+                    t_time = float(manifest.get("tombstones", {}).get(k, 0))
+                    r_time = float(rec.get("updated_at") or 0)
+                    if r_time >= (t_time - 300.0) or t_time == 0:
+                        manifest.get("tombstones", {}).pop(k, None)
+                    else:
+                        continue
+                if k not in files:
+                    files[k] = rec
+                    discovered_count += 1
+                else:
+                    r_ts = float(rec.get("updated_at") or 0.0)
+                    l_ts = float(files[k].get("updated_at") or 0.0)
+                    if r_ts > l_ts:
+                        files[k] = rec
+                m_hash = rec.get("media_hash")
+                if m_hash:
+                    media_hashes[m_hash] = rec
+
+            skipped_count = len(fetch_errors)
+            skipped_items = fetch_errors
+
+            # Synchronize the consolidated manifest back to master vault_index.enc so future loads are instant
+            try:
+                m_api = self.get_master_api()
+                if m_api and self.password:
+                    metadata_helper.sync_master_manifest_to_hf(m_api, master_repo, manifest, self.password)
+                    print(f"[*] Consolidated Master Index updated on {master_repo} ({len(files)} total video records across {len(represented_repos) + len(unindexed_targets)} repos).")
+            except Exception as ex_sync:
+                print(f"[!] Warning syncing consolidated master index: {ex_sync}")
+        else:
+            if master_records:
+                print(f"[*] Fast Path: Resynced from Master Index {master_repo} ({len(files)} total, +{discovered_count} new) across {len(represented_repos)} repos in <0.5s")
+
         return {
             "discovered_count": discovered_count,
-            "skipped_count": len(fetch_errors),
-            "skipped_items": fetch_errors,
+            "skipped_count": skipped_count,
+            "skipped_items": skipped_items,
             "total_accounts": len(self.accounts)
         }
 

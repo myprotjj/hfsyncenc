@@ -106,8 +106,22 @@ def merge_remote_repo_records(
 
         # 2. Detect remote deletions (file existed locally in repo_id, but is gone from remote index)
         remote_keys_set = set(remote_records.keys())
+        remote_repos_present = set(r.get("repo_id") for r in remote_records.values() if r.get("repo_id"))
         now_ts = time.time()
         for k in local_repo_keys:
+            rec = files.get(k, {})
+            rec_repo = rec.get("repo_id")
+            # CRITICAL SAFETY: Only consider a file remotely deleted if its repository is actually
+            # represented in the remote index! If the remote index does not contain this repository,
+            # it means this repository was not included in this index update, NOT that the file was deleted!
+            if rec_repo and rec_repo not in remote_repos_present:
+                continue
+
+            # Also safety check: If file was modified or updated locally within last 15 minutes,
+            # it might be an in-progress upload or rename; do not delete!
+            if now_ts - float(rec.get("updated_at") or 0.0) < 900.0:
+                continue
+
             if k not in remote_keys_set:
                 del files[k]
                 tombstones[k] = now_ts
