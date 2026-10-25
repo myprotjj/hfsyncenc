@@ -536,6 +536,8 @@ def write_nfo_files(library_dir: str, key_path: str, metadata: dict, media_info:
 
 def delete_nfo_files(library_dir: str, key_path: str):
     """Deletes matching NFO files from library."""
+    if not account_manager.is_jellyfin_sync_enabled():
+        return
     base_dir = Path(library_dir)
     target_path = base_dir / key_path
 

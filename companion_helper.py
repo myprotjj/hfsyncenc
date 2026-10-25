@@ -4,6 +4,7 @@ import sys
 import subprocess
 from pathlib import Path
 import imageio_ffmpeg
+import account_manager
 
 LANGUAGE_MAP = {
     "en": "English", "eng": "English",
@@ -88,6 +89,8 @@ def sync_jellyfin_subtitle(library_dir: str, video_key: str, srt_content: str, l
     Saves decrypted .srt file alongside .strm file in Jellyfin library directory.
     Example: jellyfin_library/LOLAH-VIBE/Movie.en.srt
     """
+    if not account_manager.is_jellyfin_sync_enabled():
+        return ""
     try:
         parts = Path(video_key).parts
         if not parts:

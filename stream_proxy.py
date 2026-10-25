@@ -1112,64 +1112,67 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             # If target_key differs from key, rename on disk and manifest to eliminate "(2)" conflict
             if target_key != key:
-                old_strm = Path("jellyfin_library") / f"{key}.strm"
-                if old_strm.exists():
-                    try: old_strm.unlink()
-                    except Exception: pass
-                metadata_helper.delete_nfo_files("jellyfin_library", key)
+                if account_manager.is_jellyfin_sync_enabled():
+                    old_strm = Path("jellyfin_library") / f"{key}.strm"
+                    if old_strm.exists():
+                        try: old_strm.unlink()
+                        except Exception: pass
+                    metadata_helper.delete_nfo_files("jellyfin_library", key)
 
                 manifest["files"].pop(key, None)
                 FILE_CACHE.pop(key, None)
                 manifest["files"][target_key] = file_info
                 FILE_CACHE[target_key] = file_info
 
-                new_strm = Path("jellyfin_library") / f"{target_key}.strm"
-                new_strm.parent.mkdir(parents=True, exist_ok=True)
-                port = self.server.server_port if hasattr(self.server, "server_port") else 8080
-                strm_url = f"http://127.0.0.1:{port}/stream/{quote(target_key)}"
-                new_strm.write_text(strm_url, encoding="utf-8")
+                if account_manager.is_jellyfin_sync_enabled():
+                    new_strm = Path("jellyfin_library") / f"{target_key}.strm"
+                    new_strm.parent.mkdir(parents=True, exist_ok=True)
+                    port = self.server.server_port if hasattr(self.server, "server_port") else 8080
+                    strm_url = f"http://127.0.0.1:{port}/stream/{quote(target_key)}"
+                    new_strm.write_text(strm_url, encoding="utf-8")
                 key = target_key
 
-            canonical_files = set()
-            try:
-                canonical_files.add((Path("jellyfin_library") / f"{key}.strm").resolve())
-                canonical_files.add((Path("jellyfin_library") / f"{key}.nfo").resolve())
-                canonical_files.add(((Path("jellyfin_library") / key).parent / f"{Path(key).stem}.nfo").resolve())
-                canonical_files.add(((Path("jellyfin_library") / key).parent / f"{Path(key).name}.strm.nfo").resolve())
-            except Exception:
-                pass
+            if account_manager.is_jellyfin_sync_enabled():
+                canonical_files = set()
+                try:
+                    canonical_files.add((Path("jellyfin_library") / f"{key}.strm").resolve())
+                    canonical_files.add((Path("jellyfin_library") / f"{key}.nfo").resolve())
+                    canonical_files.add(((Path("jellyfin_library") / key).parent / f"{Path(key).stem}.nfo").resolve())
+                    canonical_files.add(((Path("jellyfin_library") / key).parent / f"{Path(key).name}.strm.nfo").resolve())
+                except Exception:
+                    pass
 
-            # 1. Unlink specific conflict paths from old_file_names
-            for other_fn in old_file_names:
-                if other_fn != key:
-                    p = Path("jellyfin_library") / other_fn
-                    p_stem = p.stem
-                    p_name = p.name
-                    targets = [
-                        p.parent / f"{p_name}.strm",
-                        p.parent / f"{p_name}.nfo",
-                        p.parent / f"{p_stem}.nfo",
-                        p.parent / f"{p_name}.strm.nfo",
-                    ]
-                    for t in targets:
-                        try:
-                            if t.exists() and t.resolve() not in canonical_files:
-                                t.unlink()
-                        except Exception as e:
-                            logger.warning("Error deleting conflict file %s: %s", t, e)
+                # 1. Unlink specific conflict paths from old_file_names
+                for other_fn in old_file_names:
+                    if other_fn != key:
+                        p = Path("jellyfin_library") / other_fn
+                        p_stem = p.stem
+                        p_name = p.name
+                        targets = [
+                            p.parent / f"{p_name}.strm",
+                            p.parent / f"{p_name}.nfo",
+                            p.parent / f"{p_stem}.nfo",
+                            p.parent / f"{p_name}.strm.nfo",
+                        ]
+                        for t in targets:
+                            try:
+                                if t.exists() and t.resolve() not in canonical_files:
+                                    t.unlink()
+                            except Exception as e:
+                                logger.warning("Error deleting conflict file %s: %s", t, e)
 
-            # 2. Unlink any matching conflict aliases
-            canonical_stem = Path(key).stem
-            for a in old_aliases:
-                a_stem = Path(a).stem
-                if a_stem != canonical_stem:
-                    for cand in Path("jellyfin_library").glob(f"**/*{a_stem}*"):
-                        try:
-                            if cand.is_file() and cand.resolve() not in canonical_files:
-                                if cand.suffix in [".strm", ".nfo"]:
-                                    cand.unlink()
-                        except Exception as e:
-                            logger.warning("Error unlinking conflict alias %s: %s", cand, e)
+                # 2. Unlink any matching conflict aliases
+                canonical_stem = Path(key).stem
+                for a in old_aliases:
+                    a_stem = Path(a).stem
+                    if a_stem != canonical_stem:
+                        for cand in Path("jellyfin_library").glob(f"**/*{a_stem}*"):
+                            try:
+                                if cand.is_file() and cand.resolve() not in canonical_files:
+                                    if cand.suffix in [".strm", ".nfo"]:
+                                        cand.unlink()
+                            except Exception as e:
+                                logger.warning("Error unlinking conflict alias %s: %s", cand, e)
 
             # 3. Remove other duplicate keys in manifest pointing to this same blob / hash
             if blob_path or media_hash:
@@ -1711,32 +1714,33 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             return
 
         import shutil
-        old_lib_dir = Path("jellyfin_library") / folder_path
-        new_lib_dir = Path("jellyfin_library") / new_folder_path
-        if old_lib_dir.exists() and old_lib_dir.is_dir():
-            new_lib_dir.parent.mkdir(parents=True, exist_ok=True)
-            if not new_lib_dir.exists():
-                try:
-                    old_lib_dir.rename(new_lib_dir)
-                except Exception:
-                    shutil.move(str(old_lib_dir), str(new_lib_dir))
-            else:
-                for item in old_lib_dir.glob("**/*"):
-                    if item.is_file():
-                        rel = item.relative_to(old_lib_dir)
-                        dest = new_lib_dir / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(item), str(dest))
-                shutil.rmtree(str(old_lib_dir), ignore_errors=True)
+        if account_manager.is_jellyfin_sync_enabled():
+            old_lib_dir = Path("jellyfin_library") / folder_path
+            new_lib_dir = Path("jellyfin_library") / new_folder_path
+            if old_lib_dir.exists() and old_lib_dir.is_dir():
+                new_lib_dir.parent.mkdir(parents=True, exist_ok=True)
+                if not new_lib_dir.exists():
+                    try:
+                        old_lib_dir.rename(new_lib_dir)
+                    except Exception:
+                        shutil.move(str(old_lib_dir), str(new_lib_dir))
+                else:
+                    for item in old_lib_dir.glob("**/*"):
+                        if item.is_file():
+                            rel = item.relative_to(old_lib_dir)
+                            dest = new_lib_dir / rel
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(item), str(dest))
+                    shutil.rmtree(str(old_lib_dir), ignore_errors=True)
 
-        if new_lib_dir.exists():
-            for strm_file in new_lib_dir.glob("**/*.strm"):
-                try:
-                    txt = strm_file.read_text(encoding="utf-8")
-                    txt = txt.replace(f"/stream/{folder_path}/", f"/stream/{new_folder_path}/")
-                    strm_file.write_text(txt, encoding="utf-8")
-                except Exception as ex:
-                    logger.warning("Error updating strm file %s: %s", strm_file, ex)
+            if new_lib_dir.exists():
+                for strm_file in new_lib_dir.glob("**/*.strm"):
+                    try:
+                        txt = strm_file.read_text(encoding="utf-8")
+                        txt = txt.replace(f"/stream/{folder_path}/", f"/stream/{new_folder_path}/")
+                        strm_file.write_text(txt, encoding="utf-8")
+                    except Exception as ex:
+                        logger.warning("Error updating strm file %s: %s", strm_file, ex)
 
         old_sync_dir = Path("videos_to_sync") / folder_path
         new_sync_dir = Path("videos_to_sync") / new_folder_path
@@ -2525,27 +2529,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         save_manifest(manifest)
 
-        # Delete local .strm files for the removed alias
-        for strm_candidate in Path("jellyfin_library").glob("**/*.strm"):
-            if strm_candidate.name in (f"{alias_basename}.strm", f"{alias_to_remove}.strm"):
+        # Delete local .strm and .nfo files for the removed alias if Jellyfin sync enabled
+        if account_manager.is_jellyfin_sync_enabled():
+            for strm_candidate in Path("jellyfin_library").glob("**/*.strm"):
+                if strm_candidate.name in (f"{alias_basename}.strm", f"{alias_to_remove}.strm"):
+                    try:
+                        strm_candidate.unlink()
+                    except Exception as e:
+                        print(f"[!] Warning deleting alias strm: {e}")
+
+            metadata_helper.delete_nfo_files("jellyfin_library", alias_to_remove)
+            metadata_helper.delete_nfo_files("jellyfin_library", alias_basename)
+            for nfo_candidate in Path("jellyfin_library").glob(f"**/*{alias_basename}*.nfo"):
                 try:
-                    strm_candidate.unlink()
-                except Exception as e:
-                    print(f"[!] Warning deleting alias strm: {e}")
+                    nfo_candidate.unlink()
+                except Exception:
+                    pass
 
-        # Delete local .nfo files for the removed alias
-        metadata_helper.delete_nfo_files("jellyfin_library", alias_to_remove)
-        metadata_helper.delete_nfo_files("jellyfin_library", alias_basename)
-        for nfo_candidate in Path("jellyfin_library").glob(f"**/*{alias_basename}*.nfo"):
-            try:
-                nfo_candidate.unlink()
-            except Exception:
-                pass
-
-        # Re-write .nfo files for remaining filenames so Jellyfin no longer lists removed alias
-        for fn in new_file_names:
-            clean_rec = manifest["files"].get(fn) or manifest["files"][key]
-            metadata_helper.write_nfo_files("jellyfin_library", fn, clean_rec.get("metadata", {}))
+            # Re-write .nfo files for remaining filenames so Jellyfin no longer lists removed alias
+            for fn in new_file_names:
+                clean_rec = manifest["files"].get(fn) or manifest["files"][key]
+                metadata_helper.write_nfo_files("jellyfin_library", fn, clean_rec.get("metadata", {}))
 
         # Sync updated metadata to Hugging Face
         api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
@@ -2652,18 +2656,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         save_manifest(manifest)
 
-        # Create .strm file for new alias
-        strm_path = Path("jellyfin_library") / f"{alias_key}.strm"
-        strm_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(strm_path, "w", encoding="utf-8") as sf:
-            sf.write(f"http://127.0.0.1:8080/stream/{alias_key}\n")
+        # Create .strm and .nfo files for new alias if Jellyfin sync enabled
+        if account_manager.is_jellyfin_sync_enabled():
+            strm_path = Path("jellyfin_library") / f"{alias_key}.strm"
+            strm_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(strm_path, "w", encoding="utf-8") as sf:
+                sf.write(f"http://127.0.0.1:8080/stream/{alias_key}\n")
 
-        # Write .nfo files
-        meta = rec.get("metadata") or metadata_helper.extract_default_metadata(key)
-        meta["aliases"] = current_aliases
-        meta["file_names"] = current_file_names
-        for fn in current_file_names:
-            metadata_helper.write_nfo_files("jellyfin_library", fn, meta)
+            # Write .nfo files
+            meta = rec.get("metadata") or metadata_helper.extract_default_metadata(key)
+            meta["aliases"] = current_aliases
+            meta["file_names"] = current_file_names
+            for fn in current_file_names:
+                metadata_helper.write_nfo_files("jellyfin_library", fn, meta)
 
         # Sync to Hugging Face
         api = self.acc_mgr.get_api_for_repo(repo_id) if (hasattr(self, "acc_mgr") and self.acc_mgr) else HfApi(token=self.token)
@@ -3031,14 +3036,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-        # 2. Clean Jellyfin library files (.strm, .nfo, subs)
-        strm_path = Path("jellyfin_library") / f"{key_to_delete}.strm"
-        if strm_path.exists():
-            try:
-                strm_path.unlink()
-            except Exception:
-                pass
-        metadata_helper.delete_nfo_files("jellyfin_library", key_to_delete)
+        # 2. Clean Jellyfin library files (.strm, .nfo, subs) if Jellyfin sync enabled
+        if account_manager.is_jellyfin_sync_enabled():
+            strm_path = Path("jellyfin_library") / f"{key_to_delete}.strm"
+            if strm_path.exists():
+                try:
+                    strm_path.unlink()
+                except Exception:
+                    pass
+            metadata_helper.delete_nfo_files("jellyfin_library", key_to_delete)
 
         # 3. Clean memory cache and manifest file entry + add to tombstones
         FILE_CACHE.pop(key_to_delete, None)
@@ -3350,13 +3356,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[!] Warning deleting from HF ({blob_path}): {e}")
 
-            metadata_helper.delete_nfo_files("jellyfin_library", key)
-            strm_path = Path("jellyfin_library") / f"{key}.strm"
-            if strm_path.exists():
-                try:
-                    strm_path.unlink()
-                except Exception:
-                    pass
+            if account_manager.is_jellyfin_sync_enabled():
+                metadata_helper.delete_nfo_files("jellyfin_library", key)
+                strm_path = Path("jellyfin_library") / f"{key}.strm"
+                if strm_path.exists():
+                    try:
+                        strm_path.unlink()
+                    except Exception:
+                        pass
 
             FILE_CACHE.pop(key, None)
             manifest["files"].pop(key, None)
@@ -4138,13 +4145,14 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     skipped_files.append(item)
 
                     # Suppress indecryptable stream & NFO from Jellyfin
-                    strm_path = Path("jellyfin_library") / f"{key}.strm"
-                    if strm_path.exists():
-                        try:
-                            strm_path.unlink()
-                        except Exception:
-                            pass
-                    metadata_helper.delete_nfo_files("jellyfin_library", key)
+                    if account_manager.is_jellyfin_sync_enabled():
+                        strm_path = Path("jellyfin_library") / f"{key}.strm"
+                        if strm_path.exists():
+                            try:
+                                strm_path.unlink()
+                            except Exception:
+                                pass
+                        metadata_helper.delete_nfo_files("jellyfin_library", key)
 
         files_json_str = json.dumps(files_data)
         skipped_json_str = json.dumps(skipped_files)

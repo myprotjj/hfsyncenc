@@ -953,7 +953,7 @@ class AccountManager:
                                 manifest["media_hashes"] = {}
                             manifest["media_hashes"][eh_val] = rec
 
-                    if library_dir:
+                    if self.is_jellyfin_sync_enabled() and library_dir:
                         strm_path = Path(library_dir) / f"{key}.strm"
                         if not strm_path.exists():
                             strm_path.parent.mkdir(parents=True, exist_ok=True)

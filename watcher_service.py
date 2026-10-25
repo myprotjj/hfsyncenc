@@ -480,7 +480,8 @@ def process_standalone_subtitle(
                 cur_manifest["files"][matching_key]["subtitles"] = subs
                 save_manifest(cur_manifest)
 
-        companion_helper.sync_jellyfin_subtitle(library_dir, matching_key, sub_text, lang_code)
+        if account_manager.is_jellyfin_sync_enabled():
+            companion_helper.sync_jellyfin_subtitle(library_dir, matching_key, sub_text, lang_code)
         safe_print(f"[{time.strftime('%H:%M:%S')}] [Standalone Subtitle Synced] ({lang_name}) for {matching_key} -> {sub_blob}")
 
         if os.path.exists(temp_sub_enc):
@@ -753,10 +754,11 @@ def prepare_video_package(
             cur_m["media_hashes"][media_hash] = cur_m["files"].get(orig_key, record_alias)
             save_manifest(cur_m)
 
-        auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
-        metadata_helper.write_nfo_files(library_dir, full_key, existing_meta)
-        if orig_key:
-            metadata_helper.write_nfo_files(library_dir, orig_key, existing_meta)
+        if account_manager.is_jellyfin_sync_enabled():
+            auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
+            metadata_helper.write_nfo_files(library_dir, full_key, existing_meta)
+            if orig_key:
+                metadata_helper.write_nfo_files(library_dir, orig_key, existing_meta)
         remove_empty_folders(base_dir)
 
         SKIPPED_UNMATCHED_FILES.clear()
@@ -971,7 +973,8 @@ def prepare_video_package(
                         "verifier": crypto_engine.create_verifier(password)
                     }
                     subtitles_record.append(sub_info)
-                    companion_helper.sync_jellyfin_subtitle(library_dir, full_key, sub_text, lang_code)
+                    if account_manager.is_jellyfin_sync_enabled():
+                        companion_helper.sync_jellyfin_subtitle(library_dir, full_key, sub_text, lang_code)
                     safe_print(f"[{time.strftime('%H:%M:%S')}] [6/8: Audio & Subs] Companion subtitle ready ({lang_name}) -> {sub_blob}")
     except Exception as s_err:
         safe_print(f"[!] Companion subtitle check warning: {s_err}")
@@ -1164,11 +1167,18 @@ def upload_and_finalize_package(pkg: dict):
         # =========================================================================
         # STEP 8/8: JELLYFIN LIBRARY SYNC & LOCAL DISK CLEANUP
         # =========================================================================
-        activity_tracker.tracker.update_stage(
-            full_key, "finalizing", "[8/8] Jellyfin & Cleanup", 95,
-            details=f"Deleting local original {size_str} to free disk space & writing .strm"
+        jf_enabled = account_manager.is_jellyfin_sync_enabled()
+        final_stage_label = "[8/8] Jellyfin & Cleanup" if jf_enabled else "[8/8] Manifest & Cleanup"
+        final_details = (
+            f"Deleting local original {size_str} to free disk space & writing .strm"
+            if jf_enabled
+            else f"Deleting local original {size_str} to free disk space & updating vault manifest"
         )
-        safe_print(f"[{time.strftime('%H:%M:%S')}] [8/8: Finalize] Cleaning local files & syncing Jellyfin library...")
+        activity_tracker.tracker.update_stage(
+            full_key, "finalizing", final_stage_label, 95,
+            details=final_details
+        )
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [8/8: Finalize] Cleaning local files & {'syncing Jellyfin library' if jf_enabled else 'updating cloud vault'}...")
 
         # Clean temp encrypted files
         for f_tmp in temp_files_to_clean:
@@ -1203,8 +1213,9 @@ def upload_and_finalize_package(pkg: dict):
 
         # Update local manifest & Jellyfin pointers
         update_manifest_record(record, media_hash)
-        auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
-        metadata_helper.write_nfo_files(library_dir, full_key, pkg["meta"], media_info=pkg["media_info"])
+        if jf_enabled:
+            auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
+            metadata_helper.write_nfo_files(library_dir, full_key, pkg["meta"], media_info=pkg["media_info"])
         remove_empty_folders(base_dir)
 
         # Queue master index sync
@@ -1220,7 +1231,8 @@ def upload_and_finalize_package(pkg: dict):
         )
 
         activity_tracker.tracker.finish_task(full_key, "completed", f"Ready for streaming! Uploaded in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", 100)
-        activity_tracker.tracker.add_event("success", f"Live on Jellyfin: {rel_to_base}", f"Uploaded to {repo_id} in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", account=hf_username, speed=f"{upload_speed_mbps:.1f} Mbps")
+        event_title = f"Live on Jellyfin: {rel_to_base}" if jf_enabled else f"Synced to Vault: {rel_to_base}"
+        activity_tracker.tracker.add_event("success", event_title, f"Uploaded to {repo_id} in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", account=hf_username, speed=f"{upload_speed_mbps:.1f} Mbps")
 
         SKIPPED_UNMATCHED_FILES.clear()
         safe_print(f"[{time.strftime('%H:%M:%S')}] SUCCESS: {full_key} is live in cloud vault and ready for streaming on Jellyfin!")
