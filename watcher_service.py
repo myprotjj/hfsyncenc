@@ -1103,9 +1103,23 @@ def watch_and_sync(
     executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="Uploader")
 
     last_env_mtime = os.path.getmtime(acc_mgr.env_path) if os.path.exists(acc_mgr.env_path) else 0
+    last_repo_cleanup_check = 0
 
     while True:
         try:
+            # Auto-cleanup empty/obsolete cloud repos inactive for 24+ hours (runs in background every 15m)
+            now = time.time()
+            if now - last_repo_cleanup_check > 900:
+                last_repo_cleanup_check = now
+                def _run_auto_repo_cleanup():
+                    try:
+                        cleaned = acc_mgr.auto_cleanup_obsolete_repos(max_idle_hours=24.0)
+                        if cleaned:
+                            repo_list_str = ", ".join(c["repo_id"] for c in cleaned)
+                            safe_print(f"[*] [Auto-Cleanup] Successfully purged {len(cleaned)} obsolete repository(s) inactive for 24+ hours: {repo_list_str}")
+                    except Exception as err:
+                        safe_print(f"[!] [Auto-Cleanup] Background repo cleanup check error: {err}")
+                threading.Thread(target=_run_auto_repo_cleanup, daemon=True).start()
             # Check for live config updates in env.txt (e.g. user added or changed accounts on web UI)
             if os.path.exists(acc_mgr.env_path):
                 cur_mtime = os.path.getmtime(acc_mgr.env_path)

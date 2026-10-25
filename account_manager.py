@@ -3,6 +3,7 @@ import re
 import json
 import shutil
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from huggingface_hub import HfApi
 import requests
@@ -1471,6 +1472,7 @@ class AccountManager:
         items = []
         empty_repos = []
         master_repo = self.get_master_repo_id().lower()
+        now_utc = datetime.now(timezone.utc)
 
         for user, acc in self.accounts.items():
             api = acc.get("api")
@@ -1503,12 +1505,31 @@ class AccountManager:
 
                 # If repository has zero encrypted media and zero sidecars
                 if not sidecars and not blobs:
+                    last_mod = None
+                    inactive_hours = 0.0
+                    try:
+                        info = api.repo_info(repo_id=repo_id, repo_type="dataset")
+                        last_mod = getattr(info, "lastModified", None)
+                        if last_mod:
+                            if last_mod.tzinfo is None:
+                                last_mod = last_mod.replace(tzinfo=timezone.utc)
+                            inactive_hours = max(0.0, (now_utc - last_mod).total_seconds() / 3600.0)
+                    except Exception:
+                        pass
+
+                    auto_delete_eligible = (inactive_hours >= 24.0)
+                    auto_delete_in_hours = max(0.0, round(24.0 - inactive_hours, 1))
+
                     empty_repos.append({
                         "repo_id": repo_id,
                         "account": user,
                         "file_count": len(repo_files),
                         "files": repo_files,
                         "has_index": has_index,
+                        "last_modified_iso": last_mod.isoformat() if last_mod else None,
+                        "inactive_hours": round(inactive_hours, 1),
+                        "auto_delete_eligible": auto_delete_eligible,
+                        "auto_delete_in_hours": auto_delete_in_hours,
                         "reason": "Obsolete/Empty dataset with no encrypted media blobs"
                     })
                     continue
@@ -1706,3 +1727,54 @@ class AccountManager:
             "errors": errors,
             "message": f"Successfully deleted {total_deleted} file(s) across {len(repo_groups)} repository/repositories on Hugging Face." if not errors else f"Deleted {total_deleted} file(s) with errors: {'; '.join(errors)}"
         }
+
+    def auto_cleanup_obsolete_repos(self, max_idle_hours: float = 24.0) -> list:
+        """
+        Scans all accounts for empty/obsolete repos (no encrypted media blobs or sidecars)
+        that have had zero file changes or activity for >= max_idle_hours.
+        Deletes them permanently and records the event in activity tracker.
+        """
+        scan = self.scan_undecryptable_cloud_files(force_refresh=True)
+        empty_repos = scan.get("empty_repos", [])
+        master_repo = self.get_master_repo_id().lower()
+
+        deleted = []
+        for er in empty_repos:
+            repo_id = er.get("repo_id")
+            if not repo_id or repo_id.lower() == master_repo:
+                continue
+
+            inactive_hours = er.get("inactive_hours", 0.0)
+            if inactive_hours >= max_idle_hours:
+                try:
+                    # Final safety check before deleting repo
+                    api = self.get_api_for_repo(repo_id)
+                    curr_files = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+                    has_media = any(f.endswith(".enc") and f != "vault_index.enc" for f in curr_files)
+                    if has_media:
+                        continue
+
+                    print(f"[*] [Auto-Cleanup] Deleting obsolete repo '{repo_id}' (inactive for {inactive_hours:.1f}h)...")
+                    self.delete_cloud_repo(repo_id)
+                    deleted.append({
+                        "repo_id": repo_id,
+                        "account": er.get("account"),
+                        "inactive_hours": inactive_hours
+                    })
+                    try:
+                        import activity_tracker
+                        activity_tracker.tracker.add_event(
+                            "info",
+                            "Auto-Cleaned Obsolete Repo",
+                            f"Automatically deleted empty cloud repository '{repo_id}' (inactive for {inactive_hours:.1f} hours).",
+                            account=er.get("account")
+                        )
+                    except Exception:
+                        pass
+                except Exception as ex:
+                    print(f"[!] [Auto-Cleanup] Failed to auto-delete repo '{repo_id}': {ex}")
+
+        if deleted:
+            self.cached_undecryptable_files = None
+
+        return deleted

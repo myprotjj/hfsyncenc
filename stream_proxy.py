@@ -419,6 +419,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_delete_undecryptable_files()
         elif path == "/api/undecryptable-files/delete-repo":
             self.handle_delete_undecryptable_repo()
+        elif path == "/api/undecryptable-files/auto-cleanup":
+            self.handle_auto_cleanup_undecryptable_repos()
         elif path == "/api/aliases/remove":
             self.handle_remove_alias()
         elif path == "/api/aliases/add":
@@ -3756,6 +3758,27 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 res.get("message", f"Deleted repository {repo_id} from Hugging Face.")
             )
             resp_body = json.dumps(res).encode("utf-8")
+        except Exception as e:
+            resp_body = json.dumps({"success": False, "error": str(e)}).encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    def handle_auto_cleanup_undecryptable_repos(self):
+        try:
+            acc_mgr = getattr(self, "acc_mgr", None) or account_manager.AccountManager()
+            cleaned = acc_mgr.auto_cleanup_obsolete_repos(max_idle_hours=24.0)
+            msg = f"Cleaned up {len(cleaned)} obsolete repository(s) inactive for 24+ hours." if cleaned else "No empty repositories have reached 24+ hours of inactivity yet."
+            resp_body = json.dumps({
+                "success": True,
+                "cleaned_count": len(cleaned),
+                "cleaned_repos": cleaned,
+                "message": msg
+            }).encode("utf-8")
         except Exception as e:
             resp_body = json.dumps({"success": False, "error": str(e)}).encode("utf-8")
 
@@ -8904,10 +8927,15 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             <!-- Empty / Obsolete Repositories Section -->
             <div id="emptyReposSection" style="margin-top: 14px; display: none;">
-                <div style="font-weight: 600; font-size: 0.86rem; color: #cbd5e1; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                    📁 Empty / Obsolete Cloud Repositories (<span id="emptyReposCount">0</span>)
+                <div style="font-weight: 600; font-size: 0.86rem; color: #cbd5e1; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        📁 Empty / Obsolete Cloud Repositories (<span id="emptyReposCount">0</span>)
+                    </div>
+                    <button type="button" onclick="triggerAutoCleanupRepos()" id="btnAutoCleanupRepos" class="tool-btn btn-xs" style="border-color: rgba(245, 158, 11, 0.4); color: #fbbf24; background: rgba(245, 158, 11, 0.1); padding: 3px 8px; font-size: 0.74rem;" title="Automatically purge all empty repositories that have had zero activity for 24+ hours">
+                        ⚡ 24h Auto-Cleanup
+                    </button>
                 </div>
-                <div id="emptyReposList" style="display: flex; flex-direction: column; gap: 6px; max-height: 140px; overflow-y: auto;"></div>
+                <div id="emptyReposList" style="display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto;"></div>
             </div>
 
             <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
@@ -15936,17 +15964,29 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 if (emptyRepos.length > 0) {{
                     emptySection.style.display = 'block';
                     if (emptyCount) emptyCount.textContent = emptyRepos.length;
-                    emptyList.innerHTML = emptyRepos.map(r => `
-                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 8px 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <b style="color: #f8fafc; font-size: 0.84rem;">${{escapeHtml(r.repo_id)}}</b>
-                                <span style="color: #94a3b8; font-size: 0.76rem; margin-left: 8px;">(${{r.file_count || 0}} non-media file(s)) &bull; ${{escapeHtml(r.reason)}}</span>
+                    emptyList.innerHTML = emptyRepos.map(r => {{
+                        const isEligible = r.auto_delete_eligible;
+                        const autoBadge = isEligible
+                            ? '<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); font-size: 0.68rem; padding: 2px 6px;">⚡ Auto-Deletes (24h+ Inactive)</span>'
+                            : `<span class="badge" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25); font-size: 0.68rem; padding: 2px 6px;">⏱️ Inactive ${{r.inactive_hours || 0}}h (Auto-deletes in ${{r.auto_delete_in_hours || 24}}h)</span>`;
+
+                        return `
+                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 8px 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                            <div style="min-width: 0;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <b style="color: #f8fafc; font-size: 0.84rem;">${{escapeHtml(r.repo_id)}}</b>
+                                    ${{autoBadge}}
+                                </div>
+                                <div style="color: #94a3b8; font-size: 0.74rem; margin-top: 2px;">
+                                    ${{r.file_count || 0}} non-media file(s) &bull; ${{escapeHtml(r.reason)}} &bull; Last change: ${{r.last_modified_iso ? new Date(r.last_modified_iso).toLocaleString() : 'Unknown'}}
+                                </div>
                             </div>
-                            <button onclick="promptDeleteCloudRepo('${{escapeHtml(r.repo_id)}}')" class="btn btn-delete btn-xs" style="padding: 3px 8px; font-size: 0.74rem;">
-                                🗑️ Delete Repo
+                            <button onclick="promptDeleteCloudRepo('${{escapeHtml(r.repo_id)}}')" class="btn btn-delete btn-xs" style="padding: 3px 8px; font-size: 0.74rem; flex-shrink: 0;" title="Delete this repository immediately">
+                                🗑️ Delete Now
                             </button>
                         </div>
-                    `).join('');
+                    `;
+                    }}).join('');
                 }} else {{
                     emptySection.style.display = 'none';
                 }}
@@ -16194,6 +16234,30 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     await loadAccountsList();
                 }} else {{
                     alert("Error deleting repo: " + (result.error || result.message));
+                }}
+            }} catch (err) {{
+                alert("Network error: " + err.message);
+            }}
+        }}
+
+        async function triggerAutoCleanupRepos() {{
+            if (!confirm(`Run 24-hour Auto-Cleanup now?` + String.fromCharCode(10) + String.fromCharCode(10) + `This will automatically purge any empty or obsolete repository that has had zero file changes or activity for 24+ hours.`)) {{
+                return;
+            }}
+
+            try {{
+                showToast("🧹 Running 24-hour auto-cleanup...");
+                const res = await fetch('/api/undecryptable-files/auto-cleanup', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }}
+                }});
+                const result = await res.json();
+                if (result.success) {{
+                    showToast(`🧹 ${{result.message}}`);
+                    await loadUndecryptableFiles(true);
+                    await loadAccountsList();
+                }} else {{
+                    alert("Error running auto-cleanup: " + (result.error || result.message));
                 }}
             }} catch (err) {{
                 alert("Network error: " + err.message);
