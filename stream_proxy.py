@@ -15595,10 +15595,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                         tasksContainer.innerHTML = activeTasks.map(t => {{
                             let stageIcon = '🔄';
                             let stageColor = '#38bdf8';
-                            if (t.stage === 'hashing') {{ stageIcon = '🔍'; stageColor = '#fbbf24'; }}
+                            if (t.stage === 'ingest') {{ stageIcon = '📥'; stageColor = '#94a3b8'; }}
+                            else if (t.stage === 'hashing') {{ stageIcon = '🔍'; stageColor = '#fbbf24'; }}
                             else if (t.stage === 'dup_check') {{ stageIcon = '👥'; stageColor = '#a855f7'; }}
+                            else if (t.stage === 'probing') {{ stageIcon = '🎬'; stageColor = '#a78bfa'; }}
                             else if (t.stage === 'encrypting') {{ stageIcon = '🔒'; stageColor = '#38bdf8'; }}
+                            else if (t.stage === 'storyboard') {{ stageIcon = '🎞️'; stageColor = '#c084fc'; }}
+                            else if (t.stage === 'companions') {{ stageIcon = '🎵'; stageColor = '#e879f9'; }}
+                            else if (t.stage === 'ready') {{ stageIcon = '📦'; stageColor = '#34d399'; }}
                             else if (t.stage === 'uploading') {{ stageIcon = '☁️'; stageColor = '#60a5fa'; }}
+                            else if (t.stage === 'finalizing') {{ stageIcon = '✨'; stageColor = '#34d399'; }}
                             else if (t.stage === 'metadata') {{ stageIcon = '🏷️'; stageColor = '#34d399'; }}
                             else if (t.stage === 'completed') {{ stageIcon = '✅'; stageColor = '#10b981'; }}
                             else if (t.stage === 'skipped_duplicate') {{ stageIcon = '⏭️'; stageColor = '#f59e0b'; }}

@@ -69,7 +69,7 @@ class HFRateLimiter:
         self,
         max_requests_per_window: int = 850,     # Safety buffer under HF's 1,000 limit
         window_seconds: int = 300,              # HF fixed window is 300 seconds (5 min)
-        min_commit_spacing_sec: float = 1.5,     # Git write spacing
+        min_commit_spacing_sec: float = 2.5,     # Git write spacing (prevents commit rate limits)
         min_request_spacing_sec: float = 0.05    # Base API request pacing
     ):
         self.max_requests = max_requests_per_window

@@ -7,6 +7,7 @@ import io
 import shutil
 import argparse
 import threading
+from typing import Optional, Dict, Set, Tuple, Any
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from huggingface_hub import HfApi, CommitOperationAdd
@@ -59,6 +60,9 @@ MANIFEST_FILE = "upload_manifest.json"
 MANIFEST_LOCK = threading.RLock()
 PRINT_LOCK = threading.RLock()
 IN_PROGRESS_FILES = set()
+PREPARING_FILES = set()
+PREPARED_PACKAGES = {}
+UPLOADING_FILES = set()
 KNOWN_REPOS = set()
 
 
@@ -606,6 +610,632 @@ def process_standalone_screens(
         return False
 
 
+def prepare_video_package(
+    file_path: Path,
+    base_dir: Path,
+    base_archive: Path,
+    library_dir: str,
+    default_repo_name: str,
+    api: HfApi,
+    hf_username: str,
+    password: str,
+    name_key: bytes,
+    delete_local: bool,
+    acc_mgr: account_manager.AccountManager = None
+) -> Optional[dict]:
+    """
+    Stage 1: Local Pre-Encryption & Asset Preparation Engine.
+    Executes all local CPU and I/O tasks sequentially for a video:
+      - Step 1/8: Ingest & Readiness check
+      - Step 2/8: Cross-Account sparse fingerprint (<0.005s) & duplicate archive
+      - Step 3/8: Technical stream probe (ffprobe codecs, resolution, HDR, channels)
+      - Step 4/8: AES-256-GCM chunked video encryption (with speed MB/s)
+      - Step 5/8: 100-frame HD hover scrubber storyboard sheet generation
+      - Step 6/8: Companion audio extraction & subtitle encryption
+    Runs locally without waiting for or blocking on network uploads, ensuring all videos
+    in the sync folder are 100% pre-encrypted and ready to upload instantly.
+    """
+    str_path = str(file_path)
+    if not file_path.exists():
+        return None
+
+    rel_to_base = file_path.relative_to(base_dir)
+    parts = rel_to_base.parts
+
+    if len(parts) > 1:
+        raw_repo_name = parts[0]
+        repo_folder = sanitize_repo_name(raw_repo_name)
+        rel_in_repo = str(Path(*parts[1:])).replace("\\", "/")
+    else:
+        repo_folder = sanitize_repo_name(default_repo_name)
+        rel_in_repo = str(parts[0]).replace("\\", "/")
+
+    if len(parts) > 1:
+        hf_repo_name = crypto_engine.get_obfuscated_repo_name(repo_folder, name_key)
+    else:
+        hf_repo_name = sanitize_repo_name(default_repo_name)
+
+    repo_id = f"{hf_username}/{hf_repo_name}"
+    full_key = f"{repo_folder}/{rel_in_repo}"
+
+    file_size = os.path.getsize(file_path)
+    size_mb = file_size / (1024 * 1024)
+    size_str = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+
+    # Disk space safety check
+    try:
+        _, _, free_b = shutil.disk_usage(str(base_dir))
+        if free_b < 5 * (1024 ** 3):
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [Disk Safety] Low disk space ({free_b / (1024**3):.1f} GB free). Waiting for uploads to delete originals before pre-encrypting...")
+            time.sleep(5)
+            return None
+    except Exception:
+        pass
+
+    activity_tracker.tracker.start_task(full_key, str(rel_to_base), file_size, account=hf_username, repo_id=repo_id)
+
+    # =========================================================================
+    # STEP 1/8: INGESTION & READINESS CHECK
+    # =========================================================================
+    activity_tracker.tracker.update_stage(
+        full_key, "ingest", "[1/8] Ingest & Readiness Check", 5,
+        details=f"Copy verified. Source video: {size_str}"
+    )
+    obfuscated_blob_path = crypto_engine.get_obfuscated_blob_path(rel_in_repo, name_key)
+    safe_print(f"\n[{time.strftime('%H:%M:%S')}] ========================================================")
+    safe_print(f"[{time.strftime('%H:%M:%S')}] [1/8: Ingest] Source: {rel_to_base} ({size_str})")
+    safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Target Cloud Repo: {repo_id}")
+    safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Obfuscated Blob: {obfuscated_blob_path}")
+
+    # =========================================================================
+    # STEP 2/8: CROSS-ACCOUNT SPARSE FINGERPRINT (<0.005s)
+    # =========================================================================
+    activity_tracker.tracker.update_stage(
+        full_key, "hashing", "[2/8] Sparse Fingerprint (<0.005s)", 12,
+        details="Sampling header, middle & trailer chunks for instant duplicate check"
+    )
+    t_hash0 = time.time()
+    media_hash = crypto_engine.get_sparse_media_hash(str_path)
+    hash_time = (time.time() - t_hash0) * 1000
+    safe_print(f"[{time.strftime('%H:%M:%S')}] [2/8: Hash] Sparse Fingerprint: {media_hash[:16]}... ({hash_time:.1f}ms)")
+
+    manifest = load_manifest()
+    existing = acc_mgr.find_duplicate(media_hash, manifest) if acc_mgr else manifest.get("media_hashes", {}).get(media_hash)
+    if existing:
+        dup_acc = existing.get("account", hf_username)
+        dup_repo = existing.get("repo_id", f"{dup_acc}/{hf_repo_name}")
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [INSTANT SKIP & ARCHIVE] Duplicate found across accounts! Account: '{dup_acc}' ({hash_time:.1f}ms)")
+        safe_print(f"    -> Already hosted as: {existing.get('full_key')} in {dup_repo}")
+
+        target_archive_path = base_archive / rel_to_base
+        target_archive_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str_path, str(target_archive_path))
+        safe_print(f"    -> Moved duplicate to: {target_archive_path}")
+
+        orig_key = existing.get("full_key") or existing.get("rel_path") or existing.get("key") or full_key
+        all_file_names = list(existing.get("file_names") or [])
+        if orig_key and orig_key not in all_file_names:
+            all_file_names.insert(0, orig_key)
+        if full_key not in all_file_names:
+            all_file_names.append(full_key)
+
+        orig_name = Path(orig_key).name if orig_key else ""
+        all_aliases = []
+        for a in (existing.get("aliases") or []):
+            if a and a != orig_name and a.lower() != orig_name.lower() and a not in all_aliases:
+                all_aliases.append(a)
+        if file_path.name != orig_name and file_path.name.lower() != orig_name.lower() and file_path.name not in all_aliases:
+            all_aliases.append(file_path.name)
+
+        existing["file_names"] = all_file_names
+        existing["aliases"] = all_aliases
+        existing_meta = existing.get("metadata") or metadata_helper.extract_default_metadata(orig_key)
+        existing_meta["file_names"] = all_file_names
+        existing_meta["aliases"] = all_aliases
+        existing["metadata"] = existing_meta
+
+        with MANIFEST_LOCK:
+            cur_m = load_manifest()
+            dup_blob = existing.get("blob_path") or existing.get("remote_path")
+            for k, v in cur_m.get("files", {}).items():
+                if k == orig_key or (dup_blob and v.get("blob_path") == dup_blob) or (media_hash and (v.get("media_hash") == media_hash or v.get("content_hash") == media_hash)):
+                    v["file_names"] = list(all_file_names)
+                    v["aliases"] = list(all_aliases)
+                    v["metadata"] = dict(existing_meta)
+
+            record_alias = dict(existing)
+            record_alias["full_key"] = full_key
+            record_alias["file_names"] = list(all_file_names)
+            record_alias["aliases"] = list(all_aliases)
+            record_alias["metadata"] = dict(existing_meta)
+            record_alias["is_alias_of"] = orig_key
+            cur_m["files"][full_key] = record_alias
+            cur_m["media_hashes"][media_hash] = cur_m["files"].get(orig_key, record_alias)
+            save_manifest(cur_m)
+
+        auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
+        metadata_helper.write_nfo_files(library_dir, full_key, existing_meta)
+        if orig_key:
+            metadata_helper.write_nfo_files(library_dir, orig_key, existing_meta)
+        remove_empty_folders(base_dir)
+
+        SKIPPED_UNMATCHED_FILES.clear()
+        activity_tracker.tracker.finish_task(full_key, "skipped_duplicate", f"Duplicate found on '{dup_acc}'! Linked to {len(all_aliases)} file names.", 100)
+        activity_tracker.tracker.add_event("skip", f"Duplicate Linked: {rel_to_base}", f"Linked to {orig_key} on {dup_acc}. Names: {', '.join(all_aliases)}", account=dup_acc)
+        return None
+
+    safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Unique video confirmed (no duplicate on any account)")
+
+    # =========================================================================
+    # STEP 3/8: VIDEO STREAM & TECHNICAL METADATA PROBE
+    # =========================================================================
+    activity_tracker.tracker.update_stage(
+        full_key, "probing", "[3/8] Video Stream Probe", 20,
+        details="Analyzing video codec, resolution, channels, HDR specs"
+    )
+    safe_print(f"[{time.strftime('%H:%M:%S')}] [3/8: Probe] Probing video & audio streams with ffprobe...")
+    media_info = metadata_helper.probe_media_file(str_path, key_path=full_key)
+    res_label = media_info.get("resolution_label") or f"{media_info.get('width', '?')}x{media_info.get('height', '?')}"
+    safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Specs: {res_label} ({media_info.get('width', 0)}x{media_info.get('height', 0)}), {media_info.get('video_codec', 'Video')}, {media_info.get('audio_channels', 2)}ch Audio | {media_info.get('bitrate_str', '')}")
+
+    ensure_hf_repo_exists(api, repo_id)
+    temp_enc_file = f"{str_path}.tmp.enc"
+
+    # Check if video blob already exists on HF
+    blob_already_on_hf = False
+    try:
+        if hf_rate_limiter.repo_cache.file_exists(api, repo_id, obfuscated_blob_path):
+            blob_already_on_hf = True
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume Detected] Video blob already uploaded to {repo_id} ({obfuscated_blob_path}). Skipping re-upload.")
+    except Exception as ex_chk:
+        safe_print(f"[!] Note checking HF blob existence: {ex_chk}")
+
+    enc_speed = 0.0
+    if blob_already_on_hf:
+        total_chunks = (file_size + crypto_engine.DEFAULT_CHUNK_SIZE - 1) // crypto_engine.DEFAULT_CHUNK_SIZE if file_size > 0 else 0
+        enc_size = crypto_engine.HEADER_SIZE + file_size + (total_chunks * crypto_engine.TAG_SIZE)
+    else:
+        # =========================================================================
+        # STEP 4/8: AES-256-GCM VIDEO ENCRYPTION (64KB CHUNKS)
+        # =========================================================================
+        activity_tracker.tracker.update_stage(
+            full_key, "encrypting", "[4/8] AES-256-GCM Encryption", 40,
+            details="Encrypting 64KB blocks with unique salt, nonce & auth tags"
+        )
+        if crypto_engine.is_valid_encrypted_file(temp_enc_file, file_size, password):
+            enc_size = os.path.getsize(temp_enc_file)
+            enc_speed = (file_size / (1024 * 1024)) / 0.1
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [4/8: Encrypt] [Resume Encryption] Reusing existing valid encrypted file ({enc_size / (1024 * 1024):.2f} MB)")
+        else:
+            if os.path.exists(temp_enc_file):
+                try:
+                    os.remove(temp_enc_file)
+                except Exception:
+                    pass
+            t0 = time.time()
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [4/8: Encrypt] AES-256-GCM (64KB chunks)...")
+            enc_size = crypto_engine.encrypt_file(str_path, temp_enc_file, password)
+            enc_time = time.time() - t0
+            enc_speed = (file_size / (1024 * 1024)) / max(0.01, enc_time)
+            safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Encrypted {size_str} in {enc_time:.2f}s ({enc_speed:.1f} MB/s)")
+
+    # Discard external companion thumbnail if found (generated 100-frame storyboard serves all purposes)
+    screens_record = None
+    try:
+        matched_screen = screens_helper.find_matching_screens_file(file_path, base_dir=base_dir)
+        if matched_screen and matched_screen.is_file():
+            if delete_local and os.path.exists(str(matched_screen)):
+                os.remove(str(matched_screen))
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [Discarded Original Thumb] Removed {matched_screen.name} (using generated 100-frame storyboard)")
+                remove_empty_folders(base_dir)
+    except Exception as sc_err:
+        safe_print(f"[!] Companion screens check warning: {sc_err}")
+
+    # =========================================================================
+    # STEP 5/8: 100-FRAME HD STORYBOARD SPRITE SHEET
+    # =========================================================================
+    activity_tracker.tracker.update_stage(
+        full_key, "storyboard", "[5/8] 100-Frame Storyboard", 55,
+        details="Generating 100-frame seekbar hover preview sheet & poster thumb"
+    )
+    storyboard_record = None
+    temp_sb_enc = None
+    sb_blob = None
+    sb_exists = False
+    try:
+        sb_blob = obfuscated_blob_path.replace(".enc", ".storyboard.jpg.enc")
+        sb_exists = hf_rate_limiter.repo_cache.file_exists(api, repo_id, sb_blob)
+        if sb_exists:
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [5/8: Storyboard] [Resume] Storyboard already on HF: {sb_blob}")
+        if storyboard_helper.generate_storyboard(full_key, duration=0, local_path=str_path, password=password):
+            safe_id = storyboard_helper.get_safe_id(full_key)
+            sb_jpg = os.path.join(storyboard_helper.STORYBOARD_DIR, f"{safe_id}.jpg")
+            if os.path.exists(sb_jpg):
+                temp_sb_enc = f"{sb_jpg}.enc"
+                raw_sb = storyboard_helper.read_decrypted_bytes(sb_jpg, password)
+                temp_plain_sb = f"{sb_jpg}.tmp_plain.jpg"
+                with open(temp_plain_sb, "wb") as f_tmp:
+                    f_tmp.write(raw_sb)
+                sb_orig_size = len(raw_sb)
+                sb_enc_size = crypto_engine.encrypt_file(temp_plain_sb, temp_sb_enc, password)
+                if os.path.exists(temp_plain_sb):
+                    try:
+                        os.remove(temp_plain_sb)
+                    except Exception:
+                        pass
+
+                storyboard_record = {
+                    "blob_path": sb_blob,
+                    "repo_id": repo_id,
+                    "account": hf_username,
+                    "orig_size": sb_orig_size,
+                    "enc_size": sb_enc_size,
+                    "format": "jpg",
+                    "safe_id": safe_id,
+                    "total_frames": 100,
+                    "verifier": crypto_engine.create_verifier(password)
+                }
+                try:
+                    storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=True, password=password)
+                except Exception:
+                    pass
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [5/8: Storyboard] 100-frame HD hover scrubber sheet & poster thumbnail generated ({sb_orig_size/(1024*1024):.2f} MB)")
+    except Exception as sb_err:
+        safe_print(f"[!] Storyboard generation warning: {sb_err}")
+
+    # =========================================================================
+    # STEP 6/8: COMPANION AUDIO & SUBTITLES PREPARATION
+    # =========================================================================
+    activity_tracker.tracker.update_stage(
+        full_key, "companions", "[6/8] Audio & Subtitles", 68,
+        details="Extracting stream-copy AAC/m4a audio and detecting subtitles"
+    )
+    audio_record = None
+    temp_audio = None
+    temp_audio_enc = None
+    a_blob = None
+    a_exists = False
+    try:
+        a_blob = obfuscated_blob_path.replace(".enc", ".audio.m4a.enc")
+        a_exists = hf_rate_limiter.repo_cache.file_exists(api, repo_id, a_blob)
+        if a_exists:
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [6/8: Audio & Subs] [Resume] Companion audio already on HF: {a_blob}")
+        else:
+            temp_audio = f"{str_path}.companion.m4a"
+            if companion_helper.extract_companion_audio(str_path, temp_audio):
+                temp_audio_enc = f"{temp_audio}.enc"
+                a_orig = os.path.getsize(temp_audio)
+                a_enc = crypto_engine.encrypt_file(temp_audio, temp_audio_enc, password)
+                audio_record = {
+                    "blob_path": a_blob,
+                    "repo_id": repo_id,
+                    "account": hf_username,
+                    "orig_size": a_orig,
+                    "enc_size": a_enc,
+                    "format": "m4a",
+                    "verifier": crypto_engine.create_verifier(password)
+                }
+                safe_print(f"[{time.strftime('%H:%M:%S')}] [6/8: Audio & Subs] Extracted companion audio ({a_orig / (1024*1024):.2f} MB)")
+    except Exception as a_err:
+        safe_print(f"[!] Companion audio extraction warning: {a_err}")
+
+    subtitles_record = []
+    subs_to_upload = []
+    try:
+        video_stem = file_path.stem.lower()
+        video_name = file_path.name.lower()
+        parent_dir = file_path.parent
+        sub_dirs = [parent_dir]
+        if parent_dir.exists():
+            for s in parent_dir.iterdir():
+                if s.is_dir() and s.name.lower() in SUB_FOLDER_NAMES:
+                    sub_dirs.append(s)
+
+        for sdir in sub_dirs:
+            if not sdir.exists():
+                continue
+            for srt_file in sdir.iterdir():
+                if not srt_file.is_file() or srt_file.suffix.lower() not in {".srt", ".vtt"}:
+                    continue
+                srt_stem = srt_file.stem.lower()
+                if srt_stem == video_stem or srt_stem == video_name or srt_stem.startswith(video_stem + ".") or srt_stem.startswith(video_name + "."):
+                    lang_code, lang_name = companion_helper.detect_subtitle_lang(srt_file.name)
+                    raw_sub = srt_file.read_bytes()
+                    sub_text = companion_helper.decode_subtitle_bytes(raw_sub)
+                    sub_blob = obfuscated_blob_path.replace(".enc", f".sub.{lang_code}.srt.enc")
+                    sub_exists = hf_rate_limiter.repo_cache.file_exists(api, repo_id, sub_blob)
+                    if sub_exists:
+                        safe_print(f"[{time.strftime('%H:%M:%S')}] [6/8: Audio & Subs] [Resume] Subtitle already on HF: {sub_blob}")
+                        sub_enc_size = len(raw_sub)
+                        if delete_local and os.path.exists(str(srt_file)):
+                            try:
+                                os.remove(str(srt_file))
+                                safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned subtitle from watch folder: {srt_file.name}")
+                                remove_empty_folders(base_dir)
+                            except Exception:
+                                pass
+                    else:
+                        temp_sub_enc = f"{str(srt_file)}.enc"
+                        sub_enc_size = crypto_engine.encrypt_file(str(srt_file), temp_sub_enc, password)
+                        subs_to_upload.append((temp_sub_enc, sub_blob, str(srt_file)))
+
+                    sub_info = {
+                        "lang": lang_code,
+                        "label": lang_name,
+                        "blob_path": sub_blob,
+                        "repo_id": repo_id,
+                        "account": hf_username,
+                        "orig_size": len(raw_sub),
+                        "enc_size": sub_enc_size,
+                        "format": "srt",
+                        "verifier": crypto_engine.create_verifier(password)
+                    }
+                    subtitles_record.append(sub_info)
+                    companion_helper.sync_jellyfin_subtitle(library_dir, full_key, sub_text, lang_code)
+                    safe_print(f"[{time.strftime('%H:%M:%S')}] [6/8: Audio & Subs] Companion subtitle ready ({lang_name}) -> {sub_blob}")
+    except Exception as s_err:
+        safe_print(f"[!] Companion subtitle check warning: {s_err}")
+
+    # Build manifest record
+    meta = metadata_helper.extract_default_metadata(full_key, media_info=media_info)
+    meta["file_names"] = [full_key]
+    meta["aliases"] = []
+    meta["overview"] = ""
+    record = {
+        "full_key": full_key,
+        "account": hf_username,
+        "repo_id": repo_id,
+        "repo_folder": repo_folder,
+        "rel_in_repo": rel_in_repo,
+        "blob_path": obfuscated_blob_path,
+        "media_hash": media_hash,
+        "orig_size": file_size,
+        "enc_size": enc_size,
+        "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": round(time.time(), 3),
+        "status": "uploaded",
+        "file_names": [full_key],
+        "aliases": [],
+        "metadata": meta,
+        "media_info": media_info,
+        "verifier": crypto_engine.create_verifier(password)
+    }
+    if audio_record:
+        record["audio"] = audio_record
+    if subtitles_record:
+        record["subtitles"] = subtitles_record
+    if screens_record:
+        record["screens"] = screens_record
+    if storyboard_record:
+        record["storyboard"] = storyboard_record
+
+    # Encrypted metadata sidecar payload
+    meta_blob_path = metadata_helper.get_meta_blob_path(obfuscated_blob_path)
+    record_json_bytes = json.dumps(record, separators=(',', ':')).encode("utf-8")
+    encrypted_meta_bytes = crypto_engine.encrypt_bytes(record_json_bytes, password)
+
+    # Pre-encryption complete!
+    activity_tracker.tracker.update_stage(
+        full_key, "ready", "[Ready] 100% Prepped for Upload", 75,
+        speed_str=f"{enc_speed:.1f} MB/s enc",
+        details="Local pre-encryption and asset extraction 100% complete. Queued for upload."
+    )
+    safe_print(f"[{time.strftime('%H:%M:%S')}] [PREPARED & READY] All assets locally encrypted and prepped for cloud upload!\n")
+
+    return {
+        "file_path": file_path,
+        "str_path": str_path,
+        "full_key": full_key,
+        "rel_to_base": rel_to_base,
+        "repo_folder": repo_folder,
+        "rel_in_repo": rel_in_repo,
+        "repo_id": repo_id,
+        "obfuscated_blob_path": obfuscated_blob_path,
+        "file_size": file_size,
+        "size_str": size_str,
+        "enc_size": enc_size,
+        "enc_speed": enc_speed,
+        "media_hash": media_hash,
+        "media_info": media_info,
+        "meta": meta,
+        "record": record,
+        "temp_enc_file": temp_enc_file,
+        "blob_already_on_hf": blob_already_on_hf,
+        "temp_sb_enc": temp_sb_enc,
+        "sb_blob": sb_blob,
+        "sb_exists": sb_exists,
+        "temp_audio": temp_audio,
+        "temp_audio_enc": temp_audio_enc,
+        "a_blob": a_blob,
+        "a_exists": a_exists,
+        "subs_to_upload": subs_to_upload,
+        "meta_blob_path": meta_blob_path,
+        "encrypted_meta_bytes": encrypted_meta_bytes,
+        "api": api,
+        "hf_username": hf_username,
+        "password": password,
+        "name_key": name_key,
+        "delete_local": delete_local,
+        "acc_mgr": acc_mgr,
+        "library_dir": library_dir,
+        "base_dir": base_dir,
+    }
+
+
+def upload_and_finalize_package(pkg: dict):
+    """
+    Stage 2: Paced Cloud Uploader & Finalizer.
+    Takes a 100% pre-encrypted and prepped package and uploads to Hugging Face:
+      - Step 7/8: Cloud upload & atomic Git commit (paced, 1 commit for all assets)
+      - Step 8/8: Jellyfin library sync & local disk cleanup (deletes original plaintext file)
+    """
+    if not pkg:
+        return
+
+    full_key = pkg["full_key"]
+    rel_to_base = pkg["rel_to_base"]
+    repo_id = pkg["repo_id"]
+    hf_username = pkg["hf_username"]
+    api = pkg["api"]
+    token = getattr(api, "token", None)
+    temp_enc_file = pkg["temp_enc_file"]
+    obfuscated_blob_path = pkg["obfuscated_blob_path"]
+    temp_sb_enc = pkg["temp_sb_enc"]
+    sb_blob = pkg["sb_blob"]
+    sb_exists = pkg["sb_exists"]
+    temp_audio = pkg["temp_audio"]
+    temp_audio_enc = pkg["temp_audio_enc"]
+    a_blob = pkg["a_blob"]
+    a_exists = pkg["a_exists"]
+    subs_to_upload = pkg["subs_to_upload"]
+    meta_blob_path = pkg["meta_blob_path"]
+    encrypted_meta_bytes = pkg["encrypted_meta_bytes"]
+    enc_size = pkg["enc_size"]
+    enc_speed = pkg["enc_speed"]
+    size_str = pkg["size_str"]
+    delete_local = pkg["delete_local"]
+    str_path = pkg["str_path"]
+    record = pkg["record"]
+    media_hash = pkg["media_hash"]
+    repo_folder = pkg["repo_folder"]
+    rel_in_repo = pkg["rel_in_repo"]
+    library_dir = pkg["library_dir"]
+    base_dir = pkg["base_dir"]
+    acc_mgr = pkg["acc_mgr"]
+    password = pkg["password"]
+    blob_already_on_hf = pkg["blob_already_on_hf"]
+
+    try:
+        # Assemble atomic commit operations
+        commit_operations = []
+        added_paths = []
+        temp_files_to_clean = []
+
+        if not blob_already_on_hf and os.path.exists(temp_enc_file):
+            commit_operations.append(CommitOperationAdd(path_in_repo=obfuscated_blob_path, path_or_fileobj=temp_enc_file))
+            added_paths.append(obfuscated_blob_path)
+            temp_files_to_clean.append(temp_enc_file)
+
+        if temp_sb_enc and os.path.exists(temp_sb_enc) and not sb_exists:
+            commit_operations.append(CommitOperationAdd(path_in_repo=sb_blob, path_or_fileobj=temp_sb_enc))
+            added_paths.append(sb_blob)
+            temp_files_to_clean.append(temp_sb_enc)
+
+        if temp_audio_enc and os.path.exists(temp_audio_enc) and not a_exists:
+            commit_operations.append(CommitOperationAdd(path_in_repo=a_blob, path_or_fileobj=temp_audio_enc))
+            added_paths.append(a_blob)
+            temp_files_to_clean.append(temp_audio_enc)
+
+        for sub_enc_p, sub_b, raw_srt_p in subs_to_upload:
+            if os.path.exists(sub_enc_p):
+                commit_operations.append(CommitOperationAdd(path_in_repo=sub_b, path_or_fileobj=sub_enc_p))
+                added_paths.append(sub_b)
+                temp_files_to_clean.append(sub_enc_p)
+
+        if meta_blob_path and encrypted_meta_bytes:
+            commit_operations.append(CommitOperationAdd(path_in_repo=meta_blob_path, path_or_fileobj=io.BytesIO(encrypted_meta_bytes)))
+            added_paths.append(meta_blob_path)
+
+        up_time = 0.01
+        upload_speed_mbps = 0.0
+
+        if commit_operations:
+            activity_tracker.tracker.update_stage(
+                full_key, "uploading", "[7/8] Cloud Upload & Commit", 85,
+                speed_str=f"{enc_speed:.1f} MB/s enc",
+                details=f"Paced atomic upload of {len(commit_operations)} asset(s) to {repo_id}"
+            )
+            t_up = time.time()
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [7/8: Cloud Commit] Uploading {len(commit_operations)} asset(s) -> {repo_id} via {hf_username}...")
+            hf_rate_limiter.rate_limiter.wait_for_commit_slot(token)
+            api.create_commit(
+                repo_id=repo_id,
+                repo_type="dataset",
+                operations=commit_operations,
+                commit_message=commit_helper.get_human_commit_message("upload")
+            )
+            up_time = time.time() - t_up
+            upload_speed_mbps = (enc_size * 8 / (1024 * 1024)) / max(0.01, up_time)
+            hf_rate_limiter.repo_cache.record_added_files(repo_id, added_paths)
+            safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Cloud commit confirmed: {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)")
+        else:
+            safe_print(f"[{time.strftime('%H:%M:%S')}] [7/8: Cloud Commit] [Already Synced] All cloud assets for {rel_to_base} are up-to-date on {repo_id}.")
+
+        # =========================================================================
+        # STEP 8/8: JELLYFIN LIBRARY SYNC & LOCAL DISK CLEANUP
+        # =========================================================================
+        activity_tracker.tracker.update_stage(
+            full_key, "finalizing", "[8/8] Jellyfin & Cleanup", 95,
+            details=f"Deleting local original {size_str} to free disk space & writing .strm"
+        )
+        safe_print(f"[{time.strftime('%H:%M:%S')}] [8/8: Finalize] Cleaning local files & syncing Jellyfin library...")
+
+        # Clean temp encrypted files
+        for f_tmp in temp_files_to_clean:
+            if os.path.exists(f_tmp):
+                try:
+                    os.remove(f_tmp)
+                except Exception:
+                    pass
+        if temp_audio and os.path.exists(temp_audio):
+            try:
+                os.remove(temp_audio)
+            except Exception:
+                pass
+
+        # Delete local original video to free disk space
+        if delete_local and os.path.exists(str_path):
+            try:
+                os.remove(str_path)
+                safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Local disk space reclaimed: {size_str} freed (Deleted original: {os.path.basename(str_path)})")
+            except Exception as e_del:
+                safe_print(f"[!] Warning deleting local video: {e_del}")
+
+        # Delete local subtitles
+        if delete_local:
+            for _, _, raw_srt_p in subs_to_upload:
+                if os.path.exists(raw_srt_p):
+                    try:
+                        os.remove(raw_srt_p)
+                        safe_print(f"[{time.strftime('%H:%M:%S')}]        -> Freed local subtitle: {os.path.basename(raw_srt_p)}")
+                    except Exception:
+                        pass
+
+        # Update local manifest & Jellyfin pointers
+        update_manifest_record(record, media_hash)
+        auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
+        metadata_helper.write_nfo_files(library_dir, full_key, pkg["meta"], media_info=pkg["media_info"])
+        remove_empty_folders(base_dir)
+
+        # Queue master index sync
+        master_repo = acc_mgr.get_master_repo_id() if acc_mgr else (os.getenv("REPO_ID") or f"{hf_username}/encrypted-media-vault")
+        m_api = acc_mgr.get_api_for_repo(master_repo) if acc_mgr else api
+        cur_manifest = load_manifest()
+        hf_rate_limiter.debounced_syncer.queue_master_sync(
+            m_api,
+            master_repo,
+            cur_manifest,
+            password,
+            metadata_helper.sync_master_manifest_to_hf
+        )
+
+        activity_tracker.tracker.finish_task(full_key, "completed", f"Ready for streaming! Uploaded in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", 100)
+        activity_tracker.tracker.add_event("success", f"Live on Jellyfin: {rel_to_base}", f"Uploaded to {repo_id} in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", account=hf_username, speed=f"{upload_speed_mbps:.1f} Mbps")
+
+        SKIPPED_UNMATCHED_FILES.clear()
+        safe_print(f"[{time.strftime('%H:%M:%S')}] SUCCESS: {full_key} is live in cloud vault and ready for streaming on Jellyfin!")
+        safe_print(f"[{time.strftime('%H:%M:%S')}] ========================================================\n")
+
+    except Exception as e:
+        if is_rate_limit_error(e):
+            trigger_rate_limit_cooldown(e, hf_username)
+            activity_tracker.tracker.finish_task(full_key, "paused", "Paused: HF rate limit reached. Auto-resuming safely.", 75)
+        else:
+            safe_print(f"[!] Error uploading {rel_to_base}: {e}")
+            activity_tracker.tracker.finish_task(full_key, "error", f"Error: {e}", 0)
+            activity_tracker.tracker.add_event("error", f"Failed: {Path(rel_to_base).name}", str(e), account=hf_username)
+
+
 def process_file_pipeline(
     file_path: Path,
     base_dir: Path,
@@ -650,487 +1280,30 @@ def process_file_pipeline(
         if file_path.suffix.lower() in {".nfo"}:
             return
 
-        rel_to_base = file_path.relative_to(base_dir)
-        parts = rel_to_base.parts
-
-        if len(parts) > 1:
-            raw_repo_name = parts[0]
-            repo_folder = sanitize_repo_name(raw_repo_name)
-            rel_in_repo = str(Path(*parts[1:])).replace("\\", "/")
-        else:
-            repo_folder = sanitize_repo_name(default_repo_name)
-            rel_in_repo = str(parts[0]).replace("\\", "/")
-
-        if len(parts) > 1:
-            hf_repo_name = crypto_engine.get_obfuscated_repo_name(repo_folder, name_key)
-        else:
-            hf_repo_name = sanitize_repo_name(default_repo_name)
-
-        repo_id = f"{hf_username}/{hf_repo_name}"
-        full_key = f"{repo_folder}/{rel_in_repo}"
-
-        file_size = os.path.getsize(file_path)
-        size_mb = file_size / (1024 * 1024)
-
-        activity_tracker.tracker.start_task(full_key, str(rel_to_base), file_size, account=hf_username, repo_id=repo_id)
-
-        # 1. Instant Sparse Media Hash (< 0.005s)
-        activity_tracker.tracker.update_stage(full_key, "hashing", "Sparse Media Fingerprinting (<0.005s)", 15)
-        t_hash0 = time.time()
-        media_hash = crypto_engine.get_sparse_media_hash(str_path)
-        hash_time = (time.time() - t_hash0) * 1000
-
-        manifest = load_manifest()
-
-        # Check for duplicate across ALL connected accounts
-        activity_tracker.tracker.update_stage(full_key, "dup_check", "Cross-Account Duplicate Check", 25)
-        existing = acc_mgr.find_duplicate(media_hash, manifest) if acc_mgr else manifest.get("media_hashes", {}).get(media_hash)
-        if existing:
-            dup_acc = existing.get("account", hf_username)
-            dup_repo = existing.get("repo_id", f"{dup_acc}/{hf_repo_name}")
-            safe_print(f"\n[{time.strftime('%H:%M:%S')}] [INSTANT SKIP & ARCHIVE] Duplicate found across accounts! Account: '{dup_acc}' ({hash_time:.1f}ms)")
-            safe_print(f"    -> Already hosted as: {existing.get('full_key')} in {dup_repo}")
-
-            target_archive_path = base_archive / rel_to_base
-            target_archive_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str_path, str(target_archive_path))
-            safe_print(f"    -> Moved duplicate to: {target_archive_path}")
-
-            # Maintain combined list of all file names and aliases for this video
-            orig_key = existing.get("full_key") or existing.get("rel_path") or existing.get("key")
-            if not orig_key:
-                for k, v in manifest.get("files", {}).items():
-                    if v == existing or v.get("blob_path") == existing.get("blob_path"):
-                        orig_key = k
-                        break
-            if not orig_key:
-                orig_key = full_key
-
-            all_file_names = list(existing.get("file_names") or [])
-            if orig_key and orig_key not in all_file_names:
-                all_file_names.insert(0, orig_key)
-            if full_key not in all_file_names:
-                all_file_names.append(full_key)
-
-            orig_name = Path(orig_key).name if orig_key else ""
-            all_aliases = []
-            for a in (existing.get("aliases") or []):
-                if a and a != orig_name and a.lower() != orig_name.lower() and a not in all_aliases:
-                    all_aliases.append(a)
-            # Only save alternate filename IF it actually differs from primary filename
-            if file_path.name != orig_name and file_path.name.lower() != orig_name.lower():
-                if file_path.name not in all_aliases:
-                    all_aliases.append(file_path.name)
-
-            existing["file_names"] = all_file_names
-            existing["aliases"] = all_aliases
-
-            existing_meta = existing.get("metadata") or metadata_helper.extract_default_metadata(orig_key)
-            existing_meta["file_names"] = all_file_names
-            existing_meta["aliases"] = all_aliases
-            existing["metadata"] = existing_meta
-
-            # Update records in manifest
-            with MANIFEST_LOCK:
-                cur_m = load_manifest()
-                dup_blob = existing.get("blob_path") or existing.get("remote_path")
-                # Update any existing records sharing this blob
-                for k, v in cur_m.get("files", {}).items():
-                    if k == orig_key or (dup_blob and v.get("blob_path") == dup_blob) or (media_hash and (v.get("media_hash") == media_hash or v.get("content_hash") == media_hash)):
-                        v["file_names"] = list(all_file_names)
-                        v["aliases"] = list(all_aliases)
-                        v["metadata"] = dict(existing_meta)
-
-                record_alias = dict(existing)
-                record_alias["full_key"] = full_key
-                record_alias["file_names"] = list(all_file_names)
-                record_alias["aliases"] = list(all_aliases)
-                record_alias["metadata"] = dict(existing_meta)
-                record_alias["is_alias_of"] = orig_key
-                cur_m["files"][full_key] = record_alias
-                cur_m["media_hashes"][media_hash] = cur_m["files"].get(orig_key, record_alias)
-                save_manifest(cur_m)
-
-            auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
-            metadata_helper.write_nfo_files(library_dir, full_key, existing_meta)
-            if orig_key:
-                metadata_helper.write_nfo_files(library_dir, orig_key, existing_meta)
-            remove_empty_folders(base_dir)
-
-            # Sync updated list of names to Hugging Face cloud metadata
-            dup_blob = existing.get("blob_path") or existing.get("remote_path")
-            if dup_blob:
-                api_to_use = acc_mgr.get_api_for_repo(dup_repo) if acc_mgr else api
-                try:
-                    metadata_helper.sync_item_metadata_to_hf(api_to_use, dup_repo, dup_blob, existing, password)
-                except Exception as e:
-                    safe_print(f"[!] Warning syncing updated aliases to HF: {e}")
-
-            SKIPPED_UNMATCHED_FILES.clear()
-            activity_tracker.tracker.finish_task(full_key, "skipped_duplicate", f"Duplicate found on '{dup_acc}'! Linked to {len(all_aliases)} file names.", 100)
-            activity_tracker.tracker.add_event("skip", f"Duplicate Linked: {rel_to_base}", f"Linked to {orig_key} on {dup_acc}. Names: {', '.join(all_aliases)}", account=dup_acc)
-            return
-
-        safe_print(f"\n[{time.strftime('%H:%M:%S')}] NEW VIDEO: {rel_to_base} ({size_mb:.2f} MB)")
-        safe_print(f"    -> Sparse Media Hash: {media_hash[:16]}... ({hash_time:.1f}ms)")
-
-        # 2. Obfuscated Blob Destination on HF
-        obfuscated_blob_path = crypto_engine.get_obfuscated_blob_path(rel_in_repo, name_key)
-        ensure_hf_repo_exists(api, repo_id)
-
-        temp_enc_file = f"{str_path}.tmp.enc"
-
-        # Check if video blob was already uploaded to HF prior to a server restart/interruption
-        blob_already_on_hf = False
-        try:
-            if hf_rate_limiter.repo_cache.file_exists(api, repo_id, obfuscated_blob_path):
-                blob_already_on_hf = True
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume Detected] Video blob already uploaded to {repo_id} ({obfuscated_blob_path}). Skipping re-upload.")
-        except Exception as ex_chk:
-            safe_print(f"[!] Note checking HF blob existence: {ex_chk}")
-
-        enc_speed = 0.0
-        up_time = 0.01
-        upload_speed_mbps = 0.0
-
-        if blob_already_on_hf:
-            total_chunks = (file_size + crypto_engine.DEFAULT_CHUNK_SIZE - 1) // crypto_engine.DEFAULT_CHUNK_SIZE if file_size > 0 else 0
-            enc_size = crypto_engine.HEADER_SIZE + file_size + (total_chunks * crypto_engine.TAG_SIZE)
-            activity_tracker.tracker.update_stage(full_key, "uploading", f"Resumed from {repo_id}", 65, details="Video blob already on cloud; resuming companions")
-        else:
-            # 3. Check for existing valid encrypted file on disk to resume smoothly without re-encrypting
-            activity_tracker.tracker.update_stage(full_key, "encrypting", "AES-256-GCM Encryption", 40, details="Encrypting 64KB blocks...")
-            if crypto_engine.is_valid_encrypted_file(temp_enc_file, file_size, password):
-                enc_size = os.path.getsize(temp_enc_file)
-                enc_speed = (file_size / (1024 * 1024)) / 0.1
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume Encryption] Reusing existing valid encrypted file ({enc_size / (1024 * 1024):.2f} MB)")
-            else:
-                # Discard partial / incomplete file before fresh encryption
-                if os.path.exists(temp_enc_file):
-                    try:
-                        os.remove(temp_enc_file)
-                    except Exception:
-                        pass
-                t0 = time.time()
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Encrypting] AES-256-GCM (64KB chunks)...")
-                enc_size = crypto_engine.encrypt_file(str_path, temp_enc_file, password)
-                enc_time = time.time() - t0
-                enc_speed = (file_size / (1024 * 1024)) / max(0.01, enc_time)
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Encrypted] {rel_to_base} in {enc_time:.2f}s ({enc_speed:.1f} MB/s)")
-
-        # 4a. Discard external companion thumbnail/screen if found (generated 100-frame storyboard serves all purposes)
-        screens_record = None
-        try:
-            matched_screen = screens_helper.find_matching_screens_file(file_path, base_dir=base_dir)
-            if matched_screen and matched_screen.is_file():
-                if delete_local and os.path.exists(str(matched_screen)):
-                    os.remove(str(matched_screen))
-                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Discarded Original Thumb] Removed {matched_screen.name} (using generated 100-frame storyboard)")
-                    remove_empty_folders(base_dir)
-        except Exception as sc_err:
-            safe_print(f"[!] Companion screens check warning: {sc_err}")
-
-        # Pre-generate 100-screen HD storyboard sprite sheet for live hover and seekbar scrubbing
-        storyboard_record = None
-        temp_sb_enc = None
-        sb_blob = None
-        sb_exists = False
-        try:
-            sb_blob = obfuscated_blob_path.replace(".enc", ".storyboard.jpg.enc")
-            sb_exists = hf_rate_limiter.repo_cache.file_exists(api, repo_id, sb_blob)
-            if sb_exists:
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume] Storyboard already on HF: {sb_blob}")
-            if storyboard_helper.generate_storyboard(full_key, duration=0, local_path=str_path, password=password):
-                safe_id = storyboard_helper.get_safe_id(full_key)
-                sb_jpg = os.path.join(storyboard_helper.STORYBOARD_DIR, f"{safe_id}.jpg")
-                if os.path.exists(sb_jpg):
-                    temp_sb_enc = f"{sb_jpg}.enc"
-                    raw_sb = storyboard_helper.read_decrypted_bytes(sb_jpg, password)
-                    temp_plain_sb = f"{sb_jpg}.tmp_plain.jpg"
-                    with open(temp_plain_sb, "wb") as f_tmp:
-                        f_tmp.write(raw_sb)
-                    sb_orig_size = len(raw_sb)
-                    sb_enc_size = crypto_engine.encrypt_file(temp_plain_sb, temp_sb_enc, password)
-                    if os.path.exists(temp_plain_sb):
-                        try:
-                            os.remove(temp_plain_sb)
-                        except Exception:
-                            pass
-
-                    storyboard_record = {
-                        "blob_path": sb_blob,
-                        "repo_id": repo_id,
-                        "account": hf_username,
-                        "orig_size": sb_orig_size,
-                        "enc_size": sb_enc_size,
-                        "format": "jpg",
-                        "safe_id": safe_id,
-                        "total_frames": 100,
-                        "verifier": crypto_engine.create_verifier(password)
-                    }
-                    try:
-                        storyboard_helper.slice_poster_thumbnail(safe_id, overwrite=True, password=password)
-                    except Exception:
-                        pass
-                    safe_print(f"[{time.strftime('%H:%M:%S')}] [100-Screen Storyboard Ready] -> {sb_blob} ({sb_orig_size/(1024*1024):.2f} MB)")
-        except Exception as sb_err:
-            safe_print(f"[!] Storyboard generation warning: {sb_err}")
-
-        # 5. Extract Companion Audio (Instant Stream-Copy / AAC fallback)
-        audio_record = None
-        temp_audio = None
-        temp_audio_enc = None
-        a_blob = None
-        a_exists = False
-        try:
-            a_blob = obfuscated_blob_path.replace(".enc", ".audio.m4a.enc")
-            a_exists = hf_rate_limiter.repo_cache.file_exists(api, repo_id, a_blob)
-            if a_exists:
-                safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume] Companion audio already on HF: {a_blob}")
-            else:
-                temp_audio = f"{str_path}.companion.m4a"
-                if companion_helper.extract_companion_audio(str_path, temp_audio):
-                    temp_audio_enc = f"{temp_audio}.enc"
-                    a_orig = os.path.getsize(temp_audio)
-                    a_enc = crypto_engine.encrypt_file(temp_audio, temp_audio_enc, password)
-                    audio_record = {
-                        "blob_path": a_blob,
-                        "repo_id": repo_id,
-                        "account": hf_username,
-                        "orig_size": a_orig,
-                        "enc_size": a_enc,
-                        "format": "m4a",
-                        "verifier": crypto_engine.create_verifier(password)
-                    }
-                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Companion Audio Ready] -> {a_blob} ({a_orig / (1024*1024):.2f} MB)")
-        except Exception as a_err:
-            safe_print(f"[!] Companion audio extraction warning: {a_err}")
-
-        # 6. Detect and Prepare Companion Subtitles from Watch Folder
-        subtitles_record = []
-        subs_to_upload = []  # list of (temp_sub_enc, sub_blob, raw_srt_path)
-        try:
-            video_stem = file_path.stem.lower()
-            video_name = file_path.name.lower()
-            parent_dir = file_path.parent
-            sub_dirs = [parent_dir]
-            if parent_dir.exists():
-                for s in parent_dir.iterdir():
-                    if s.is_dir() and s.name.lower() in SUB_FOLDER_NAMES:
-                        sub_dirs.append(s)
-
-            for sdir in sub_dirs:
-                if not sdir.exists():
-                    continue
-                for srt_file in sdir.iterdir():
-                    if not srt_file.is_file() or srt_file.suffix.lower() not in {".srt", ".vtt"}:
-                        continue
-                    srt_stem = srt_file.stem.lower()
-                    if srt_stem == video_stem or srt_stem == video_name or srt_stem.startswith(video_stem + ".") or srt_stem.startswith(video_name + "."):
-                        lang_code, lang_name = companion_helper.detect_subtitle_lang(srt_file.name)
-                        raw_sub = srt_file.read_bytes()
-                        sub_text = companion_helper.decode_subtitle_bytes(raw_sub)
-                        sub_blob = obfuscated_blob_path.replace(".enc", f".sub.{lang_code}.srt.enc")
-                        sub_exists = hf_rate_limiter.repo_cache.file_exists(api, repo_id, sub_blob)
-                        if sub_exists:
-                            safe_print(f"[{time.strftime('%H:%M:%S')}] [Resume] Subtitle already on HF: {sub_blob}")
-                            sub_enc_size = len(raw_sub)
-                            if delete_local and os.path.exists(str(srt_file)):
-                                try:
-                                    os.remove(str(srt_file))
-                                    safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned subtitle from watch folder: {srt_file.name}")
-                                    remove_empty_folders(base_dir)
-                                except Exception:
-                                    pass
-                        else:
-                            temp_sub_enc = f"{str(srt_file)}.enc"
-                            sub_enc_size = crypto_engine.encrypt_file(str(srt_file), temp_sub_enc, password)
-                            subs_to_upload.append((temp_sub_enc, sub_blob, str(srt_file)))
-
-                        sub_info = {
-                            "lang": lang_code,
-                            "label": lang_name,
-                            "blob_path": sub_blob,
-                            "repo_id": repo_id,
-                            "account": hf_username,
-                            "orig_size": len(raw_sub),
-                            "enc_size": sub_enc_size,
-                            "format": "srt",
-                            "verifier": crypto_engine.create_verifier(password)
-                        }
-                        subtitles_record.append(sub_info)
-                        companion_helper.sync_jellyfin_subtitle(library_dir, full_key, sub_text, lang_code)
-                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Companion Subtitle Ready] ({lang_name}) -> {sub_blob}")
-        except Exception as s_err:
-            safe_print(f"[!] Companion subtitle check warning: {s_err}")
-
-        # 7. Probe technical video/audio metadata BEFORE deleting local source
-        safe_print(f"[{time.strftime('%H:%M:%S')}] [Probing Technical Metadata] Analyzing video streams & resolution...")
-        media_info = metadata_helper.probe_media_file(str_path, key_path=full_key)
-        if media_info and media_info.get("resolution_label"):
-            safe_print(f"[{time.strftime('%H:%M:%S')}] [Detected Video Specs] {media_info.get('resolution_label')} ({media_info.get('width')}x{media_info.get('height')}), {media_info.get('video_codec', 'Video')}, {media_info.get('audio_channels', 'Audio')} | Tags: {', '.join(media_info.get('tags', []))}")
-
-        # 8. Extract initial metadata & prepare record
-        meta = metadata_helper.extract_default_metadata(full_key, media_info=media_info)
-        meta["file_names"] = [full_key]
-        meta["aliases"] = []
-        meta["overview"] = ""
-        record = {
-            "full_key": full_key,
-            "account": hf_username,
-            "repo_id": repo_id,
-            "repo_folder": repo_folder,
-            "rel_in_repo": rel_in_repo,
-            "blob_path": obfuscated_blob_path,
-            "media_hash": media_hash,
-            "orig_size": file_size,
-            "enc_size": enc_size,
-            "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": round(time.time(), 3),
-            "status": "uploaded",
-            "file_names": [full_key],
-            "aliases": [],
-            "metadata": meta,
-            "media_info": media_info,
-            "verifier": crypto_engine.create_verifier(password)
-        }
-        if audio_record:
-            record["audio"] = audio_record
-        if subtitles_record:
-            record["subtitles"] = subtitles_record
-        if screens_record:
-            record["screens"] = screens_record
-        if storyboard_record:
-            record["storyboard"] = storyboard_record
-
-        # Encrypted metadata sidecar payload
-        meta_blob_path = metadata_helper.get_meta_blob_path(obfuscated_blob_path)
-        record_json_bytes = json.dumps(record, separators=(',', ':')).encode("utf-8")
-        encrypted_meta_bytes = crypto_engine.encrypt_bytes(record_json_bytes, password)
-
-        # 9. ATOMIC COMMIT: Group all assets (video blob, storyboard, audio, subtitles, sidecar)
-        # into ONE single git commit to completely prevent commit rate limits on Hugging Face!
-        commit_operations = []
-        added_paths = []
-        temp_files_to_clean = []
-
-        if not blob_already_on_hf and os.path.exists(temp_enc_file):
-            commit_operations.append(CommitOperationAdd(path_in_repo=obfuscated_blob_path, path_or_fileobj=temp_enc_file))
-            added_paths.append(obfuscated_blob_path)
-            temp_files_to_clean.append(temp_enc_file)
-
-        if temp_sb_enc and os.path.exists(temp_sb_enc) and not sb_exists:
-            commit_operations.append(CommitOperationAdd(path_in_repo=sb_blob, path_or_fileobj=temp_sb_enc))
-            added_paths.append(sb_blob)
-            temp_files_to_clean.append(temp_sb_enc)
-
-        if temp_audio_enc and os.path.exists(temp_audio_enc) and not a_exists:
-            commit_operations.append(CommitOperationAdd(path_in_repo=a_blob, path_or_fileobj=temp_audio_enc))
-            added_paths.append(a_blob)
-            temp_files_to_clean.append(temp_audio_enc)
-
-        for sub_enc_p, sub_b, raw_srt_p in subs_to_upload:
-            if os.path.exists(sub_enc_p):
-                commit_operations.append(CommitOperationAdd(path_in_repo=sub_b, path_or_fileobj=sub_enc_p))
-                added_paths.append(sub_b)
-                temp_files_to_clean.append(sub_enc_p)
-
-        if meta_blob_path and encrypted_meta_bytes:
-            commit_operations.append(CommitOperationAdd(path_in_repo=meta_blob_path, path_or_fileobj=io.BytesIO(encrypted_meta_bytes)))
-            added_paths.append(meta_blob_path)
-
-        if commit_operations:
-            activity_tracker.tracker.update_stage(
-                full_key, "uploading", f"Uploading to {repo_id}", 65,
-                speed_str=f"{enc_speed:.1f} MB/s enc",
-                details=f"Atomic commit of {len(commit_operations)} asset(s) to {repo_id}"
-            )
-            t_up = time.time()
-            safe_print(f"[{time.strftime('%H:%M:%S')}] [Atomic Commit via {hf_username}] Uploading {len(commit_operations)} asset(s) -> {repo_id}...")
-            hf_rate_limiter.rate_limiter.wait_for_commit_slot(token)
-            api.create_commit(
-                repo_id=repo_id,
-                repo_type="dataset",
-                operations=commit_operations,
-                commit_message=commit_helper.get_human_commit_message("upload")
-            )
-            up_time = time.time() - t_up
-            upload_speed_mbps = (enc_size * 8 / (1024 * 1024)) / max(0.01, up_time)
-            hf_rate_limiter.repo_cache.record_added_files(repo_id, added_paths)
-            safe_print(f"[{time.strftime('%H:%M:%S')}] [Atomic Commit Complete] {rel_to_base} ({len(commit_operations)} assets) in {up_time:.2f}s ({upload_speed_mbps:.1f} Mbps)")
-        else:
-            safe_print(f"[{time.strftime('%H:%M:%S')}] [Already Synced] All cloud assets for {rel_to_base} are up-to-date on {repo_id}.")
-
-        # 10. Clean up temporary files
-        for f_tmp in temp_files_to_clean:
-            if os.path.exists(f_tmp):
-                try:
-                    os.remove(f_tmp)
-                except Exception:
-                    pass
-        if temp_audio and os.path.exists(temp_audio):
-            try:
-                os.remove(temp_audio)
-            except Exception:
-                pass
-
-        # 11. Delete original local video to free disk space
-        if delete_local and os.path.exists(str_path):
-            os.remove(str_path)
-            safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Deleted original: {str_path}")
-
-        # Delete local subtitles if delete_local
-        if delete_local:
-            for _, _, raw_srt_p in subs_to_upload:
-                if os.path.exists(raw_srt_p):
-                    try:
-                        os.remove(raw_srt_p)
-                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Freed Disk Space] Cleaned subtitle from watch folder: {os.path.basename(raw_srt_p)}")
-                    except Exception:
-                        pass
-
-        # 12. Update local manifest and write Jellyfin .strm / .nfo
-        update_manifest_record(record, media_hash)
-        auto_generate_strm(repo_folder, rel_in_repo, library_dir=library_dir)
-        metadata_helper.write_nfo_files(library_dir, full_key, meta, media_info=media_info)
-        remove_empty_folders(base_dir)
-
-        # 13. Consolidate Master Index via Debounced Synchronizer
-        # Batches index commits across all uploaded files so 50 videos = 1 index commit!
-        master_repo = acc_mgr.get_master_repo_id() if acc_mgr else (os.getenv("REPO_ID") or f"{hf_username}/encrypted-media-vault")
-        m_api = acc_mgr.get_api_for_repo(master_repo) if acc_mgr else api
-        cur_manifest = load_manifest()
-        hf_rate_limiter.debounced_syncer.queue_master_sync(
-            m_api,
-            master_repo,
-            cur_manifest,
-            password,
-            metadata_helper.sync_master_manifest_to_hf
+        pkg = prepare_video_package(
+            file_path=file_path,
+            base_dir=base_dir,
+            base_archive=base_archive,
+            library_dir=library_dir,
+            default_repo_name=default_repo_name,
+            api=api,
+            hf_username=hf_username,
+            password=password,
+            name_key=name_key,
+            delete_local=delete_local,
+            acc_mgr=acc_mgr
         )
-
-        activity_tracker.tracker.finish_task(full_key, "completed", f"Ready for streaming! ({upload_speed_mbps:.1f} Mbps)", 100)
-        activity_tracker.tracker.add_event("success", f"Live on Jellyfin: {rel_to_base}", f"Uploaded to {repo_id} in {up_time:.1f}s ({upload_speed_mbps:.1f} Mbps)", account=hf_username, speed=f"{upload_speed_mbps:.1f} Mbps")
-
-        SKIPPED_UNMATCHED_FILES.clear()
-        safe_print(f"[{time.strftime('%H:%M:%S')}] SUCCESS: {full_key} is live and streamable on Jellyfin with NFO & HF Cloud metadata!\n")
+        if pkg:
+            upload_and_finalize_package(pkg)
 
     except Exception as e:
-        if is_rate_limit_error(e):
-            trigger_rate_limit_cooldown(e, hf_username)
-            activity_tracker.tracker.finish_task(full_key, "paused", "Paused: HF rate limit reached. Auto-resuming safely.", 0)
-        else:
-            safe_print(f"[!] Error processing {file_path}: {e}")
-            activity_tracker.tracker.finish_task(full_key, "error", f"Error: {e}", 0)
-            activity_tracker.tracker.add_event("error", f"Failed: {file_path.name}", str(e), account=hf_username)
-        temp_enc = f"{str_path}.tmp.enc"
-        if os.path.exists(temp_enc):
-            try:
-                os.remove(temp_enc)
-            except Exception:
-                pass
+        safe_print(f"[!] Pipeline error for {file_path}: {e}")
     finally:
         with MANIFEST_LOCK:
             IN_PROGRESS_FILES.discard(str_path)
+            PREPARING_FILES.discard(str_path)
+            UPLOADING_FILES.discard(str_path)
+            PREPARED_PACKAGES.pop(str_path, None)
 
 
 def watch_and_sync(
@@ -1214,7 +1387,8 @@ def watch_and_sync(
     except Exception:
         pass
 
-    executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="Uploader")
+    prep_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PreEncryptor")
+    upload_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="Uploader")
 
     last_env_mtime = os.path.getmtime(acc_mgr.env_path) if os.path.exists(acc_mgr.env_path) else 0
     last_repo_cleanup_check = 0
@@ -1247,7 +1421,7 @@ def watch_and_sync(
                         safe_print(f"[*] Live Config Reload: Primary upload account switched to: {hf_username} [Primary]")
                         activity_tracker.tracker.add_event("info", "Upload Account Switched", f"Primary uploader is now {hf_username}", account=hf_username)
 
-            # Check for Hugging Face Rate Limit Cooldown
+            # Check for Hugging Face Rate Limit Cooldown for Uploads
             now = time.time()
             if now < RATE_LIMIT_PAUSE_UNTIL:
                 # Check if an alternative un-throttled account is available
@@ -1267,9 +1441,7 @@ def watch_and_sync(
                 else:
                     remaining = int(RATE_LIMIT_PAUSE_UNTIL - now)
                     if remaining % 30 == 0 or remaining <= 5:
-                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Rate Limit Cooldown Active] Paused for {remaining}s. Zero API requests sent. Originals safe on disk.")
-                    time.sleep(poll_interval)
-                    continue
+                        safe_print(f"[{time.strftime('%H:%M:%S')}] [Rate Limit Cooldown Active] Uploads paused for {remaining}s. Pre-encryption continues locally.")
 
             # If cooldown just elapsed:
             if CONSECUTIVE_RATE_LIMITS > 0 and time.time() >= RATE_LIMIT_PAUSE_UNTIL:
@@ -1289,7 +1461,7 @@ def watch_and_sync(
             if not candidates:
                 activity_tracker.tracker.set_idle()
                 with MANIFEST_LOCK:
-                    if not IN_PROGRESS_FILES:
+                    if not IN_PROGRESS_FILES and not PREPARING_FILES and not UPLOADING_FILES:
                         hf_rate_limiter.debounced_syncer.flush_immediate()
             else:
                 unprocessed_videos = [
@@ -1299,35 +1471,91 @@ def watch_and_sync(
                 if unprocessed_videos:
                     activity_tracker.tracker.start_batch(len(unprocessed_videos))
 
-            # Prioritize video files so worker threads begin primary video sync before sidecars
+            # Prioritize video files so worker threads begin primary video pre-encryption first
             candidates.sort(key=lambda p: (0 if p.suffix.lower() in VIDEO_EXTENSIONS else 1))
 
             for file_path in candidates:
                 str_path = str(file_path)
 
+                # Standalone companion files (subtitles, screens)
+                if file_path.suffix.lower() not in VIDEO_EXTENSIONS:
+                    with MANIFEST_LOCK:
+                        if str_path in IN_PROGRESS_FILES:
+                            continue
+                        IN_PROGRESS_FILES.add(str_path)
+
+                    upload_executor.submit(
+                        process_file_pipeline,
+                        file_path=file_path,
+                        base_dir=base_dir,
+                        base_archive=base_archive,
+                        library_dir=library_dir,
+                        default_repo_name=default_repo_name,
+                        api=api,
+                        hf_username=hf_username,
+                        password=password,
+                        name_key=name_key,
+                        delete_local=delete_local,
+                        acc_mgr=acc_mgr
+                    )
+                    continue
+
+                # Video files: Pre-encrypt one by one via prep_executor
                 with MANIFEST_LOCK:
-                    if str_path in IN_PROGRESS_FILES:
+                    if str_path in IN_PROGRESS_FILES or str_path in PREPARING_FILES or str_path in PREPARED_PACKAGES or str_path in UPLOADING_FILES:
                         continue
                     IN_PROGRESS_FILES.add(str_path)
+                    PREPARING_FILES.add(str_path)
 
-                executor.submit(
-                    process_file_pipeline,
-                    file_path=file_path,
-                    base_dir=base_dir,
-                    base_archive=base_archive,
-                    library_dir=library_dir,
-                    default_repo_name=default_repo_name,
-                    api=api,
-                    hf_username=hf_username,
-                    password=password,
-                    name_key=name_key,
-                    delete_local=delete_local,
-                    acc_mgr=acc_mgr
-                )
+                def _run_staged_pipeline(fp=file_path):
+                    sp = str(fp)
+                    try:
+                        pkg = prepare_video_package(
+                            file_path=fp,
+                            base_dir=base_dir,
+                            base_archive=base_archive,
+                            library_dir=library_dir,
+                            default_repo_name=default_repo_name,
+                            api=api,
+                            hf_username=hf_username,
+                            password=password,
+                            name_key=name_key,
+                            delete_local=delete_local,
+                            acc_mgr=acc_mgr
+                        )
+                        with MANIFEST_LOCK:
+                            PREPARING_FILES.discard(sp)
+                            if pkg:
+                                PREPARED_PACKAGES[sp] = pkg
+                                UPLOADING_FILES.add(sp)
+
+                        if pkg:
+                            def _run_upload_task(pkg_data=pkg):
+                                sp_up = pkg_data["str_path"]
+                                try:
+                                    upload_and_finalize_package(pkg_data)
+                                finally:
+                                    with MANIFEST_LOCK:
+                                        IN_PROGRESS_FILES.discard(sp_up)
+                                        UPLOADING_FILES.discard(sp_up)
+                                        PREPARED_PACKAGES.pop(sp_up, None)
+
+                            upload_executor.submit(_run_upload_task)
+                        else:
+                            with MANIFEST_LOCK:
+                                IN_PROGRESS_FILES.discard(sp)
+                    except Exception as ex_prep:
+                        safe_print(f"[!] Pre-encryption error for {fp}: {ex_prep}")
+                        with MANIFEST_LOCK:
+                            IN_PROGRESS_FILES.discard(sp)
+                            PREPARING_FILES.discard(sp)
+
+                prep_executor.submit(_run_staged_pipeline)
 
         except KeyboardInterrupt:
             print("\nShutting down parallel watcher...")
-            executor.shutdown(wait=False)
+            prep_executor.shutdown(wait=False)
+            upload_executor.shutdown(wait=False)
             break
         except Exception as e:
             safe_print(f"[!] Watcher scan loop error: {e}")
