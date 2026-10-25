@@ -9798,6 +9798,67 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
     <script>
 
+        /* Manually Collapsed Trees - 10-Minute Cooldown System */
+        const MANUAL_COLLAPSE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes (600,000 ms)
+        let manuallyCollapsedTrees = {{}};
+
+        function loadManuallyCollapsedTrees() {{
+            try {{
+                const saved = localStorage.getItem('hfsync_manually_collapsed_trees');
+                if (saved) {{
+                    const parsed = JSON.parse(saved);
+                    const now = Date.now();
+                    const cleaned = {{}};
+                    for (const [k, ts] of Object.entries(parsed)) {{
+                        if (typeof ts === 'number' && (now - ts) < MANUAL_COLLAPSE_COOLDOWN_MS) {{
+                            cleaned[k] = ts;
+                        }}
+                    }}
+                    manuallyCollapsedTrees = cleaned;
+                    return;
+                }}
+            }} catch (e) {{}}
+            manuallyCollapsedTrees = {{}};
+        }}
+
+        function saveManuallyCollapsedTrees() {{
+            try {{
+                localStorage.setItem('hfsync_manually_collapsed_trees', JSON.stringify(manuallyCollapsedTrees));
+            }} catch (e) {{}}
+        }}
+
+        function markFolderManuallyCollapsed(folderPath) {{
+            if (!folderPath) return;
+            manuallyCollapsedTrees[folderPath] = Date.now();
+            saveManuallyCollapsedTrees();
+        }}
+
+        function clearFolderManualCollapse(folderPath) {{
+            if (!folderPath) return;
+            let changed = false;
+            if (manuallyCollapsedTrees[folderPath]) {{
+                delete manuallyCollapsedTrees[folderPath];
+                changed = true;
+            }}
+            if (changed) saveManuallyCollapsedTrees();
+        }}
+
+        function isFolderManuallyCollapsed(folderPath) {{
+            if (!folderPath) return false;
+            const ts = manuallyCollapsedTrees[folderPath];
+            if (!ts) return false;
+            const elapsed = Date.now() - ts;
+            if (elapsed < MANUAL_COLLAPSE_COOLDOWN_MS) {{
+                return true; // Active manual collapse: immunity from scroll auto-expand for 10 minutes
+            }}
+            // 10 minutes elapsed, allow scroll auto-expand again
+            delete manuallyCollapsedTrees[folderPath];
+            saveManuallyCollapsedTrees();
+            return false;
+        }}
+
+        loadManuallyCollapsedTrees();
+
         /* Android-style A-Z Fast Scroller with 1-Letter Lookahead & Lookbehind Buffer Engine */
         const AZ_LETTERS = ['#', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
         let azScrollTimeout = null;
@@ -9840,7 +9901,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const sortedAvail = AZ_LETTERS.filter(c => azAvailableMap.has(c));
             if (sortedAvail.length > 0) {{
                 if (topFolders.length <= 3) {{
-                    topFolders.forEach(fg => openFolderElement(fg));
+                    topFolders.forEach(fg => {{
+                        const fp = fg.getAttribute('data-folder');
+                        if (!isFolderManuallyCollapsed(fp)) {{
+                            openFolderElement(fg);
+                        }}
+                    }});
                 }} else if (!currentActiveLetter) {{
                     currentActiveLetter = sortedAvail[0];
                     applyBufferedLetterWindow(currentActiveLetter);
@@ -9866,10 +9932,19 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             // Expand letters in buffer window, collapse letters outside window in background
             const topFolders = document.querySelectorAll('.top-level-folder');
             topFolders.forEach(fg => {{
+                const folderPath = fg.getAttribute('data-folder');
                 const letter = fg.getAttribute('data-letter');
                 const shouldBeOpen = lettersToKeepOpen.has(letter);
                 const children = fg.querySelector(':scope > .folder-children');
                 const isCollapsed = children ? children.classList.contains('collapsed') : false;
+
+                // CRITICAL FIX: If manually collapsed within last 10 minutes, respect manual collapse and do NOT auto-expand on scroll!
+                if (isFolderManuallyCollapsed(folderPath)) {{
+                    if (!isCollapsed) {{
+                        closeFolderElement(fg);
+                    }}
+                    return;
+                }}
 
                 if (shouldBeOpen && isCollapsed) {{
                     openFolderElement(fg);
@@ -9914,6 +9989,12 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     el.classList.remove('current');
                 }}
             }});
+
+            // If user explicitly jumped to this letter via rail, unblock target folder so it opens
+            const targetFolder = target.getAttribute('data-folder');
+            if (targetFolder) {{
+                clearFolderManualCollapse(targetFolder);
+            }}
 
             // Expand current + 1 above + 1 below immediately in background so scrolling into target is instant
             applyBufferedLetterWindow(char);
@@ -12093,7 +12174,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             const allFolders = document.querySelectorAll('.folder-group');
             allFolders.forEach(fg => {{
                 const folderPath = fg.getAttribute('data-folder');
-                if (openedTreesQueue.includes(folderPath)) {{
+                if (isFolderManuallyCollapsed(folderPath)) {{
+                    closeFolderElement(fg);
+                }} else if (openedTreesQueue.includes(folderPath)) {{
                     openFolderElement(fg);
                 }} else {{
                     closeFolderElement(fg);
@@ -12183,9 +12266,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             if (isCurrentlyOpen) {{
                 closeFolderElement(folderGroup);
+                markFolderManuallyCollapsed(folderPath);
                 openedTreesQueue = openedTreesQueue.filter(p => p !== folderPath);
                 saveOpenedTrees();
+                const folderTitle = folderGroup.getAttribute('data-name') || folderPath;
+                showToast(`&#9654; Collapsed '${{folderTitle}}' (Scroll auto-expand paused for 10 min)`, 'info');
             }} else {{
+                clearFolderManualCollapse(folderPath);
                 openFolderElement(folderGroup);
                 const letter = folderGroup.getAttribute('data-letter');
                 if (letter && folderGroup.classList.contains('top-level-folder')) {{
@@ -12235,6 +12322,8 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         function expandAll() {{
             userExplicitExpandAll = true;
+            manuallyCollapsedTrees = {{}};
+            saveManuallyCollapsedTrees();
             document.querySelectorAll('.folder-group').forEach(fg => openFolderElement(fg));
             const btnExp = document.getElementById('btnExpandAll');
             const btnCol = document.getElementById('btnCollapseAll');
@@ -12245,14 +12334,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
         function collapseAll() {{
             userExplicitExpandAll = false;
-            document.querySelectorAll('.folder-group').forEach(fg => closeFolderElement(fg));
+            document.querySelectorAll('.folder-group').forEach(fg => {{
+                const fp = fg.getAttribute('data-folder');
+                if (fp) markFolderManuallyCollapsed(fp);
+                closeFolderElement(fg);
+            }});
             openedTreesQueue = [];
             saveOpenedTrees();
             const btnExp = document.getElementById('btnExpandAll');
             const btnCol = document.getElementById('btnCollapseAll');
             if (btnCol) btnCol.classList.add('is-active');
             if (btnExp) btnExp.classList.remove('is-active', 'is-active-green');
-            showToast('&#9654; Collapsed all folders in library', 'info');
+            showToast('&#9654; Collapsed all folders (Scroll auto-expand paused for 10 min)', 'info');
         }}
 
         function highlightAndPromotePlayingVideo(videoKey) {{
@@ -12305,7 +12398,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                     }}
 
                     const topPath = topFolder.getAttribute('data-folder');
-                    if (topPath) {{
+                    if (topPath && !isFolderManuallyCollapsed(topPath)) {{
                         openFolderElement(topFolder);
                         if (!openedTreesQueue.includes(topPath)) {{
                             openedTreesQueue.push(topPath);
@@ -12317,7 +12410,9 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                             saveOpenedTrees();
                         }}
                     }}
-                    openFolderElement(folderGroup);
+                    if (!isFolderManuallyCollapsed(folderGroup.getAttribute('data-folder'))) {{
+                        openFolderElement(folderGroup);
+                    }}
                 }}
             }}
         }}
