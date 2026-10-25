@@ -651,12 +651,27 @@ def prepare_video_package(
         repo_folder = sanitize_repo_name(default_repo_name)
         rel_in_repo = str(parts[0]).replace("\\", "/")
 
-    if len(parts) > 1:
-        hf_repo_name = crypto_engine.get_obfuscated_repo_name(repo_folder, name_key)
-    else:
-        hf_repo_name = sanitize_repo_name(default_repo_name)
+    # Check if this folder already exists in the manifest (e.g. Renamed folder or existing vault)
+    existing_repo = None
+    try:
+        manifest = load_manifest()
+        prefix = f"{repo_folder}/"
+        for k, v in manifest.get("files", {}).items():
+            if k.startswith(prefix) and v.get("repo_id"):
+                existing_repo = v.get("repo_id")
+                break
+    except Exception:
+        pass
 
-    repo_id = f"{hf_username}/{hf_repo_name}"
+    if existing_repo:
+        repo_id = existing_repo
+    else:
+        if len(parts) > 1:
+            hf_repo_name = crypto_engine.get_obfuscated_repo_name(repo_folder, name_key)
+        else:
+            hf_repo_name = sanitize_repo_name(default_repo_name)
+        repo_id = f"{hf_username}/{hf_repo_name}"
+
     full_key = f"{repo_folder}/{rel_in_repo}"
 
     file_size = os.path.getsize(file_path)
