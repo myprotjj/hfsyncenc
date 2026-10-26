@@ -456,14 +456,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_delete_skipped()
         elif path == "/api/staging/push":
             self.handle_staging_push()
-        elif path == "/api/staging/pause":
-            self.handle_staging_pause()
-        elif path == "/api/staging/pause-staging":
-            self.handle_staging_pause_staging()
-        elif path == "/api/staging/resume":
-            self.handle_staging_resume()
-        elif path == "/api/staging/resume-staging":
-            self.handle_staging_resume_staging()
         elif path == "/api/staging/push-all":
             self.handle_staging_push_all()
         elif path == "/api/staging/dismiss":
@@ -3551,7 +3543,7 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         if sync_repo_index and can_write:
             try:
                 remaining_repo_files = {k: v for k, v in manifest.get("files", {}).items() if v.get("repo_id") == repo_id}
-                if not remaining_repo_files and repo_id.split("/")[-1].startswith(("vault-", "ds-", "data-", "pkg-")):
+                if not remaining_repo_files and repo_id.split("/")[-1].startswith("vault-"):
                     api.delete_repo(repo_id=repo_id, repo_type="dataset")
                     logger.info("Deleted empty HF vault repository %s", repo_id)
                 else:
@@ -4295,64 +4287,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp)
 
-    def handle_staging_pause(self):
-        length = int(self.headers.get("Content-Length", 0))
-        data = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
-        repo_folder = data.get("repo_folder", "")
-        if repo_folder:
-            import staging_manager
-            staging_manager.pause_repo_push(repo_folder)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "paused", "repo_folder": repo_folder}).encode("utf-8"))
-
-    def handle_staging_pause_staging(self):
-        import staging_manager
-        staging_manager.pause_staging()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "staging_paused"}).encode("utf-8"))
-
-    def handle_staging_resume(self):
-        length = int(self.headers.get("Content-Length", 0))
-        data = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
-        repo_folder = data.get("repo_folder", "")
-        if repo_folder:
-            import staging_manager
-            staging_manager.resume_repo_push(repo_folder)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "resumed", "repo_folder": repo_folder}).encode("utf-8"))
-
-    def handle_staging_resume_staging(self):
-        import staging_manager
-        staging_manager.resume_staging()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "staging_resumed"}).encode("utf-8"))
-
-    def handle_storyboard_test(self):
-        import importlib
-        import storyboard_test_template
-        importlib.reload(storyboard_test_template)
-        html = storyboard_test_template.render_storyboard_test_page()
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(body)
-
     def handle_staging_push(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
@@ -4496,8 +4430,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_dashboard()
         elif path in ("/discover", "/discover.html"):
             self.handle_discover()
-        elif path in ("/storyboard-test", "/storyboard-test.html", "/test-storyboard"):
-            self.handle_storyboard_test()
         elif path == "/api/files":
             self.handle_api_files()
         elif path == "/api/jellyfin_sync":
@@ -4526,32 +4458,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_api_screens_image()
         elif path == "/api/staging/status":
             self.handle_staging_status()
-        elif path == "/api/vault-index/status":
-            import cloud_mirror_manager
-            st = cloud_mirror_manager.get_vault_index_status()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json.dumps(st).encode("utf-8"))
-            return
-        elif path == "/api/vault-index/sync":
-            import cloud_mirror_manager
-            import metadata_helper
-            master_repo = self.acc_mgr.get_master_repo_id() if hasattr(self, "acc_mgr") else os.getenv("REPO_ID", "")
-            m_api = self.acc_mgr.get_master_api() if hasattr(self, "acc_mgr") else HfApi(token=self.token)
-            manifest = load_manifest()
-            threading.Thread(
-                target=metadata_helper.sync_master_manifest_to_hf,
-                args=(m_api, master_repo, manifest, self.password),
-                daemon=True
-            ).start()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "started", "message": "Parallel multi-cloud sync started"}).encode("utf-8"))
-            return
 
         elif path == "/api/cache/stats":
             self.send_response(200)
@@ -8120,73 +8026,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         .left-sync-slider:hover .slider-chevron {{
             transform: translateX(3px);
         }}
-        .left-staging-slider {{
-            position: fixed;
-            left: 0;
-            top: calc(50% + 30px);
-            transform: translateY(-50%);
-            z-index: 999;
-            cursor: pointer;
-            user-select: none;
-            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-        }}
-        .left-pushed-slider {{
-            position: fixed;
-            left: 0;
-            top: calc(50% + 90px);
-            transform: translateY(-50%);
-            z-index: 999;
-            cursor: pointer;
-            user-select: none;
-            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-        }}
-        .left-staging-slider .slider-tab-handle {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(11, 17, 32, 0.94);
-            border: 1px solid rgba(56, 189, 248, 0.4);
-            border-left: none;
-            border-radius: 0 16px 16px 0;
-            padding: 7px 12px 7px 9px;
-            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5), 0 0 12px rgba(56, 189, 248, 0.2);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
-            color: #f8fafc;
-            transition: all 0.2s ease;
-        }}
-        .left-pushed-slider .slider-tab-handle {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(8, 24, 18, 0.94);
-            border: 1px solid rgba(16, 185, 129, 0.45);
-            border-left: none;
-            border-radius: 0 16px 16px 0;
-            padding: 7px 12px 7px 9px;
-            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5), 0 0 12px rgba(16, 185, 129, 0.2);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
-            color: #f8fafc;
-            transition: all 0.2s ease;
-        }}
-        .left-staging-slider:hover .slider-tab-handle {{
-            transform: translateX(4px);
-            border-color: #38bdf8;
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.7), 0 0 20px rgba(56, 189, 248, 0.4);
-        }}
-        .left-pushed-slider:hover .slider-tab-handle {{
-            transform: translateX(4px);
-            border-color: #10b981;
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.7), 0 0 20px rgba(16, 185, 129, 0.4);
-        }}
-        .left-staging-slider:hover .slider-chevron {{
-            transform: translateX(3px);
-        }}
-        .left-pushed-slider:hover .slider-chevron {{
-            transform: translateX(3px);
-            color: #10b981;
-        }}
 
         /* Task Accordion Details & Technical Specs */
         .task-details-btn {{
@@ -9429,32 +9268,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         </div>
     </div>
 
-    <!-- Left-Middle Collapsed Slider Button for Staging Hub (Docked right below Live Sync) -->
-    <div id="stagingFloatingTrigger" class="left-staging-slider" onclick="openStagingOverlay()" title="Staging Hub & 1-Commit Push Center (Click to view staged content)" style="display: none;">
-        <div class="slider-tab-handle">
-            <span id="stagingPulseDot" class="slider-pulse-dot" style="background: #38bdf8; box-shadow: 0 0 10px #38bdf8;"></span>
-            <span class="slider-icon" style="filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.6));">📦</span>
-            <div class="slider-text-group">
-                <span id="stagingFloatingTitle" class="slider-main-text">Staging Hub</span>
-                <span id="stagingFloatingBadge" class="slider-sub-text">0 Ready</span>
-            </div>
-            <span class="slider-chevron">›</span>
-        </div>
-    </div>
-
-    <!-- Left-Middle Collapsed Slider Button for Completed Commits (Dedicated slider for pushed repos) -->
-    <div id="pushedFloatingTrigger" class="left-pushed-slider" onclick="openCompletedPushesOverlay()" title="Completed Commits (Click to view and manage pushed repos)" style="display: none;">
-        <div class="slider-tab-handle">
-            <span id="pushedPulseDot" class="slider-pulse-dot" style="background: #10b981; box-shadow: 0 0 10px #10b981;"></span>
-            <span class="slider-icon" style="filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.6)); color: #10b981; font-weight: 900;">✓</span>
-            <div class="slider-text-group">
-                <span id="pushedFloatingTitle" class="slider-main-text" style="color: #6ee7b7;">Completed</span>
-                <span id="pushedFloatingBadge" class="slider-sub-text">0 Pushed</span>
-            </div>
-            <span class="slider-chevron" style="color: #10b981;">›</span>
-        </div>
-    </div>
-
     <div class="container">
         <header class="vault-header">
             <div class="vault-brand-cluster">
@@ -9465,54 +9278,13 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 <span id="hdrWatcherStatus" class="status-pill status-idle" onclick="openLiveActivityModal()" style="cursor: pointer;" title="Directory Watcher Service Status (Click to view Live Activity)">
                     <span class="pill-dot"></span> Watcher: Idle
                 </span>
-                <span id="hdrVaultIndexStatus" class="status-pill status-online" onclick="openVaultIndexSyncModal()" style="cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-weight: 600;" title="Click to view Multi-Cloud (HF & GitHub) Master Index Status">
-                    <span id="hdrVaultIndexDot" class="pill-dot" style="background: #10b981;"></span>
-                    <span id="hdrVaultIndexText">☁️ Index: Synced</span>
-                </span>
             </div>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <a href="/storyboard-test" class="status-pill status-active" style="text-decoration: none; font-weight: 700; color: #c084fc; background: rgba(192, 132, 252, 0.12); border: 1px solid rgba(192, 132, 252, 0.35); padding: 5px 14px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s ease;" title="Interactive Real-Time Storyboard Testing Suite">
-                    <span>🎬</span> Storyboard Lab &rarr;
-                </a>
                 <a href="/discover" class="status-pill status-active" style="text-decoration: none; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); padding: 5px 14px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s ease;" title="Switch to Continuous 4-Card Modern Discover Feed">
                     <span>✨</span> Discover Feed &rarr;
                 </a>
             </div>
         </header>
-
-        <!-- Master Index Sync Progress & Hash Verification Banner -->
-        <div id="vaultIndexProgressBanner" style="display: none; background: linear-gradient(90deg, rgba(30, 58, 138, 0.92), rgba(3, 105, 161, 0.92)); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; margin: 8px 0 12px 0; padding: 8px 16px; font-size: 0.82rem; color: #f0f9ff; justify-content: space-between; align-items: center; font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,0.25);">
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <span id="vaultIndexSpinner" style="display: inline-block; width: 14px; height: 14px; border: 2px solid #38bdf8; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
-                <span id="vaultIndexBannerText">🔄 Updating Master Vault Index to Hugging Face &amp; GitHub in parallel...</span>
-            </div>
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <span id="vaultIndexBannerHash" style="font-family: monospace; font-size: 0.78rem; background: rgba(0,0,0,0.3); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); color: #7dd3fc;">SHA: ---</span>
-                <button onclick="openVaultIndexSyncModal()" style="background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; cursor: pointer;">Details</button>
-            </div>
-        </div>
-
-        <!-- Vault Index Multi-Cloud Sync Modal -->
-        <div id="vaultIndexModal" class="modal-overlay" style="display: none; align-items: center; justify-content: center; z-index: 99999;" onclick="if(event.target===this)closeVaultIndexSyncModal()">
-            <div class="modal-card" style="max-width: 580px; width: 92%; background: #0f172a; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 12px; padding: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); color: #f8fafc;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span style="font-size: 1.25rem;">🛡️</span>
-                        <h3 style="margin: 0; font-size: 1.05rem; color: #38bdf8;">Multi-Cloud Master Index Mirror</h3>
-                    </div>
-                    <button onclick="closeVaultIndexSyncModal()" style="background: none; border: none; color: #94a3b8; font-size: 1.4rem; cursor: pointer; line-height: 1;">&times;</button>
-                </div>
-                <div style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 14px; line-height: 1.4;">
-                    Whenever the master index changes, it is pushed <strong>in parallel</strong> to both Hugging Face and GitHub. Cryptographic SHA-256 parity is verified on both to guarantee identical state.
-                </div>
-                <div id="vaultIndexModalContent" style="display: flex; flex-direction: column; gap: 10px;">
-                </div>
-                <div style="margin-top: 18px; display: flex; justify-content: flex-end; gap: 10px;">
-                    <button onclick="forceSyncVaultIndex()" id="btnForceSyncIndex" style="background: #0284c7; border: none; color: white; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">⚡ Re-Sync Both in Parallel</button>
-                    <button onclick="closeVaultIndexSyncModal()" style="background: #334155; border: none; color: white; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; cursor: pointer;">Close</button>
-                </div>
-            </div>
-        </div>
 
         <!-- Unified Metrics & Action Toolbar (Merged into one cohesive line, deduplicated & responsive) -->
         <div class="vault-unified-bar">
@@ -9972,48 +9744,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
                 </div>
                 <div id="stagingOverlayFooterActions" style="display: flex; gap: 10px;">
                     <button type="button" onclick="closeStagingOverlay()" class="tool-btn" style="padding: 6px 18px;">Close</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Full-Page Completed Commits Overlay -->
-    <div id="completedOverlayModal" class="modal-overlay" style="display: none; align-items: center; justify-content: center; z-index: 10000; background: rgba(5, 15, 12, 0.94); backdrop-filter: blur(18px);" onclick="if(event.target === this) closeCompletedPushesOverlay()">
-        <div class="modal" style="max-width: 1050px; width: 94vw; max-height: 90vh; display: flex; flex-direction: column; background: #081612; border: 1px solid rgba(16, 185, 129, 0.35); box-shadow: 0 25px 80px rgba(0,0,0,0.95), 0 0 35px rgba(16, 185, 129, 0.15); border-radius: 16px; overflow: hidden; padding: 0;">
-            <!-- Header -->
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: rgba(8, 28, 20, 0.85); flex-shrink: 0;">
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <div style="width: 38px; height: 38px; border-radius: 10px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); display: flex; align-items: center; justify-content: center; font-size: 1.3rem; color: #10b981;">✓</div>
-                    <div>
-                        <div style="font-weight: 800; font-size: 1.15rem; color: #f8fafc; display: flex; align-items: center; gap: 10px;">
-                            Completed Commits &amp; History
-                            <span id="completedOverlayCountBadge" class="status-pill status-active" style="background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; font-size: 0.72rem; padding: 2px 10px;">0 Pushed</span>
-                        </div>
-                        <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 2px;">
-                            Successfully pushed to Hugging Face &bull; Isolated from active staging queue &bull; Dismissable at any time
-                        </div>
-                    </div>
-                </div>
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <button type="button" onclick="dismissAllPushedRepos()" class="tool-btn btn-xs" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); padding: 6px 14px; border-radius: 6px; font-weight: 700; cursor: pointer;">
-                        ✕ Dismiss All Completed
-                    </button>
-                    <button type="button" onclick="closeCompletedPushesOverlay()" class="tool-btn btn-xs" style="font-size: 1.3rem; padding: 2px 10px; line-height: 1;" title="Close Overlay (Esc)">&times;</button>
-                </div>
-            </div>
-
-            <!-- Content Container (Scrollable) -->
-            <div id="completedOverlayContent" style="padding: 24px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 16px;">
-                <!-- Populated dynamically via JS renderCompletedOverlay() -->
-            </div>
-
-            <!-- Footer -->
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08); background: rgba(8, 28, 20, 0.95); font-size: 0.78rem; color: #94a3b8; flex-shrink: 0;">
-                <div>
-                    <span>💡 <em>Completed repositories are already safe on Hugging Face. Dismissing cleans up staging entries and logs.</em></span>
-                </div>
-                <div>
-                    <button type="button" onclick="closeCompletedPushesOverlay()" class="tool-btn" style="padding: 6px 18px;">Close</button>
                 </div>
             </div>
         </div>
@@ -19156,367 +18886,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }}
         }}
 
-        function renderStagingRepoCard(r, isModal) {{
-            const rf = r.repo_folder || '';
-            const safeId = (isModal ? 'mod_' : 'stg_') + rf.replace(/[^a-zA-Z0-9_-]/g, '_');
-            const totalVideos = r.total_videos || r.video_count || r.file_count || 0;
-            const fileCount = totalVideos;
-            const totalAssets = r.total_assets || (totalVideos * 4);
-            const totalBytes = r.total_enc_bytes || r.total_enc_size || r.total_orig_bytes || r.total_orig_size || r.total_size_bytes || 0;
-            const sizeStr = r.total_size_formatted || r.size_formatted || r.initial_scanned_formatted || '0 MB';
-            const repoId = r.repo_id || 'Vault';
-            const account = r.account || '';
-            const thumbs = r.preview_thumbs || [];
-            const prog = r.push_progress || {{}};
-            const estBatches = r.total_batches || (prog.total_batches) || Math.max(1, Math.ceil(totalBytes / (10 * 1024 * 1024 * 1024)));
-            const isPaused = r.status === 'paused';
-            const isQueued = r.status === 'queued';
-            const isPushing = r.status === 'pushing' || (prog.percent != null && r.status !== 'ready_to_push' && !isPaused && !isQueued && r.status !== 'error' && r.status !== 'pushed');
-            const isPushed = r.status === 'pushed';
-            const isError = r.status === 'error';
-            const isFailedAudit = r.status === 'failed_audit' || r.status === 'staging_audit_failed';
-
-            let cardBorder = 'border: 1px solid rgba(56, 189, 248, 0.45);';
-            let cardBg = 'background: rgba(14, 25, 48, 0.90);';
-            let cardShadow = 'box-shadow: 0 4px 20px rgba(56, 189, 248, 0.12);';
-            let stageIcon = '📦';
-            let statusBadge = '<span style="font-size: 0.75rem; font-weight: 700; color: #10b981; background: rgba(16, 185, 129, 0.18); border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 8px; border-radius: 9999px;">✓ Ready to Push</span>';
-
-            if (isPushing) {{
-                stageIcon = '🔄';
-                cardBorder = 'border: 1px solid rgba(56, 189, 248, 0.7);';
-                cardBg = 'background: rgba(15, 23, 42, 0.95);';
-                const pPct = prog.percent != null ? prog.percent : 25;
-                const batchBadge = prog.batch_info || (prog.total_batches > 1 ? ('Batch ' + (prog.current_batch || 1) + '/' + prog.total_batches) : 'Committing');
-                statusBadge = `<span style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.5); padding: 2px 8px; border-radius: 9999px;">⚡ ${{escapeHtml(batchBadge)}} (${{pPct}}%)</span>`;
-            }} else if (isQueued) {{
-                stageIcon = '⏳';
-                cardBorder = 'border: 1px dashed rgba(56, 189, 248, 0.6);';
-                cardBg = 'background: rgba(15, 23, 42, 0.95);';
-                statusBadge = '<span style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.5); padding: 2px 8px; border-radius: 9999px;">⏳ Queued (#' + (prog.queue_position || 1) + ')</span>';
-            }} else if (isPaused) {{
-                stageIcon = '⏸️';
-                cardBorder = 'border: 1px solid rgba(245, 158, 11, 0.6);';
-                cardBg = 'background: rgba(30, 41, 59, 0.95);';
-                statusBadge = '<span style="font-size: 0.75rem; font-weight: 700; color: #fbbf24; background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.5); padding: 2px 8px; border-radius: 9999px;">⏸️ Paused</span>';
-            }} else if (isPushed) {{
-                stageIcon = '✅';
-                cardBorder = 'border: 1px solid rgba(16, 185, 129, 0.5);';
-                statusBadge = '<span style="font-size: 0.75rem; font-weight: 700; color: #10b981; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.5); padding: 2px 8px; border-radius: 9999px;">✓ 100% Pushed</span>';
-            }} else if (isError) {{
-                stageIcon = '❌';
-                cardBorder = 'border: 1px solid rgba(239, 68, 68, 0.5);';
-                statusBadge = '<span style="font-size: 0.75rem; font-weight: 700; color: #ef4444; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); padding: 2px 8px; border-radius: 9999px;">Push Interrupted</span>';
-            }} else if (isFailedAudit) {{
-                stageIcon = '⚠️';
-                cardBorder = 'border: 1px solid rgba(245, 158, 11, 0.5);';
-                statusBadge = '<span style="font-size: 0.75rem; font-weight: 700; color: #f59e0b; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); padding: 2px 8px; border-radius: 9999px;">Audit Discrepancy</span>';
-            }}
-
-            let progressTrackHtml = '';
-            if (isPushing) {{
-                const pct = prog.percent != null ? prog.percent : 25;
-                progressTrackHtml = `
-                    <div class="task-progress-track">
-                        <div class="task-progress-fill" style="width: ${{Math.max(4, pct)}}%; background: linear-gradient(90deg, #38bdf8, #10b981);"></div>
-                    </div>
-                `;
-            }} else if (isPaused) {{
-                const pct = prog.percent != null ? prog.percent : 50;
-                progressTrackHtml = `
-                    <div class="task-progress-track">
-                        <div class="task-progress-fill" style="width: ${{Math.max(4, pct)}}%; background: linear-gradient(90deg, #f59e0b, #d97706);"></div>
-                    </div>
-                `;
-            }} else {{
-                progressTrackHtml = `
-                    <div class="task-progress-track">
-                        <div class="task-progress-fill" style="width: 100%; background: linear-gradient(90deg, #10b981, #059669);"></div>
-                    </div>
-                `;
-            }}
-
-            let actionButtonsHtml = '';
-            if (isQueued) {{
-                actionButtonsHtml = `
-                    <button type="button" class="tool-btn btn-xs" onclick="cancelQueuedPush('${{escapeJsString(rf)}}')" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.76rem;">
-                        ✕ Cancel Queue
-                    </button>
-                `;
-            }} else if (isPaused || isError) {{
-                actionButtonsHtml = `
-                    <button type="button" class="tool-btn btn-xs" onclick="resumeStagedRepo('${{escapeJsString(rf)}}')" style="background: #10b981; color: #fff; border: none; font-weight: 700; padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; display: flex; align-items: center; gap: 5px; box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);">
-                        ▶️ Resume Push
-                    </button>
-                    ${{isModal ? `
-                    <button type="button" onclick="confirmDiscardRepo('${{escapeJsString(rf)}}', ${{fileCount}}, '${{escapeJsString(sizeStr)}}')" class="tool-btn btn-xs" style="background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.25); font-weight: 600; padding: 4px 9px; border-radius: 6px; font-size: 0.75rem; cursor: pointer;" title="Permanently discard staged files without restoring">
-                        🗑️ Discard
-                    </button>
-                    ` : ''}}
-                `;
-            }} else if (!isPushing && !isPushed) {{
-                const pushBtnLabel = estBatches > 1 ? ('🚀 Push (' + estBatches + ' Commits ~10GB)') : '🚀 Push to HF (1 Commit)';
-                actionButtonsHtml = `
-                    <a href="/discover?staged_repo=${{encodeURIComponent(rf)}}" class="tool-btn btn-xs" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; text-decoration: none; display: flex; align-items: center; gap: 4px;" title="View staged videos in Discover feed">
-                        👁️ Discover ↗
-                    </a>
-                    ${{isModal ? `
-                    <button type="button" onclick="confirmRevertRepo('${{escapeJsString(rf)}}', ${{fileCount}}, '${{escapeJsString(sizeStr)}}')" class="tool-btn btn-xs" style="background: rgba(245, 158, 11, 0.1); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.25); font-weight: 600; padding: 4px 9px; border-radius: 6px; font-size: 0.75rem; cursor: pointer;" title="Decrypt back to videos_to_sync and verify before clearing staged copies">
-                        ⏪ Unstage &amp; Decrypt
-                    </button>
-                    <button type="button" onclick="confirmDiscardRepo('${{escapeJsString(rf)}}', ${{fileCount}}, '${{escapeJsString(sizeStr)}}')" class="tool-btn btn-xs" style="background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.25); font-weight: 600; padding: 4px 9px; border-radius: 6px; font-size: 0.75rem; cursor: pointer;" title="Permanently discard staged files without restoring">
-                        🗑️ Discard
-                    </button>
-                    ` : ''}}
-                    <button type="button" class="tool-btn btn-xs" data-repo="${{escapeHtml(rf)}}" onclick="confirmPushRepo(this.dataset.repo, ${{fileCount}}, '${{escapeJsString(sizeStr)}}', ${{estBatches}})" style="background: #10b981; color: #fff; border: none; font-weight: 700; padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; display: flex; align-items: center; gap: 5px; box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);">
-                        ${{pushBtnLabel}}
-                    </button>
-                `;
-            }} else if (isPushing) {{
-                actionButtonsHtml = `
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        ${{prog.is_retrying ? `
-                        <button onclick="retryStagedRepoNow('${{escapeJsString(rf)}}')" class="tool-btn btn-xs" style="background: #f59e0b; color: #000; font-weight: 800; padding: 3px 8px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.74rem;">
-                            ⚡ Retry Now
-                        </button>` : ''}}
-                        <button onclick="pauseStagedRepo('${{escapeJsString(rf)}}')" class="tool-btn btn-xs" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 0.74rem;" title="Pause push after current batch completes">
-                            ⏸️ Pause
-                        </button>
-                    </div>
-                `;
-            }} else if (isPushed) {{
-                actionButtonsHtml = `
-                    <button onclick="dismissPushedRepo('${{escapeJsString(rf)}}')" class="btn btn-link btn-xs" style="color: #94a3b8; font-size: 0.75rem;">✕ Dismiss</button>
-                `;
-            }}
-
-            let thumbsHtml = '';
-            if (thumbs.length > 0) {{
-                thumbsHtml = thumbs.map(tUrl => `<img src="${{tUrl}}" style="width: 48px; height: 27px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.12);" onerror="this.style.display='none'">`).join('');
-            }}
-
-            const consoleHtml = (isPushing || isPushed || isPaused || isError) && prog && ((prog.log_lines && prog.log_lines.length > 0) || prog.percent != null) ? buildGitConsoleHtml(rf, prog, sizeStr, totalVideos, isPushed) : '';
-
-            const cleanFolder = rf.length > 28 ? rf.substring(0, 14) + '…' + rf.slice(-8) : rf;
-            const repoParts = (repoId || '').split('/');
-            const repoUser = repoParts[0] || account || 'Vault';
-            const repoName = repoParts.slice(1).join('/') || repoId;
-            const gitChipText = estBatches > 1 ? ('⚡ Git: <b>' + estBatches + ' Batches (~10GB)</b>') : '⚡ Git: <b>1-Commit Atomic</b>';
-
-            const cardCommits = prog.commits || r.commits || [];
-            let cardCommitsHtml = '';
-            if (cardCommits.length > 0) {{
-                cardCommitsHtml = `
-                <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                    <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 600;">Commits:</span>
-                    ${{cardCommits.map(c => `
-                        <a href="${{escapeHtml(c.commit_url)}}" target="_blank" rel="noopener noreferrer" class="tool-btn btn-xs" style="background: rgba(16, 185, 129, 0.18); color: #86efac; border: 1px solid rgba(16, 185, 129, 0.4); text-decoration: none; padding: 2px 8px; border-radius: 5px; font-size: 0.72rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;" title="View Batch ${{c.batch}} Commit on Hugging Face">
-                            <span>🔗 #${{c.batch}} (${{c.size_formatted || ''}})</span> ↗
-                        </a>
-                    `).join('')}}
-                    <a href="https://huggingface.co/datasets/${{escapeHtml(repoId)}}/commits/main" target="_blank" rel="noopener noreferrer" class="tool-btn btn-xs" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); text-decoration: none; padding: 2px 8px; border-radius: 5px; font-size: 0.72rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
-                        <span>📜 All Commits</span> ↗
-                    </a>
-                </div>
-                `;
-            }} else if (repoId && repoId !== 'Vault') {{
-                cardCommitsHtml = `
-                <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                    <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 600;">Commits:</span>
-                    <a href="https://huggingface.co/datasets/${{escapeHtml(repoId)}}/commits/main" target="_blank" rel="noopener noreferrer" class="tool-btn btn-xs" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); text-decoration: none; padding: 2px 8px; border-radius: 5px; font-size: 0.72rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;" title="View Repository Commits on Hugging Face">
-                        <span>📜 View All Commits</span> ↗
-                    </a>
-                </div>
-                `;
-            }}
-
-            const integrityHtml = isFailedAudit
-                ? `<span class="timing-chip" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);" title="Cryptographic Integrity Failed">🛡️ Integrity: <b>Failed Discrepancy ❌</b></span>`
-                : `<span class="timing-chip" title="Cryptographic Integrity Verified">🛡️ Integrity: <b>100% Passed ✓</b></span>`;
-
-            return `
-            <div class="active-task-card is-in-flight" id="${{safeId}}" style="${{cardBg}} ${{cardBorder}} ${{cardShadow}} margin-bottom: 8px;">
-                <div class="task-card-top">
-                    <span class="task-file-name" style="cursor: pointer;" onclick="window.location.href='/discover?staged_repo=${{encodeURIComponent(rf)}}'">
-                        <span>${{stageIcon}}</span>
-                        <span style="font-weight: 800; color: #38bdf8;">${{escapeHtml(repoUser)}} / ${{escapeHtml(repoName)}}</span>
-                        <span style="font-size: 0.72rem; color: #64748b; font-family: monospace;" title="${{escapeHtml(rf)}}">(${{cleanFolder}})</span>
-                        <span style="font-size: 0.75rem; color: #94a3b8; font-weight: normal; flex-shrink: 0;">(${{totalVideos}} videos, ${{totalAssets}} assets &bull; ${{escapeHtml(sizeStr)}})</span>
-                    </span>
-                    <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
-                        ${{statusBadge}}
-                        ${{actionButtonsHtml}}
-                    </div>
-                </div>
-                ${{progressTrackHtml}}
-                ${{prog.is_retrying ? `
-                <div style="background: rgba(245, 158, 11, 0.18); border: 1px solid rgba(245, 158, 11, 0.5); border-radius: 6px; padding: 6px 12px; margin-top: 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                    <span style="font-size: 0.76rem; color: #fde68a; font-weight: 600;">
-                        ⚠️ Network drop detected! Retrying (Attempt #${{prog.retry_attempt || 1}}) in <b>${{prog.retry_countdown || 0}}s</b>...
-                    </span>
-                    <button onclick="retryStagedRepoNow('${{escapeJsString(rf)}}')" class="tool-btn btn-xs" style="background: #f59e0b; color: #000; font-weight: 800; padding: 2px 8px; border-radius: 4px; border: none; cursor: pointer; font-size: 0.72rem;">
-                        ⚡ Retry Now
-                    </button>
-                </div>` : ''}}
-                <div class="task-card-bottom">
-                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                        Target: <a href="https://huggingface.co/datasets/${{escapeHtml(repoId)}}" target="_blank" rel="noopener noreferrer" style="color: #38bdf8; text-decoration: underline; font-weight: 600;" title="Open Repository on Hugging Face"><code>${{escapeHtml(repoId)}}</code> ↗</a> &bull; Authenticated AES-256-GCM chunks verified on disk
-                    </span>
-                    <span style="flex-shrink: 0; margin-left: 8px; display: flex; align-items: center; gap: 8px;">
-                        ${{account ? `<span>👤 <b>${{escapeHtml(account)}}</b></span>` : ''}}
-                        ${{thumbsHtml ? `<span style="display: flex; gap: 4px;">${{thumbsHtml}}</span>` : ''}}
-                    </span>
-                </div>
-                <div class="task-card-pass-timings">
-                    <span class="timing-total-chip" title="Total Videos &amp; Cryptographic Assets">📦 Pre-Staged: <b>${{totalVideos}} Videos (${{totalAssets}} Assets)</b></span>
-                    <span class="timing-chip highlight-chip" title="Pre-Encrypted Size">💾 Size: <b>${{escapeHtml(sizeStr)}}</b></span>
-                    ${{integrityHtml}}
-                    <span class="timing-chip" title="Target Hugging Face Cloud Repository">☁️ Repo: <a href="https://huggingface.co/datasets/${{escapeHtml(repoId)}}" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: underline; font-weight: 700;" title="Open Repository on Hugging Face"><b>${{escapeHtml(repoId)}} ↗</b></a></span>
-                    <span class="timing-chip" title="Multi-Commit Git Upload">${{gitChipText}}</span>
-                </div>
-                ${{cardCommitsHtml}}
-                ${{consoleHtml}}
-            </div>
-            `;
-        }}
-
-
-        async function pauseStagingRepo(repoFolder) {{
-            try {{
-                showToast(`⏸️ Pausing staging for ${{repoFolder}}...`);
-                const res = await fetch('/api/staging/pause-staging', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ repo_folder: repoFolder }})
-                }});
-                const data = await res.json();
-                showToast(`Staging paused.`);
-                fetchStagingStatus();
-            }} catch (err) {{
-                showToast(`Error pausing: ${{err.message}}`);
-            }}
-        }}
-
-        async function resumeStagingRepo(repoFolder) {{
-            try {{
-                showToast(`▶️ Resuming staging for ${{repoFolder}}...`);
-                const res = await fetch('/api/staging/resume-staging', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ repo_folder: repoFolder }})
-                }});
-                const data = await res.json();
-                showToast(`Staging resumed.`);
-                fetchStagingStatus();
-            }} catch (err) {{
-                showToast(`Error resuming: ${{err.message}}`);
-            }}
-        }}
-
-        function confirmDiscardRepo(repoFolder, fileCount, sizeStr) {{
-            showModal({{
-                title: '🗑️ Discard Staged Files',
-                message: 'Are you sure you want to <strong>permanently discard</strong> staged files for <code style="color: #f87171;">' + escapeHtml(repoFolder) + '</code> (' + fileCount + ' files, ' + sizeStr + ')?<br><br>The staged encrypted copies will be deleted from disk.',
-                confirmText: 'Discard Staging',
-                confirmStyle: 'background: #dc2626; color: white;',
-                onConfirm: function() {{
-                    discardStagedRepo(repoFolder);
-                }}
-            }});
-        }}
-
-        async function discardStagedRepo(repoFolder) {{
-            try {{
-                showToast(`🗑️ Discarding staged repo: ${{repoFolder}}...`);
-                const res = await fetch('/api/staging/discard', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ repo_folder: repoFolder }})
-                }});
-                const d = await res.json();
-                if (d && d.success) {{
-                    showToast(`Discarded ${{repoFolder}}`);
-                }} else {{
-                    showToast(`Discard failed: ${{d.error || 'unknown'}}`);
-                }}
-                fetchStagingStatus();
-            }} catch (e) {{
-                showToast(`Discard error: ${{e.message}}`);
-            }}
-        }}
-
-        function openCompletedPushesOverlay() {{
-            const modal = document.getElementById('completedOverlayModal');
-            if (modal) {{
-                modal.style.display = 'flex';
-                if (lastStagingData) renderCompletedOverlay(lastStagingData);
-            }}
-        }}
-
-        function closeCompletedPushesOverlay() {{
-            const modal = document.getElementById('completedOverlayModal');
-            if (modal) modal.style.display = 'none';
-        }}
-
-        function renderCompletedOverlay(data) {{
-            const content = document.getElementById('completedOverlayContent');
-            const countBadge = document.getElementById('completedOverlayCountBadge');
-            if (!content) return;
-            const pushedRepos = (data && data.pushed_repos) || [];
-            if (countBadge) countBadge.innerText = `${{pushedRepos.length}} Pushed`;
-
-            if (pushedRepos.length === 0) {{
-                content.innerHTML = `
-                <div style="text-align: center; padding: 50px 20px; color: #94a3b8;">
-                    <div style="font-size: 2.5rem; margin-bottom: 12px; color: #10b981;">✓</div>
-                    <div style="font-size: 1.15rem; font-weight: 700; color: #e2e8f0;">No Completed Commits Remaining</div>
-                    <div style="font-size: 0.85rem; color: #64748b; margin-top: 6px;">
-                        All pushed items have been dismissed or cleared from staging.
-                    </div>
-                </div>`;
-                return;
-            }}
-            content.innerHTML = pushedRepos.map(r => renderStagingRepoCard(r, true)).join('');
-        }}
-
-        async function dismissPushedRepo(repoFolder) {{
-            try {{
-                const res = await fetch('/api/staging/dismiss', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ repo_folder: repoFolder }})
-                }});
-                const d = await res.json();
-                if (d && d.success) {{
-                    showToast('Repo dismissed: ' + repoFolder);
-                }} else {{
-                    showToast('Dismiss failed: ' + (d && d.error ? d.error : 'unknown error'));
-                }}
-                fetchStagingStatus();
-            }} catch (e) {{
-                showToast('Dismiss error: ' + e.message);
-            }}
-        }}
-
-        async function dismissAllPushedRepos() {{
-            try {{
-                const res = await fetch('/api/staging/dismiss-all', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }}
-                }});
-                const d = await res.json();
-                if (d && d.success) {{
-                    showToast(`Dismissed ${{d.dismissed_count || 0}} completed repo(s)`);
-                }} else {{
-                    showToast('Dismiss all failed: ' + (d && d.error ? d.error : 'unknown error'));
-                }}
-                fetchStagingStatus();
-            }} catch (e) {{
-                showToast('Dismiss error: ' + e.message);
-            }}
-        }}
-
-
         function renderStagingOverlay(data) {{
             const content = document.getElementById('stagingOverlayContent');
             const countBadge = document.getElementById('stagingOverlayCountBadge');
@@ -19683,31 +19052,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             // 3. Staging Pre-encryption active
             stagingRepos.forEach(r => {{
-                const totalExp = r.initial_scanned_count || r.file_count || 1;
-                const pct = totalExp > 0 ? Math.min(100, Math.round((r.file_count / totalExp) * 100)) : 0;
-                const countText = totalExp > r.file_count ? `${{r.file_count}} / ${{totalExp}} file(s) staged (${{r.total_size_formatted}} / ${{r.initial_scanned_formatted}})` : `${{r.file_count}} file(s) staged (${{r.total_size_formatted}})`;
                 html += `
-                <div style="background: rgba(15, 23, 42, 0.6); border: 1px dashed rgba(56, 189, 248, 0.3); border-radius: 12px; padding: 16px; margin-bottom: 10px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                        <div>
-                            <div style="font-weight: 700; font-size: 0.95rem; color: #e2e8f0;">
-                                <span>⚙️ Pre-encrypting Folder:</span> ${{escapeHtml(r.repo_folder)}}
-                            </div>
-                            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">
-                                ${{countText}} &bull; ${{pct}}% completed
-                            </div>
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px dashed rgba(56, 189, 248, 0.3); border-radius: 12px; padding: 16px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 700; font-size: 0.95rem; color: #e2e8f0;">
+                            <span>⚙️ Pre-encrypting Folder:</span> ${{escapeHtml(r.repo_folder)}}
                         </div>
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <button type="button" onclick="pauseStagingRepo('${{escapeJsString(r.repo_folder)}}')" class="tool-btn btn-xs" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); font-weight: 600; padding: 5px 12px; border-radius: 6px; font-size: 0.76rem; cursor: pointer;" title="Pause pre-encryption for this folder">
-                                ⏸️ Pause Staging
-                            </button>
-                            <div style="font-size: 0.78rem; color: #f59e0b; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35); padding: 5px 12px; border-radius: 6px; font-weight: 700;">
-                                Encrypting ${{pct}}%
-                            </div>
+                        <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">
+                            ${{r.file_count}} file(s) staged so far (${{r.total_size_formatted}}) &bull; Waiting for folder completion
                         </div>
                     </div>
-                    <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; margin-top: 12px; overflow: hidden;">
-                        <div style="width: ${{pct}}%; height: 100%; background: linear-gradient(90deg, #38bdf8, #818cf8); transition: width 0.3s ease;"></div>
+                    <div style="font-size: 0.78rem; color: #f59e0b; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35); padding: 5px 12px; border-radius: 6px; font-weight: 700;">
+                        Encrypting...
                     </div>
                 </div>
                 `;
@@ -19715,78 +19071,41 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
 
             // 4. Ready to Push Repos
             readyRepos.forEach(r => {{
-                const rf = r.repo_folder || '';
-                const fileCount = r.file_count || 0;
-                const totalAssets = r.total_assets || (fileCount * 4);
-                const sizeStr = r.total_size_formatted || '0 MB';
-                const repoId = r.repo_id || 'Vault';
-                const account = r.account || '';
-
                 html += `
-                <div style="background: rgba(14, 25, 48, 0.90); border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 4px 20px rgba(56, 189, 248, 0.12); margin-bottom: 12px;">
-                    <!-- Top Row: Title, Status and Action Buttons -->
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                            <span style="font-size: 1.15rem;">📦</span>
-                            <span style="font-weight: 800; font-size: 1.05rem; color: #38bdf8;">${{escapeHtml(account ? account + ' / ' + repoId : repoId)}}</span>
-                            <span style="font-size: 0.82rem; color: #64748b; font-family: monospace;">(${{escapeHtml(rf)}})</span>
-                            <span style="font-size: 0.75rem; font-weight: 700; color: #10b981; background: rgba(16, 185, 129, 0.18); border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 8px; border-radius: 9999px;">✓ Ready to Push</span>
+                <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                        <div style="min-width: 260px; flex: 1;">
+                            <div style="display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 1.05rem; color: #38bdf8;">
+                                <span>📁</span> ${{escapeHtml(r.repo_folder)}}
+                                <span style="font-weight: 400; font-size: 0.8rem; color: #94a3b8;">&rarr; ${{escapeHtml(r.repo_id)}}</span>
+                            </div>
+                            <div style="font-size: 0.85rem; color: #cbd5e1; margin-top: 6px;">
+                                <strong>${{r.file_count}}</strong> video file(s) &bull; <span style="color: #10b981; font-weight: 700;">${{r.total_size_formatted}}</span> pre-encrypted
+                                ${{r.audit_report && r.audit_report.passed === true ? `
+                                <span style="margin-left: 8px; font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); padding: 2px 8px; border-radius: 4px;">✓ Audit Passed</span>
+                                ` : `
+                                <span style="margin-left: 8px; font-size: 0.75rem; background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); padding: 2px 8px; border-radius: 4px;">⚠️ Unaudited</span>
+                                `}}
+                            </div>
+                            ${{(r.file_names_preview || []).length > 0 ? `
+                            <div style="font-size: 0.74rem; color: #64748b; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px;">
+                                ${{r.file_names_preview.map(escapeHtml).join(', ')}}
+                            </div>` : ''}}
                         </div>
-                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                            <a href="/discover?staged_repo=${{encodeURIComponent(rf)}}" class="tool-btn btn-xs" style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); padding: 5px 12px; border-radius: 6px; font-size: 0.78rem; text-decoration: none; display: flex; align-items: center; gap: 5px;" title="View staged videos in Discover feed">
-                                👁️ Discover ↗
-                            </a>
-                            <button type="button" onclick="confirmRevertRepo('${{escapeJsString(rf)}}', ${{fileCount}}, '${{escapeJsString(sizeStr)}}')" class="tool-btn btn-xs" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); font-weight: 600; padding: 5px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;" title="Revert staged copies back to source directory and restore ignored status">
-                                ⏪ Unstage & Decrypt
-                            </button>
-                            <button type="button" onclick="confirmDiscardRepo('${{escapeJsString(rf)}}', ${{fileCount}}, '${{escapeJsString(sizeStr)}}')" class="tool-btn btn-xs" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); font-weight: 600; padding: 5px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;" title="Permanently discard staged files without restoring">
-                                🗑️ Discard
-                            </button>
-                            <button data-repo="${{escapeHtml(rf)}}" onclick="pushStagedRepo(this.dataset.repo)" class="tool-btn" style="background: #10b981; color: #fff; border: none; font-weight: 800; padding: 6px 16px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35); font-size: 0.85rem;">
+
+                        ${{(r.preview_thumbs || []).length > 0 ? `
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            ${{r.preview_thumbs.map(tUrl => `
+                                <img src="${{tUrl}}" style="width: 80px; height: 45px; object-fit: cover; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.15);" onerror="this.style.display='none'">
+                            `).join('')}}
+                        </div>` : ''}}
+
+                        <div>
+                            <button data-repo="${{escapeHtml(r.repo_folder)}}" onclick="pushStagedRepo(this.dataset.repo)" class="tool-btn" style="background: #10b981; color: #fff; border: none; font-weight: 800; padding: 10px 22px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35); font-size: 0.92rem;">
                                 🚀 Push to HF (1 Commit)
                             </button>
                         </div>
                     </div>
-
-                    <!-- Progress Bar Track (Solid Teal) -->
-                    <div style="width: 100%; height: 4px; background: #10b981; border-radius: 2px; margin: 4px 0 6px 0;"></div>
-
-                    <!-- Subtitle / Target Repo -->
-                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: #94a3b8; flex-wrap: wrap; gap: 8px;">
-                        <div>
-                            Target: <span style="color: #38bdf8; font-weight: 600;">${{escapeHtml(repoId)}}</span> &bull; Authenticated AES-256-GCM chunks verified on disk
-                        </div>
-                        ${{account ? `
-                        <div style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #cbd5e1; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
-                            <span>👤</span> ${{escapeHtml(account)}}
-                        </div>` : ''}}
-                    </div>
-
-                    <!-- Metric Badges Strip -->
-                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.78rem;">
-                        <span style="background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); padding: 3px 9px; border-radius: 6px; font-weight: 600;">
-                            📦 Pre-Staged: ${{fileCount}} Videos (${{totalAssets}} Assets)
-                        </span>
-                        <span style="background: rgba(255, 255, 255, 0.08); color: #e2e8f0; border: 1px solid rgba(255, 255, 255, 0.15); padding: 3px 9px; border-radius: 6px; font-weight: 600;">
-                            💾 Size: ${{sizeStr}}
-                        </span>
-                        <span style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.35); padding: 3px 9px; border-radius: 6px; font-weight: 600;">
-                            🛡️ Integrity: 100% Passed ✓
-                        </span>
-                        <span style="background: rgba(14, 165, 233, 0.12); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.35); padding: 3px 9px; border-radius: 6px; font-weight: 600;">
-                            ☁️ Repo: ${{escapeHtml(repoId)}} ↗
-                        </span>
-                        <span style="background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); padding: 3px 9px; border-radius: 6px; font-weight: 600;">
-                            ⚡ Git: 1-Commit Atomic
-                        </span>
-                    </div>
-
-                    ${{(r.preview_thumbs || []).length > 0 ? `
-                    <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
-                        ${{r.preview_thumbs.map(tUrl => `
-                            <img src="${{tUrl}}" style="width: 80px; height: 45px; object-fit: cover; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.15);" onerror="this.style.display='none'">
-                        `).join('')}}
-                    </div>` : ''}}
                 </div>
                 `;
             }});
@@ -19998,31 +19317,18 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             }});
 
             stagingRepos.forEach(r => {{
-                const totalExp = r.initial_scanned_count || r.file_count || 1;
-                const pct = totalExp > 0 ? Math.min(100, Math.round((r.file_count / totalExp) * 100)) : 0;
-                const countText = totalExp > r.file_count ? `${{r.file_count}} / ${{totalExp}} file(s) staged (${{r.total_size_formatted}} / ${{r.initial_scanned_formatted}})` : `${{r.file_count}} file(s) staged (${{r.total_size_formatted}})`;
                 html += `
-                <div style="background: rgba(15, 23, 42, 0.6); border: 1px dashed rgba(56, 189, 248, 0.3); border-radius: 12px; padding: 16px; margin-bottom: 10px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                        <div>
-                            <div style="font-weight: 700; font-size: 0.95rem; color: #e2e8f0;">
-                                <span>⚙️ Pre-encrypting Folder:</span> ${{escapeHtml(r.repo_folder)}}
-                            </div>
-                            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">
-                                ${{countText}} &bull; ${{pct}}% completed
-                            </div>
+                <div style="background: rgba(15, 23, 42, 0.5); border: 1px dashed rgba(255, 255, 255, 0.15); border-radius: 10px; padding: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.88rem; color: #e2e8f0;">
+                            <span>⚙️ Pre-encrypting Folder:</span> ${{escapeHtml(r.repo_folder)}}
                         </div>
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <button type="button" onclick="pauseStagingRepo('${{escapeJsString(r.repo_folder)}}')" class="tool-btn btn-xs" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); font-weight: 600; padding: 5px 12px; border-radius: 6px; font-size: 0.76rem; cursor: pointer;" title="Pause pre-encryption for this folder">
-                                ⏸️ Pause Staging
-                            </button>
-                            <div style="font-size: 0.78rem; color: #f59e0b; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35); padding: 5px 12px; border-radius: 6px; font-weight: 700;">
-                                Encrypting ${{pct}}%
-                            </div>
+                        <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 2px;">
+                            ${{r.file_count}} file(s) staged so far (${{r.total_size_formatted}}) &bull; Waiting for folder completion
                         </div>
                     </div>
-                    <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; margin-top: 12px; overflow: hidden;">
-                        <div style="width: ${{pct}}%; height: 100%; background: linear-gradient(90deg, #38bdf8, #818cf8); transition: width 0.3s ease;"></div>
+                    <div style="font-size: 0.75rem; color: #f59e0b; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); padding: 3px 8px; border-radius: 6px;">
+                        Encrypting...
                     </div>
                 </div>
                 `;
@@ -20094,129 +19400,6 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         <div class="az-letters-container" id="azLettersContainer"></div>
     </div>
 
-
-<script>
-let lastVaultIndexStatus = null;
-
-async function pollVaultIndexStatus() {{
-    try {{
-        const res = await fetch('/api/vault-index/status');
-        if (!res.ok) return;
-        const data = await res.json();
-        lastVaultIndexStatus = data;
-        renderVaultIndexUI(data);
-    }} catch (e) {{}}
-}}
-
-function renderVaultIndexUI(st) {{
-    const banner = document.getElementById('vaultIndexProgressBanner');
-    const bannerText = document.getElementById('vaultIndexBannerText');
-    const bannerHash = document.getElementById('vaultIndexBannerHash');
-    const spinner = document.getElementById('vaultIndexSpinner');
-    const pillText = document.getElementById('hdrVaultIndexText');
-    const pillDot = document.getElementById('hdrVaultIndexDot');
-
-    if (!banner || !pillText) return;
-
-    if (st.status === 'syncing') {{
-        banner.style.display = 'flex';
-        bannerText.textContent = st.message || '🔄 Syncing Master Index to HF & GitHub in parallel...';
-        bannerHash.textContent = st.sha256_short ? `SHA: ${{st.sha256_short}}` : 'Computing...';
-        if (spinner) spinner.style.display = 'inline-block';
-        pillText.textContent = '🔄 Index: Syncing...';
-        if (pillDot) pillDot.style.background = '#38bdf8';
-    }} else if (st.status === 'synced') {{
-        banner.style.display = 'none';
-        const shortHash = st.sha256_short || '';
-        pillText.textContent = `🛡️ Index: Synced (${{shortHash}})`;
-        if (pillDot) pillDot.style.background = '#10b981';
-    }} else if (st.status === 'error') {{
-        banner.style.display = 'flex';
-        banner.style.background = 'linear-gradient(90deg, rgba(153, 27, 27, 0.9), rgba(185, 28, 28, 0.9))';
-        banner.style.borderColor = '#f87171';
-        bannerText.textContent = `⚠️ Master Index Sync Issue: ${{st.last_error || 'Check status'}}`;
-        bannerHash.textContent = 'ERROR';
-        if (spinner) spinner.style.display = 'none';
-        pillText.textContent = '⚠️ Index: Error';
-        if (pillDot) pillDot.style.background = '#ef4444';
-    }}
-}}
-
-function openVaultIndexSyncModal() {{
-    const modal = document.getElementById('vaultIndexModal');
-    if (!modal) return;
-    modal.style.display = 'flex';
-    renderVaultIndexModalDetails();
-}}
-
-function closeVaultIndexSyncModal() {{
-    const modal = document.getElementById('vaultIndexModal');
-    if (modal) modal.style.display = 'none';
-}}
-
-function renderVaultIndexModalDetails() {{
-    const c = document.getElementById('vaultIndexModalContent');
-    if (!c || !lastVaultIndexStatus) return;
-    const st = lastVaultIndexStatus;
-    const hfOk = st.hf_status === 'ok';
-    const ghOk = st.github_status === 'ok';
-    const hashMatch = st.hash_matched;
-
-    c.innerHTML = `
-        <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="color: #94a3b8;">Hugging Face (Master):</span>
-                <span style="font-family: monospace; color: ${{hfOk ? '#4ade80' : '#f87171'}}; font-weight: 600;">
-                    ${{hfOk ? '✓ Verified' : (st.hf_status || 'Pending')}} (${{st.hf_repo || 'core-index-store'}})
-                </span>
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="color: #94a3b8;">GitHub (Microsoft Cloud):</span>
-                <span style="font-family: monospace; color: ${{ghOk ? '#4ade80' : '#f87171'}}; font-weight: 600;">
-                    ${{ghOk ? '✓ Verified' : (st.github_status || 'Pending')}} (${{st.github_repo || 'core-index-sync'}})
-                </span>
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
-                <span style="color: #94a3b8;">Cryptographic Hash Parity:</span>
-                <span style="color: ${{hashMatch ? '#38bdf8' : '#fbbf24'}}; font-weight: 700;">
-                    ${{hashMatch ? '🔒 100% Identical SHA-256' : 'Checking...'}}
-                </span>
-            </div>
-            <div style="display: flex; flex-direction: column; gap: 2px; margin-top: 4px;">
-                <span style="font-size: 0.72rem; color: #64748b;">SHA-256 Content Hash:</span>
-                <div style="font-family: monospace; font-size: 0.73rem; color: #cbd5e1; word-break: break-all; background: rgba(0,0,0,0.4); padding: 4px 8px; border-radius: 4px;">
-                    ${{st.sha256 || 'N/A'}}
-                </div>
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #64748b; margin-top: 4px;">
-                <span>Last Synchronized:</span>
-                <span style="color: #94a3b8;">${{st.last_synced_at || 'Never'}}</span>
-            </div>
-        </div>
-    `;
-}}
-
-async function forceSyncVaultIndex() {{
-    const btn = document.getElementById('btnForceSyncIndex');
-    if (btn) {{
-        btn.disabled = true;
-        btn.textContent = '⏳ Triggering Parallel Sync...';
-    }}
-    try {{
-        await fetch('/api/vault-index/sync', {{ method: 'POST' }});
-        setTimeout(pollVaultIndexStatus, 500);
-    }} catch (e) {{
-    }} finally {{
-        if (btn) {{
-            btn.disabled = false;
-            btn.textContent = '⚡ Re-Sync Both in Parallel';
-        }}
-    }}
-}}
-
-setInterval(pollVaultIndexStatus, 3000);
-pollVaultIndexStatus();
-</script>
 </body>
 </html>
 """
