@@ -74,3 +74,10 @@ Whenever a code change is made and verified (compilation, unit test, or dry run)
 - [ ] All new secrets or cache paths added to `.gitignore`
 - [ ] All modifications committed cleanly to Git (`git status` clean or cleanly staged)
 - [ ] Git commit hash noted in turn response
+
+---
+
+## 4. Reinstallation & Machine Setup
+If setting up a new environment or reinstalling Gemini, see:
+* [Reinstallation Prompt & Script](./REINSTALLATION_PROMPT.md)
+
