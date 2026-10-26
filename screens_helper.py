@@ -22,8 +22,12 @@ def clean_key(key: str) -> str:
 
 
 def get_safe_id(key: str) -> str:
-    ck = clean_key(key)
-    return hashlib.sha256(ck.encode("utf-8")).hexdigest()[:24]
+    try:
+        import storyboard_helper
+        return storyboard_helper.get_safe_id(key)
+    except Exception:
+        ck = clean_key(key)
+        return hashlib.sha256(ck.encode("utf-8")).hexdigest()[:24]
 
 
 SCREEN_FOLDER_NAMES = {"screens", "screen", "thumbs", "thumb", "covers", "cover", "posters", "poster", "artwork", "storyboards"}
@@ -285,10 +289,10 @@ def has_screens(safe_id: str) -> bool:
     if get_screens_path(safe_id) or get_screens_thumb_path(safe_id):
         return True
     try:
-        from manifest_helper import load_manifest
-        mf = load_manifest()
+        import storyboard_helper
+        mf = storyboard_helper.get_manifest_data()
         for k, v in mf.get("files", {}).items():
-            if get_safe_id(k) == safe_id:
+            if v.get("safe_id") == safe_id or storyboard_helper.get_safe_id(k) == safe_id:
                 return bool(v.get("screens"))
     except Exception:
         pass

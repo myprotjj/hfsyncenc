@@ -2,6 +2,7 @@ import os
 import io
 import json
 import re
+import hashlib
 import subprocess
 import requests
 import xml.sax.saxutils as saxutils
@@ -282,7 +283,6 @@ def probe_media_file(source_path: str, key_path: str = None, timeout: int = 15) 
                 info["tags"].append("FLAC")
             elif "aac" in a_lower:
                 info["audio_codec"] = "AAC"
-                info["tags"].append("AAC")
             elif "opus" in a_lower:
                 info["audio_codec"] = "Opus"
                 info["tags"].append("Opus")
@@ -298,7 +298,6 @@ def probe_media_file(source_path: str, key_path: str = None, timeout: int = 15) 
                 info["tags"].append("5.1 Surround")
             elif "stereo" in a_lower:
                 info["audio_channels"] = "Stereo"
-                info["tags"].append("Stereo")
             elif "mono" in a_lower:
                 info["audio_channels"] = "Mono"
 
@@ -324,9 +323,12 @@ def extract_default_metadata(key_path: str, media_info: dict = None) -> dict:
     """
     parts = key_path.replace("\\", "/").split("/")
     filename = parts[-1]
-    stem = Path(filename).stem
-    # Replace dots, underscores, dashes with space
-    clean_title = re.sub(r"[_\.\-]+", " ", stem).strip().title()
+    if filename.endswith(".encname"):
+        clean_title = filename
+    else:
+        stem = Path(filename).stem
+        # Replace dots, underscores, dashes with space
+        clean_title = re.sub(r"[_\.\-]+", " ", stem).strip().title()
 
     # Detect year (1900-2099)
     year = ""
@@ -336,41 +338,8 @@ def extract_default_metadata(key_path: str, media_info: dict = None) -> dict:
             year = m.group(1)
             break
 
-    # Detect genre/category from folder names
+    # No category / genres added initially on uploading videos
     genres = []
-    category_hints = {
-        "action": "Action",
-        "comedy": "Comedy",
-        "drama": "Drama",
-        "scifi": "Sci-Fi",
-        "sci-fi": "Sci-Fi",
-        "horror": "Horror",
-        "thriller": "Thriller",
-        "animation": "Animation",
-        "anime": "Anime",
-        "documentary": "Documentary",
-        "adventure": "Adventure",
-        "fantasy": "Fantasy",
-        "family": "Family",
-        "crime": "Crime",
-        "mystery": "Mystery"
-    }
-
-    for part in parts[:-1]:
-        clean_part = part.lower().replace("-", " ").replace("_", " ")
-        matched = False
-        for k, v in category_hints.items():
-            if k in clean_part:
-                if v not in genres:
-                    genres.append(v)
-                matched = True
-        if not matched and len(genres) == 0 and part:
-            clean_folder = re.sub(r"(vault|collection|folder|dir|repo)", "", part, flags=re.I).strip(" -_")
-            if clean_folder and clean_folder not in genres and not clean_folder.isdigit():
-                genres.append(clean_folder.title())
-
-    if not genres:
-        genres = ["Movies"]
 
     tags = ["Streamable"]
     res_label = ""
@@ -378,12 +347,12 @@ def extract_default_metadata(key_path: str, media_info: dict = None) -> dict:
 
     # Content type tags (Cutscene, Trailer, Gameplay, Episode, Music Video, Clip, etc.)
     for pt in detect_content_tags_from_path(key_path):
-        if pt not in tags:
+        if pt not in tags and pt not in ("Stereo", "AAC"):
             tags.append(pt)
 
     if media_info:
         for t in media_info.get("tags", []):
-            if t not in tags:
+            if t not in tags and t not in ("Stereo", "AAC"):
                 tags.append(t)
         res_label = media_info.get("resolution_label", "")
         duration_str = media_info.get("duration_str", "")
@@ -524,7 +493,7 @@ def write_nfo_files(library_dir: str, key_path: str, metadata: dict, media_info:
         f.write(xml_content)
 
     # 2. movie.nfo
-    clean_stem = target_path.stem
+    clean_stem = target_path.name if target_path.name.endswith(".encname") else target_path.stem
     nfo2 = target_path.parent / f"{clean_stem}.nfo"
     with open(nfo2, "w", encoding="utf-8") as f:
         f.write(xml_content)
@@ -832,6 +801,9 @@ def sync_repo_manifest_to_hf(api: HfApi, repo_id: str, repo_files: dict, passwor
     return False
 
 
+_LAST_MASTER_INDEX_HASH = {}
+
+
 def sync_master_manifest_to_hf(
     api: HfApi,
     master_repo_id: str,
@@ -908,28 +880,38 @@ def sync_master_manifest_to_hf(
                 pass
 
         raw_json = json.dumps(payload_records, separators=(',', ':')).encode("utf-8")
+        payload_hash = hashlib.sha256(raw_json).hexdigest()
+        if _LAST_MASTER_INDEX_HASH.get(master_repo_id) == payload_hash and attempt == 0:
+            return True
+
         compressed_payload = zlib.compress(raw_json, level=6)
         encrypted_bytes = crypto_engine.encrypt_bytes(compressed_payload, password)
 
         try:
-            import hf_rate_limiter
-            hf_rate_limiter.rate_limiter.wait_for_commit_slot(token)
-            api.upload_file(
-                path_or_fileobj=io.BytesIO(encrypted_bytes),
-                path_in_repo="vault_index.enc",
-                repo_id=master_repo_id,
-                repo_type="dataset",
-                commit_message=commit_helper.get_human_commit_message("metadata")
+            import cloud_mirror_manager
+            sync_ok, mirror_logs = cloud_mirror_manager.push_vault_index_parallel(
+                hf_api=api,
+                hf_repo=master_repo_id,
+                encrypted_bytes=encrypted_bytes
             )
-            hf_rate_limiter.repo_cache.record_added_files(master_repo_id, ["vault_index.enc"])
-            return True
+            for l in mirror_logs:
+                print(f"[Master Sync] {l}")
+            if sync_ok:
+                _LAST_MASTER_INDEX_HASH[master_repo_id] = payload_hash
+                return True
+            else:
+                if attempt < max_retries - 1:
+                    backoff = 0.5 * (2 ** attempt) + random.uniform(0.1, 0.4)
+                    time.sleep(backoff)
+                    continue
+                return False
         except Exception as e:
             err_msg = str(e).lower()
             if attempt < max_retries - 1 and any(x in err_msg for x in ["conflict", "412", "commit", "parent"]):
                 backoff = 0.5 * (2 ** attempt) + random.uniform(0.1, 0.4)
                 time.sleep(backoff)
                 continue
-            print(f"[!] Warning syncing master vault_index to HF ({master_repo_id}): {e}")
+            print(f"[!] Warning syncing master vault_index ({master_repo_id}): {e}")
             return False
 
     return False
@@ -1015,6 +997,8 @@ def restore_library_from_hf(api: HfApi, password: str, hf_username: str, library
                         repo_records = json.loads(dec.decode("utf-8"))
             except Exception as e:
                 print(f"[!] Warning reading vault_index.enc for {repo_id}: {e}")
+
+
 
         # 2. Also check individual .meta.enc sidecars
         meta_files = [f for f in files_in_repo if f.endswith(".meta.enc")]

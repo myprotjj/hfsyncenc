@@ -1,4 +1,5 @@
 import os
+import json
 import struct
 import hashlib
 import hmac
@@ -50,15 +51,15 @@ def get_obfuscated_blob_path(rel_in_repo: str, name_key: bytes) -> str:
     return f"blobs/{h[:2]}/{h}.enc"
 
 
-def get_obfuscated_repo_name(folder_name: str, name_key: bytes, prefix: str = "vault") -> str:
+def get_obfuscated_repo_name(folder_name: str, name_key: bytes, prefix: str = "ds") -> str:
     """
-    Converts a plaintext folder name (e.g. 'FemVC' or 'Action') into an unguessable,
-    encrypted repository name like 'vault-8f3a9b1c4e2d7a60' on Hugging Face.
-    Ensures zero plaintext folder or category names are exposed on Hugging Face.
+    Converts a plaintext folder name into an unguessable, neutral
+    repository name like 'ds-8f3a9b1c4e2d7a60' on Hugging Face.
+    Ensures zero plaintext folder, category, or media identity is exposed on Hugging Face.
     """
     clean = folder_name.strip("/").replace("\\", "/").strip()
-    if not clean or clean.lower() in ("default", "encrypted-media-vault"):
-        return "encrypted-media-vault"
+    if not clean or clean.lower() in ("default", "core-index-store", "encrypted-media-vault"):
+        return "core-index-store"
     h = hmac.new(name_key, clean.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
     return f"{prefix}-{h}"
 
@@ -99,33 +100,114 @@ def get_chunk_nonce(base_nonce: bytes, chunk_index: int) -> bytes:
     return chunk_nonce_int.to_bytes(12, "big")
 
 
-def encrypt_file(input_path: str, output_path: str, password: str, chunk_size: int = DEFAULT_CHUNK_SIZE) -> int:
+def encrypt_file(input_path: str, output_path: str, password: str, chunk_size: int = DEFAULT_CHUNK_SIZE, progress_callback=None) -> int:
     """
     High-Speed AES-256-GCM chunked encryption.
-    Pure cryptographic throughput without redundant full-file hashing overhead.
+    Pure cryptographic throughput with 2MB I/O buffering and pre-computed nonce mathematics.
     Returns: encrypted_file_size
     """
     total_size = os.path.getsize(input_path)
     salt = os.urandom(32)
     base_nonce = os.urandom(12)
+    base_int = int.from_bytes(base_nonce, "big")
     key = derive_key(password, salt)
     aesgcm = AESGCM(key)
 
     header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, salt, base_nonce, chunk_size, total_size)
+    io_buf_size = 2 * 1024 * 1024  # 2 MB OS-level I/O buffering for maximum disk throughput
 
-    with open(input_path, "rb") as fin, open(output_path, "wb") as fout:
+    with open(input_path, "rb", buffering=io_buf_size) as fin, open(output_path, "wb", buffering=io_buf_size) as fout:
         fout.write(header)
         chunk_idx = 0
+        bytes_read = 0
+        aes_encrypt = aesgcm.encrypt
+        fin_read = fin.read
+        fout_write = fout.write
+
         while True:
-            plaintext = fin.read(chunk_size)
+            plaintext = fin_read(chunk_size)
             if not plaintext:
                 break
-            nonce = get_chunk_nonce(base_nonce, chunk_idx)
-            ciphertext = aesgcm.encrypt(nonce, plaintext, None)
-            fout.write(ciphertext)
+            nonce = (base_int ^ chunk_idx).to_bytes(12, "big")
+            ciphertext = aes_encrypt(nonce, plaintext, None)
+            fout_write(ciphertext)
             chunk_idx += 1
+            bytes_read += len(plaintext)
+            if progress_callback and (chunk_idx % 64 == 0 or bytes_read == total_size):
+                try:
+                    progress_callback(bytes_read, total_size)
+                except Exception:
+                    pass
 
     return os.path.getsize(output_path)
+
+
+def decrypt_file(enc_path: str, output_path: str, password: str, chunk_size: int = DEFAULT_CHUNK_SIZE, progress_callback=None) -> int:
+    """
+    High-Speed AES-256-GCM chunked decryption.
+    Validates 64-byte header, derives key from header salt, and authenticates every chunk.
+    Writes to a temporary file first and atomically renames only upon 100% successful validation.
+    Returns: decrypted_file_size
+    """
+    if not os.path.exists(enc_path):
+        raise FileNotFoundError(f"Encrypted file not found: {enc_path}")
+
+    io_buf_size = 2 * 1024 * 1024
+
+    with open(enc_path, "rb", buffering=io_buf_size) as fin:
+        header_bytes = fin.read(HEADER_SIZE)
+        if len(header_bytes) < HEADER_SIZE:
+            raise ValueError(f"Encrypted file header too short: {enc_path}")
+        hdr = read_header(header_bytes)
+        salt = hdr["salt"]
+        base_nonce = hdr["base_nonce"]
+        base_int = int.from_bytes(base_nonce, "big")
+        c_chunk_size = hdr["chunk_size"]
+        total_size = hdr["total_size"]
+
+        key = derive_key(password, salt)
+        aesgcm = AESGCM(key)
+        aes_decrypt = aesgcm.decrypt
+        fin_read = fin.read
+
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        temp_out = f"{output_path}.tmp_dec"
+
+        bytes_written = 0
+        chunk_idx = 0
+        try:
+            with open(temp_out, "wb", buffering=io_buf_size) as fout:
+                fout_write = fout.write
+                while bytes_written < total_size:
+                    remaining_plain = total_size - bytes_written
+                    this_plain_len = min(c_chunk_size, remaining_plain)
+                    this_enc_len = this_plain_len + TAG_SIZE
+                    ciphertext = fin_read(this_enc_len)
+                    if len(ciphertext) != this_enc_len:
+                        raise ValueError(f"Premature end of encrypted file at chunk {chunk_idx}. Expected {this_enc_len} bytes, got {len(ciphertext)}.")
+                    nonce = (base_int ^ chunk_idx).to_bytes(12, "big")
+                    plaintext = aes_decrypt(nonce, ciphertext, None)
+                    fout_write(plaintext)
+                    bytes_written += len(plaintext)
+                    chunk_idx += 1
+                    if progress_callback and (chunk_idx % 64 == 0 or bytes_written == total_size):
+                        try:
+                            progress_callback(bytes_written, total_size)
+                        except Exception:
+                            pass
+
+            if bytes_written != total_size:
+                raise ValueError(f"Decrypted size {bytes_written} does not match expected {total_size}")
+
+            os.replace(temp_out, output_path)
+            return bytes_written
+        except Exception:
+            if os.path.exists(temp_out):
+                try:
+                    os.remove(temp_out)
+                except Exception:
+                    pass
+            raise
 
 
 def is_valid_encrypted_file(enc_path: str, expected_plain_size: int, password: str, chunk_size: int = DEFAULT_CHUNK_SIZE) -> bool:
@@ -273,16 +355,55 @@ def get_key_fingerprint(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()[:8]
 
 
+_VERIFIER_CACHE_PATH = os.path.join(os.path.dirname(__file__), ".verifier_cache.json")
+_VERIFIER_CACHE = {}
+
+
+def _load_verifier_cache():
+    global _VERIFIER_CACHE
+    if os.path.exists(_VERIFIER_CACHE_PATH):
+        try:
+            with open(_VERIFIER_CACHE_PATH, "r", encoding="utf-8") as f:
+                _VERIFIER_CACHE = json.load(f)
+        except Exception:
+            _VERIFIER_CACHE = {}
+
+
+def _save_verifier_cache():
+    try:
+        tmp_path = f"{_VERIFIER_CACHE_PATH}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(_VERIFIER_CACHE, f)
+        if os.path.exists(_VERIFIER_CACHE_PATH):
+            os.replace(tmp_path, _VERIFIER_CACHE_PATH)
+        else:
+            os.rename(tmp_path, _VERIFIER_CACHE_PATH)
+    except Exception:
+        pass
+
+
+_load_verifier_cache()
+
+
 def find_working_key_for_verifier(candidate_keys: list, verifier_hex: str) -> str:
     """
     Given a list of candidate keys, tests each key in order against the verifier token.
     Returns the first matching password, or None if no candidate matches.
+    Results are cached in-memory and persistently on disk to eliminate PBKDF2 bottlenecks.
     """
     if not verifier_hex or not candidate_keys:
         return None
+    keys_fp = ":".join(get_key_fingerprint(k) for k in candidate_keys if k)
+    cache_key = f"{keys_fp}|{verifier_hex}"
+    if cache_key in _VERIFIER_CACHE:
+        return _VERIFIER_CACHE[cache_key]
     for pw in candidate_keys:
         if pw and verify_password(verifier_hex, pw):
+            _VERIFIER_CACHE[cache_key] = pw
+            _save_verifier_cache()
             return pw
+    _VERIFIER_CACHE[cache_key] = None
+    _save_verifier_cache()
     return None
 
 

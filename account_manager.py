@@ -13,7 +13,83 @@ import metadata_helper
 ENV_FILE = "env.txt"
 
 
-def check_token_write_permission(api: HfApi, token: str) -> tuple:
+TOKEN_CACHE_FILE = ".hf_token_cache.json"
+_TOKEN_PROFILE_CACHE = None
+
+def _load_token_profile_cache() -> dict:
+    global _TOKEN_PROFILE_CACHE
+    if _TOKEN_PROFILE_CACHE is not None:
+        return _TOKEN_PROFILE_CACHE
+    if os.path.exists(TOKEN_CACHE_FILE):
+        try:
+            with open(TOKEN_CACHE_FILE, "r", encoding="utf-8") as f:
+                _TOKEN_PROFILE_CACHE = json.load(f)
+        except Exception:
+            _TOKEN_PROFILE_CACHE = {}
+    else:
+        _TOKEN_PROFILE_CACHE = {}
+    return _TOKEN_PROFILE_CACHE
+
+def _save_token_profile_cache():
+    global _TOKEN_PROFILE_CACHE
+    if _TOKEN_PROFILE_CACHE is None:
+        return
+    try:
+        with open(TOKEN_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_TOKEN_PROFILE_CACHE, f, indent=2)
+    except Exception:
+        pass
+
+def get_cached_token_profile(api: HfApi, token: str, force_refresh: bool = False) -> tuple:
+    """
+    Returns (username: str, can_write: bool, role_desc: str).
+    Caches token profiles persistently in .hf_token_cache.json to completely
+    eliminate repetitive whoami() / auth HTTP requests across multiple accounts.
+    """
+    import hashlib
+    tok_hash = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()[:24]
+    cache = _load_token_profile_cache()
+    now = time.time()
+
+    if not force_refresh and tok_hash in cache:
+        c = cache[tok_hash]
+        # Profile cached for up to 30 days unless invalidated
+        if now - c.get("cached_at", 0) < 30 * 86400:
+            return c["username"], c.get("can_write", True), c.get("role_desc", "Cached")
+
+    # Only when not in cache or forced: perform single whoami query
+    info = api.whoami()
+    username = info.get("name") or info.get("user", {}).get("name", "unknown")
+    can_write, role_desc = check_token_write_permission(api, token, preloaded_info=info)
+
+    cache[tok_hash] = {
+        "username": username,
+        "can_write": can_write,
+        "role_desc": role_desc,
+        "cached_at": now
+    }
+    _save_token_profile_cache()
+    return username, can_write, role_desc
+
+def invalidate_token_cache(token: str = None):
+    """Invalidates cached profile for a specific token or all tokens."""
+    global _TOKEN_PROFILE_CACHE
+    if not token:
+        _TOKEN_PROFILE_CACHE = {}
+        if os.path.exists(TOKEN_CACHE_FILE):
+            try:
+                os.remove(TOKEN_CACHE_FILE)
+            except Exception:
+                pass
+        return
+    import hashlib
+    tok_hash = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()[:24]
+    cache = _load_token_profile_cache()
+    if tok_hash in cache:
+        del cache[tok_hash]
+        _save_token_profile_cache()
+
+def check_token_write_permission(api: HfApi, token: str, preloaded_info: dict = None) -> tuple:
     """
     Checks whether a Hugging Face token has write/delete permissions.
     Returns (can_write: bool, role_desc: str).
@@ -21,7 +97,7 @@ def check_token_write_permission(api: HfApi, token: str) -> tuple:
     if not token or not api:
         return False, "No token or API"
     try:
-        info = api.whoami()
+        info = preloaded_info if preloaded_info is not None else api.whoami()
         auth = info.get("auth", {})
         access_token = auth.get("accessToken", {})
         role = access_token.get("role", "")
@@ -191,8 +267,7 @@ class AccountManager:
         if upload_token:
             try:
                 api = HfApi(token=upload_token)
-                user = api.whoami()["name"]
-                can_write, role_desc = check_token_write_permission(api, upload_token)
+                user, can_write, role_desc = get_cached_token_profile(api, upload_token)
                 self.primary_username = user
                 self.upload_token = upload_token
                 raw_pw = self._get_account_password_from_config(user)
@@ -224,11 +299,10 @@ class AccountManager:
         for tok in extra_tokens:
             try:
                 api = HfApi(token=tok)
-                user = api.whoami()["name"]
+                user, can_write, role_desc = get_cached_token_profile(api, tok)
                 if user in self.accounts:
                     continue
                 is_enabled = (user not in self.disabled_users)
-                can_write, role_desc = check_token_write_permission(api, tok)
                 raw_pw = self._get_account_password_from_config(user)
                 custom_keys = parse_key_list(raw_pw)
                 has_custom = bool(custom_keys and (len(custom_keys) > 1 or custom_keys[0] != self.password))
@@ -369,8 +443,8 @@ class AccountManager:
         if cfg_repo:
             return cfg_repo
         if self.primary_username:
-            return f"{self.primary_username}/encrypted-media-vault"
-        return "myprotjj/encrypted-media-vault"
+            return f"{self.primary_username}/core-index-store"
+        return "myprotjj/core-index-store"
 
     def get_master_api(self):
         """Returns the HfApi instance for the master repository."""
@@ -679,24 +753,10 @@ class AccountManager:
         master_repo = self.get_master_repo_id()
         tombstones = set(manifest.get("tombstones", {}).keys())
 
-        # Collect all active accounts and their datasets
-        all_repo_targets = []
-        for user, acc in self.accounts.items():
-            if not acc.get("enabled", True):
-                continue
-            api = acc["api"]
-            token = acc["token"]
-            try:
-                datasets = list(api.list_datasets(author=user))
-                for ds in datasets:
-                    all_repo_targets.append((ds.id, token, user))
-            except Exception as e:
-                print(f"[!] Error listing datasets for user {user}: {e}")
-
         files = manifest.setdefault("files", {})
         media_hashes = manifest.setdefault("media_hashes", {})
 
-        # Fast Path 0: Check Master Index on master_repo (<0.5s)
+        # Fast Path 0: Check Master Index on master_repo (<0.5s) using ONLY Master Account
         master_records = {}
         if self.password and not deep_scan:
             token = self.get_token_for_repo(master_repo)
@@ -730,8 +790,27 @@ class AccountManager:
                 except Exception as e:
                     print(f"[!] Master index fast path fallback: {e}")
 
-        # Check repository coverage: Which active datasets are represented in master_records?
-        represented_repos = set(rec.get("repo_id") for rec in master_records.values() if rec.get("repo_id"))
+        # Check repository coverage: Which active datasets are represented in master_records or local manifest?
+        represented_repos = set(rec.get("repo_id") for rec in files.values() if rec.get("repo_id"))
+        if master_records:
+            represented_repos.update(rec.get("repo_id") for rec in master_records.values() if rec.get("repo_id"))
+
+        # Anti-Spam Protection: If not deep_scan and manifest already has represented repos,
+        # DO NOT spam Hugging Face list_datasets API on all secondary accounts!
+        all_repo_targets = []
+        if deep_scan or not represented_repos:
+            for user, acc in self.accounts.items():
+                if not acc.get("enabled", True):
+                    continue
+                api = acc["api"]
+                token = acc["token"]
+                try:
+                    datasets = list(api.list_datasets(author=user))
+                    for ds in datasets:
+                        all_repo_targets.append((ds.id, token, user))
+                    time.sleep(0.3)  # Gentle spacing between account queries
+                except Exception as e:
+                    print(f"[!] Error listing datasets for user {user}: {e}")
 
         # Repositories to scan:
         # If deep_scan is True, scan all repos except master.
@@ -909,7 +988,7 @@ class AccountManager:
 
                     if ghost_found and self.can_write_to_repo(repo_id):
                         metadata_helper.sync_repo_manifest_to_hf(api, repo_id, valid_records, self.password)
-                        if not valid_records and repo_id.split("/")[-1].startswith("vault-"):
+                        if not valid_records and repo_id.split("/")[-1].startswith(("vault-", "ds-", "data-", "pkg-")):
                             rem_enc = [f for f in files_set if f.endswith(".enc")]
                             if not rem_enc:
                                 try:
@@ -1037,7 +1116,7 @@ class AccountManager:
                 if owner != user:
                     continue
 
-                if repo_name.startswith("vault-") or repo_name.lower() in ("encrypted-media-vault",):
+                if repo_name.startswith(("vault-", "ds-", "data-", "pkg-")) or repo_name.lower() in ("encrypted-media-vault", "core-index-store"):
                     continue
 
                 obf_name = crypto_engine.get_obfuscated_repo_name(repo_name, name_key)
@@ -1201,8 +1280,7 @@ class AccountManager:
 
         api = HfApi(token=token)
         try:
-            user_info = api.whoami()
-            username = user_info["name"]
+            username, can_write, role_desc = get_cached_token_profile(api, token, force_refresh=True)
         except Exception as e:
             raise ValueError(f"Hugging Face authorization failed: {e}")
 
@@ -1365,6 +1443,7 @@ class AccountManager:
             return {"username": username, "message": "Already the primary upload account."}
 
         target_token = self.accounts[username]["token"]
+        invalidate_token_cache(target_token)
         old_primary_token = self.upload_token
 
         extra_tokens_raw = self.config.get("HF_EXTRA_TOKENS", "")
@@ -1404,6 +1483,7 @@ class AccountManager:
             raise ValueError(f"Account '{username}' not found.")
 
         target_token = self.accounts[username]["token"]
+        invalidate_token_cache(target_token)
 
         extra_tokens_raw = self.config.get("HF_EXTRA_TOKENS", "")
         extra_tokens = [t.strip() for t in re.split(r"[,;\s]+", extra_tokens_raw) if t.strip() and t.strip() != target_token]
@@ -1440,27 +1520,248 @@ class AccountManager:
             "message": f"Account '{username}' deleted successfully."
         }
 
-    def get_accounts_summary(self, manifest: dict = None) -> list:
+    def get_account_storage_usage(self, manifest: dict = None, include_staging: bool = True) -> dict:
         """
-        Returns rich summary of all connected accounts for the Web UI.
+        Calculates real-time storage usage across all connected accounts.
+        Aggregates published files from upload_manifest.json as well as active
+        staged batches from staging_manifest.json (to prevent parallel staging imbalance).
+        Returns a dictionary mapping username -> {
+            'username': str,
+            'is_primary': bool,
+            'enabled': bool,
+            'can_write': bool,
+            'role_desc': str,
+            'published_bytes': int,
+            'published_count': int,
+            'staged_bytes': int,
+            'staged_count': int,
+            'total_bytes': int,
+            'total_count': int,
+            'storage_pct': float,
+            'is_next_target': bool
+        }
         """
-        summary = []
-        files_by_acc = {}
-        size_by_acc = {}
+        if manifest is None and os.path.exists("upload_manifest.json"):
+            try:
+                with open("upload_manifest.json", "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+            except Exception:
+                manifest = {}
+
+        published_bytes = {u: 0 for u in self.accounts}
+        published_count = {u: 0 for u in self.accounts}
 
         if manifest and "files" in manifest:
             for k, f in manifest["files"].items():
                 owner = f.get("account") or (f.get("repo_id", "").split("/")[0] if "/" in f.get("repo_id", "") else self.primary_username)
-                files_by_acc[owner] = files_by_acc.get(owner, 0) + 1
-                size_by_acc[owner] = size_by_acc.get(owner, 0) + f.get("orig_size", 0)
+                if owner not in published_bytes:
+                    published_bytes[owner] = 0
+                    published_count[owner] = 0
+                published_bytes[owner] += f.get("orig_size", 0)
+                published_count[owner] += 1
+
+        staged_bytes = {u: 0 for u in self.accounts}
+        staged_count = {u: 0 for u in self.accounts}
+
+        if include_staging:
+            stg_path = os.path.join("staging", "staging_manifest.json")
+            if os.path.exists(stg_path):
+                try:
+                    with open(stg_path, "r", encoding="utf-8") as sf:
+                        stg_mf = json.load(sf)
+                    for rk, rdata in stg_mf.get("repositories", {}).items():
+                        if rdata.get("status") == "pushed":
+                            continue
+                        r_acc = rdata.get("account") or (rdata.get("repo_id", "").split("/")[0] if "/" in rdata.get("repo_id", "") else self.primary_username)
+                        if r_acc not in staged_bytes:
+                            staged_bytes[r_acc] = 0
+                            staged_count[r_acc] = 0
+                        stg_sz = rdata.get("total_orig_size", 0)
+                        if not stg_sz:
+                            stg_sz = rdata.get("initial_scan", {}).get("total_orig_bytes", 0)
+                        stg_cnt = len(rdata.get("files", []))
+                        if not stg_cnt:
+                            stg_cnt = rdata.get("initial_scan", {}).get("video_files_discovered", 0)
+                        staged_bytes[r_acc] += stg_sz
+                        staged_count[r_acc] += stg_cnt
+                except Exception:
+                    pass
+
+        total_cluster_bytes = sum(
+            (published_bytes.get(u, 0) + staged_bytes.get(u, 0))
+            for u, acc in self.accounts.items()
+            if acc.get("enabled", True)
+        )
+
+        eligible = [
+            u for u, acc in self.accounts.items()
+            if acc.get("enabled", True) and acc.get("can_write", True)
+        ]
+
+        if eligible:
+            eligible.sort(key=lambda u: (
+                published_bytes.get(u, 0) + staged_bytes.get(u, 0),
+                published_count.get(u, 0) + staged_count.get(u, 0),
+                0 if self.accounts[u].get("is_upload") else 1
+            ))
+            next_target_user = eligible[0]
+        else:
+            next_target_user = self.primary_username
+
+        usage = {}
+        for u, acc in self.accounts.items():
+            pb = published_bytes.get(u, 0)
+            pc = published_count.get(u, 0)
+            sb = staged_bytes.get(u, 0)
+            sc = staged_count.get(u, 0)
+            tot_b = pb + sb
+            tot_c = pc + sc
+            pct = round((tot_b / total_cluster_bytes * 100), 1) if total_cluster_bytes > 0 else 0.0
+
+            usage[u] = {
+                "username": u,
+                "is_primary": acc.get("is_upload", False),
+                "enabled": acc.get("enabled", True),
+                "can_write": acc.get("can_write", True),
+                "role_desc": acc.get("role_desc", "Write Access"),
+                "published_bytes": pb,
+                "published_count": pc,
+                "staged_bytes": sb,
+                "staged_count": sc,
+                "total_bytes": tot_b,
+                "total_count": tot_c,
+                "storage_pct": pct,
+                "is_next_target": (u == next_target_user and acc.get("can_write", True) and acc.get("enabled", True))
+            }
+
+        return usage
+
+    def get_balanced_account_for_new_repo(self, repo_folder: str = None, prospective_bytes: int = 0) -> dict:
+        """
+        Selects the best account and generates repo_id for a new or existing repository folder,
+        strictly maintaining equal storage balance across all write-enabled accounts.
+
+        Rules:
+        1. If repo_folder already exists in published manifest, preserve that repo & account.
+        2. If repo_folder already exists in staging manifest with assigned account/repo, preserve it.
+        3. Otherwise, select the write-enabled account with the lowest combined storage (published + staged).
+        """
+        # 1. Check existing in published manifest
+        if repo_folder and os.path.exists("upload_manifest.json"):
+            try:
+                with open("upload_manifest.json", "r", encoding="utf-8") as f:
+                    mf = json.load(f)
+                prefix = f"{repo_folder}/"
+                for k, v in mf.get("files", {}).items():
+                    if k.startswith(prefix) and v.get("repo_id"):
+                        exist_repo = v.get("repo_id")
+                        exist_acc = v.get("account") or exist_repo.split("/")[0]
+                        if exist_acc in self.accounts and self.accounts[exist_acc].get("can_write", True):
+                            acc_info = self.accounts[exist_acc]
+                            return {
+                                "username": exist_acc,
+                                "account": exist_acc,
+                                "token": acc_info["token"],
+                                "api": acc_info["api"],
+                                "password": self.get_password_for_account(exist_acc) or self.password,
+                                "repo_id": exist_repo,
+                                "is_existing": True
+                            }
+            except Exception:
+                pass
+
+        # 2. Check existing in staging manifest
+        if repo_folder and os.path.exists(os.path.join("staging", "staging_manifest.json")):
+            try:
+                with open(os.path.join("staging", "staging_manifest.json"), "r", encoding="utf-8") as f:
+                    stg = json.load(f)
+                rdata = stg.get("repositories", {}).get(repo_folder)
+                if rdata and rdata.get("repo_id") and rdata.get("account"):
+                    stg_repo = rdata.get("repo_id")
+                    stg_acc = rdata.get("account")
+                    if stg_acc in self.accounts and self.accounts[stg_acc].get("can_write", True):
+                        acc_info = self.accounts[stg_acc]
+                        return {
+                            "username": stg_acc,
+                            "account": stg_acc,
+                            "token": acc_info["token"],
+                            "api": acc_info["api"],
+                            "password": self.get_password_for_account(stg_acc) or self.password,
+                            "repo_id": stg_repo,
+                            "is_existing": True
+                        }
+            except Exception:
+                pass
+
+        # 3. New repository: select write-enabled account with lowest total storage
+        usage = self.get_account_storage_usage(include_staging=True)
+        eligible = [
+            u for u, acc in self.accounts.items()
+            if acc.get("enabled", True) and acc.get("can_write", True)
+        ]
+
+        if not eligible:
+            up_acc = self.get_upload_account()
+            if up_acc:
+                chosen_u = up_acc["username"]
+            else:
+                chosen_u = self.primary_username or (next(iter(self.accounts)) if self.accounts else "unknown")
+        else:
+            eligible.sort(key=lambda u: (
+                usage.get(u, {}).get("total_bytes", 0),
+                usage.get(u, {}).get("total_count", 0),
+                0 if self.accounts[u].get("is_upload") else 1
+            ))
+            chosen_u = eligible[0]
+
+        chosen_acc = self.accounts.get(chosen_u, {})
+        api = chosen_acc.get("api")
+        token = chosen_acc.get("token")
+        pw = self.get_password_for_account(chosen_u) or self.password
+
+        name_key = crypto_engine.derive_name_key(self.password)
+        if repo_folder:
+            hf_repo_name = crypto_engine.get_obfuscated_repo_name(repo_folder, name_key)
+        else:
+            hf_repo_name = "encrypted-media-vault"
+
+        repo_id = f"{chosen_u}/{hf_repo_name}"
+        return {
+            "username": chosen_u,
+            "account": chosen_u,
+            "token": token,
+            "api": api,
+            "password": pw,
+            "repo_id": repo_id,
+            "is_existing": False,
+            "current_storage_bytes": usage.get(chosen_u, {}).get("total_bytes", 0),
+            "storage_pct": usage.get(chosen_u, {}).get("storage_pct", 0.0)
+        }
+
+    def get_accounts_summary(self, manifest: dict = None) -> list:
+        """
+        Returns rich summary of all connected accounts for the Web UI,
+        including live balanced storage usage and next target indicator.
+        """
+        usage = self.get_account_storage_usage(manifest=manifest, include_staging=True)
+        summary = []
+
+        def _fmt(b: int) -> str:
+            mb = b / (1024 * 1024)
+            return f"{mb:.2f} MB" if mb < 1024 else f"{mb / 1024:.2f} GB"
 
         for user, acc in self.accounts.items():
             tok = acc["token"]
             masked = f"{tok[:7]}...{tok[-4:]}" if len(tok) > 12 else "••••••••"
-            v_count = files_by_acc.get(user, 0)
-            bytes_tot = size_by_acc.get(user, 0)
-            size_mb = bytes_tot / (1024 * 1024)
-            size_str = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+            u_data = usage.get(user, {})
+            tot_bytes = u_data.get("total_bytes", 0)
+            pub_bytes = u_data.get("published_bytes", 0)
+            stg_bytes = u_data.get("staged_bytes", 0)
+            v_count = u_data.get("published_count", 0)
+            stg_count = u_data.get("staged_count", 0)
+            storage_pct = u_data.get("storage_pct", 0.0)
+            is_next = u_data.get("is_next_target", False)
+
             has_custom = acc.get("has_custom_key", False)
             keys = self.get_passwords_for_account(user)
             key_count = len(keys)
@@ -1482,8 +1783,16 @@ class AccountManager:
                 "key_status": key_status,
                 "token_masked": masked,
                 "video_count": v_count,
-                "total_bytes": bytes_tot,
-                "size_str": size_str
+                "staged_count": stg_count,
+                "total_count": v_count + stg_count,
+                "published_bytes": pub_bytes,
+                "staged_bytes": stg_bytes,
+                "total_bytes": tot_bytes,
+                "size_str": _fmt(tot_bytes),
+                "published_size_str": _fmt(pub_bytes),
+                "staged_size_str": _fmt(stg_bytes),
+                "storage_pct": storage_pct,
+                "is_next_target": is_next
             })
 
         return summary

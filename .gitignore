@@ -7,12 +7,21 @@ env.txt
 *.key
 *.token
 *.pem
+*password*.txt
+.hf_token_cache.json
+.verifier_cache.json
 
 # ==========================================
 # PRIVATE VAULT MANIFEST & RUNTIME STATE
 # ==========================================
 upload_manifest.json
 live_activity.json
+pc_tracker/
+staging/
+scratch/
+*.encdir/
+*.encname
+*.bak*
 
 # ==========================================
 # MEDIA FILES & LOCAL JELLYFIN CONTENT

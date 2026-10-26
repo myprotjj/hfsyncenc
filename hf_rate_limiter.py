@@ -82,6 +82,13 @@ class HFRateLimiter:
         self.token_states: Dict[str, Dict[str, Any]] = {}
         self.throttled_until: Dict[str, float] = {}
 
+        # Multi-Account Anti-Spam & Anti-Sybil Protections
+        self.last_active_token_key: Optional[str] = None
+        self.last_token_request_time: float = 0.0
+        self.min_token_switch_spacing: float = 1.5  # Natural pause when switching accounts
+        self.global_last_commit_time: float = 0.0   # Global cross-account commit pacer
+        self.global_min_commit_spacing: float = 3.0 # Minimum 3.0s between any commits across all accounts
+
     def _get_token_key(self, token: Optional[str]) -> str:
         if not token:
             return "default"
@@ -142,20 +149,27 @@ class HFRateLimiter:
 
         with self.lock:
             now = time.time()
-            # 1. Check if token is in explicit 429 cooldown
+            # 1. Anti-Spam / Anti-Sybil Protection:
+            # When switching between different accounts on the same client IP, enforce a natural human pause.
+            if self.last_active_token_key and key != "default" and self.last_active_token_key != key:
+                elapsed_switch = now - self.last_token_request_time
+                if elapsed_switch < self.min_token_switch_spacing:
+                    switch_delay = (self.min_token_switch_spacing - elapsed_switch) + random.uniform(0.1, 0.35)
+                    sleep_time = max(sleep_time, switch_delay)
+
+            # 2. Check if token is in explicit 429 cooldown
             until = self.throttled_until.get(key, 0.0)
             if now < until:
                 sleep_time = max(sleep_time, until - now)
 
             state = self._ensure_token_state(key)
 
-            # 2. Check live remaining quota from HF headers
+            # 3. Check live remaining quota from HF headers
             rem = state.get("remaining_quota", 1000)
             reset_t = state.get("reset_in", 300)
 
             if rem <= 40 and reset_t > 0:
                 # Urgent throttle: fewer than 40 requests remaining before window reset!
-                # Pace requests evenly across remaining time
                 pace_delay = max(1.5, reset_t / max(1, rem))
                 sleep_time = max(sleep_time, pace_delay)
             elif rem <= 100 and reset_t > 0:
@@ -163,19 +177,22 @@ class HFRateLimiter:
                 pace_delay = max(0.5, (reset_t / max(1, rem)) * 0.8)
                 sleep_time = max(sleep_time, pace_delay)
 
-            # 3. Check local window count
+            # 4. Check local window count
             if state["request_count"] >= self.max_requests:
                 time_left_in_window = max(1.0, (state["window_start"] + self.window_sec) - now)
                 sleep_time = max(sleep_time, time_left_in_window)
 
-            # 4. Enforce micro-spacing
+            # 5. Enforce micro-spacing with subtle jitter
             elapsed_since_last = now - state["last_request_time"]
             if elapsed_since_last < self.min_request_spacing:
-                sleep_time = max(sleep_time, self.min_request_spacing - elapsed_since_last)
+                sleep_time = max(sleep_time, (self.min_request_spacing - elapsed_since_last) + random.uniform(0.01, 0.04))
 
-            # Optimistically record request
+            # Record request and update last active token
             state["request_count"] += 1
             state["last_request_time"] = now + sleep_time
+            if key != "default":
+                self.last_active_token_key = key
+            self.last_token_request_time = now + sleep_time
 
         if sleep_time > 0:
             if sleep_time >= 5.0:
@@ -184,8 +201,8 @@ class HFRateLimiter:
 
     def wait_for_commit_slot(self, token: Optional[str] = None):
         """
-        Enforces minimum spacing between Git commits to prevent secondary rate limits
-        and git-lock collisions.
+        Enforces minimum spacing between Git commits to prevent secondary rate limits,
+        git-lock collisions, and multi-account bot detection.
         """
         # First ensure general request slot is available
         self.wait_for_request_slot(token)
@@ -195,12 +212,20 @@ class HFRateLimiter:
 
         with self.lock:
             now = time.time()
+            # Enforce global commit spacing across all accounts (minimum 3.0s between any commits)
+            elapsed_global = now - self.global_last_commit_time
+            if elapsed_global < self.global_min_commit_spacing:
+                commit_sleep = max(commit_sleep, (self.global_min_commit_spacing - elapsed_global) + random.uniform(0.1, 0.4))
+
+            # Enforce per-account commit spacing
             state = self._ensure_token_state(key)
             last_commit = state["last_commit_time"]
             elapsed = now - last_commit
             if elapsed < self.min_commit_spacing:
-                commit_sleep = (self.min_commit_spacing - elapsed) + random.uniform(0.05, 0.25)
+                commit_sleep = max(commit_sleep, (self.min_commit_spacing - elapsed) + random.uniform(0.05, 0.25))
+
             state["last_commit_time"] = now + commit_sleep
+            self.global_last_commit_time = now + commit_sleep
 
         if commit_sleep > 0:
             time.sleep(commit_sleep)
@@ -308,6 +333,7 @@ class DebouncedIndexSyncer:
         self.max_interval = max_interval_sec
         self.lock = threading.Lock()
         self.pending_manifest = None
+        self.has_pending = False
         self.sync_func = None
         self.api = None
         self.master_repo = None
@@ -322,6 +348,7 @@ class DebouncedIndexSyncer:
             self.manifest = manifest
             self.password = password
             self.sync_func = sync_func
+            self.has_pending = True
 
             now = time.time()
             if self.first_queued_time == 0.0:
@@ -344,6 +371,8 @@ class DebouncedIndexSyncer:
     def flush_immediate(self):
         """Forces an immediate flush (e.g. when all files in the batch have finished)."""
         with self.lock:
+            if not self.has_pending:
+                return
             if self.timer:
                 self.timer.cancel()
                 self.timer = None
@@ -351,6 +380,9 @@ class DebouncedIndexSyncer:
 
     def _flush(self):
         with self.lock:
+            if not self.has_pending:
+                return
+            self.has_pending = False
             self.timer = None
             self.first_queued_time = 0.0
             api = self.api

@@ -209,10 +209,10 @@ class EncryptedStreamCache:
         self.max_age_seconds = max_age_seconds
         os.makedirs(self.cache_dir, exist_ok=True)
         self._indices: Dict[str, VideoChunkIndex] = {}
-        self._locks: Dict[str, threading.Lock] = {}
+        self._locks: Dict[str, threading.RLock] = {}
         self._active_downloads: Dict[str, threading.Thread] = {}
         self._stop_downloads: Set[str] = set()
-        self._global_lock = threading.Lock()
+        self._global_lock = threading.RLock()
 
         # Purge any unpinned cache on startup (only pinned offline videos remain on disk)
         self.purge_unpinned_cache()
@@ -221,10 +221,10 @@ class EncryptedStreamCache:
         self._cleaner_thread = threading.Thread(target=self._expiration_cleaner_loop, daemon=True)
         self._cleaner_thread.start()
 
-    def _get_lock(self, cache_id: str) -> threading.Lock:
+    def _get_lock(self, cache_id: str) -> threading.RLock:
         with self._global_lock:
             if cache_id not in self._locks:
-                self._locks[cache_id] = threading.Lock()
+                self._locks[cache_id] = threading.RLock()
             return self._locks[cache_id]
 
     def _get_enc_path(self, cache_id: str) -> str:
@@ -357,7 +357,7 @@ class EncryptedStreamCache:
                 pass
         return None
 
-    def write_chunk_ciphertext(self, cache_id: str, c_idx: int, chunk_cipher: bytes, total_size: int, chunk_size: int):
+    def write_chunk_ciphertext(self, cache_id: str, c_idx: int, chunk_cipher: bytes, total_size: int, chunk_size: int, save_idx: bool = True):
         c_len = self.get_chunk_cipher_length(total_size, chunk_size, c_idx)
         if len(chunk_cipher) != c_len:
             return
@@ -377,7 +377,8 @@ class EncryptedStreamCache:
             except Exception:
                 return
 
-        self.save_index(cache_id)
+        if save_idx:
+            self.save_index(cache_id)
 
     def get_chunk_spans(self, cache_id: str, first_chunk: int, last_chunk: int, total_size: int, chunk_size: int) -> List[Tuple[bool, int, int]]:
         idx = self.get_or_load_index(cache_id, total_size, chunk_size)
@@ -702,7 +703,7 @@ class EncryptedStreamCache:
         """Clears cache for a specific video or all videos."""
         with self._global_lock:
             if cache_id:
-                self.stop_offline_download(cache_id)
+                self._stop_downloads.add(cache_id)
                 idx_path = self._get_idx_path(cache_id)
                 enc_path = self._get_enc_path(cache_id)
                 self._indices.pop(cache_id, None)
@@ -716,7 +717,7 @@ class EncryptedStreamCache:
                 return True
             else:
                 for cid in list(self._active_downloads.keys()):
-                    self.stop_offline_download(cid)
+                    self._stop_downloads.add(cid)
                 self._indices.clear()
                 self._locks.clear()
                 if os.path.exists(self.cache_dir):

@@ -67,9 +67,9 @@ def extract_companion_audio(video_path: str, output_audio_path: str) -> bool:
     """
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     try:
-        # Fast stream-copy first
-        cmd_copy = [ffmpeg, "-y", "-i", video_path, "-vn", "-c:a", "copy", output_audio_path]
-        res = subprocess.run(cmd_copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        # Fast stream-copy first (lossless, instant)
+        cmd_copy = [ffmpeg, "-y", "-threads", "2", "-i", video_path, "-vn", "-c:a", "copy", output_audio_path]
+        res = subprocess.run(cmd_copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
         if res.returncode == 0 and os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 500:
             return True
     except Exception:
@@ -77,8 +77,8 @@ def extract_companion_audio(video_path: str, output_audio_path: str) -> bool:
 
     try:
         # Fallback: re-encode audio to universal high-compatibility AAC
-        cmd_aac = [ffmpeg, "-y", "-i", video_path, "-vn", "-c:a", "aac", "-b:a", "192k", output_audio_path]
-        res2 = subprocess.run(cmd_aac, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        cmd_aac = [ffmpeg, "-y", "-threads", "2", "-i", video_path, "-vn", "-c:a", "aac", "-b:a", "192k", output_audio_path]
+        res2 = subprocess.run(cmd_aac, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         return res2.returncode == 0 and os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 500
     except Exception:
         return False
