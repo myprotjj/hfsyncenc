@@ -224,33 +224,33 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
             border-bottom: 1px solid var(--border-subtle);
-            padding: 12px 28px;
+            padding: 6px 20px;
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 6px;
         }}
 
         .header-top-row {{
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 16px;
+            gap: 12px;
         }}
 
         .brand-cluster {{
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             flex-shrink: 0;
         }}
 
         .brand-title {{
-            font-size: 1.15rem;
+            font-size: 0.96rem;
             font-weight: 700;
             color: #ffffff;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
             text-decoration: none;
             letter-spacing: -0.01em;
         }}
@@ -258,15 +258,15 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
         .brand-count-badge {{
             background: #272727;
             color: #a1a1aa;
-            font-size: 0.76rem;
-            padding: 2px 8px;
+            font-size: 0.70rem;
+            padding: 1px 6px;
             border-radius: 9999px;
             font-weight: 600;
         }}
 
         .search-container {{
             flex: 1;
-            max-width: 640px;
+            max-width: 520px;
             position: relative;
             display: flex;
             align-items: center;
@@ -274,50 +274,54 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
 
         .search-input {{
             width: 100%;
-            background: #181818;
-            border: 1px solid #2e2e2e;
-            border-radius: 9999px;
-            padding: 9px 40px 9px 38px;
+            height: 26px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            padding: 2px 28px 2px 28px;
             color: #ffffff;
-            font-size: 0.9rem;
+            font-size: 0.80rem;
             outline: none;
-            transition: all 0.2s ease;
+            transition: all 0.15s ease;
+            box-sizing: border-box;
         }}
         .search-input:focus {{
-            border-color: #38bdf8;
-            background: #202020;
-            box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+            border-color: rgba(56, 189, 248, 0.5);
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25);
         }}
 
         .search-icon-left {{
             position: absolute;
-            left: 14px;
+            left: 8px;
             color: #71717a;
-            font-size: 0.85rem;
+            font-size: 0.75rem;
             pointer-events: none;
+            display: inline-flex;
+            align-items: center;
         }}
 
         .search-clear-btn {{
             position: absolute;
-            right: 14px;
+            right: 8px;
             background: transparent;
             border: none;
             color: #71717a;
             cursor: pointer;
-            font-size: 1rem;
+            font-size: 0.9rem;
             display: none;
-            padding: 2px;
+            padding: 1px;
         }}
         .search-clear-btn:hover {{ color: #ffffff; }}
 
         .search-shortcut-hint {{
             position: absolute;
-            right: 14px;
+            right: 8px;
             background: #272727;
             color: #71717a;
-            font-size: 0.72rem;
-            padding: 1px 6px;
-            border-radius: 4px;
+            font-size: 0.65rem;
+            padding: 0 4px;
+            border-radius: 3px;
             pointer-events: none;
             font-weight: 600;
         }}
@@ -325,51 +329,55 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
         .header-actions-cluster {{
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 6px;
             flex-shrink: 0;
         }}
 
         .flat-btn {{
-            background: #272727;
-            color: #f4f4f5;
+            background: rgba(255, 255, 255, 0.04);
+            color: #cbd5e1;
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 8px;
-            padding: 8px 14px;
-            font-size: 0.82rem;
-            font-weight: 600;
+            border-radius: 5px;
+            padding: 2px 8px;
+            font-size: 0.73rem;
+            font-weight: 500;
             cursor: pointer;
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 5px;
             transition: all 0.15s ease;
             text-decoration: none;
+            height: 26px;
+            box-sizing: border-box;
         }}
         .flat-btn:hover {{
-            background: #333338;
-            border-color: rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.16);
             color: #ffffff;
         }}
 
         .sort-select {{
-            background: #272727;
-            color: #f4f4f5;
+            background: rgba(255, 255, 255, 0.03);
+            color: #cbd5e1;
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 8px;
-            padding: 8px 12px;
-            font-size: 0.82rem;
-            font-weight: 600;
+            border-radius: 5px;
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            font-weight: 500;
             outline: none;
             cursor: pointer;
+            height: 26px;
+            box-sizing: border-box;
         }}
 
         /* Filter Chips Row */
         .filter-chips-row {{
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 5px;
             overflow-x: auto;
             white-space: nowrap;
-            padding-bottom: 2px;
+            padding-bottom: 0;
             scrollbar-width: none;
         }}
         .filter-chips-row::-webkit-scrollbar {{ display: none; }}
@@ -378,33 +386,37 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
             background: var(--pill-bg);
             color: var(--pill-text);
             border: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: 9999px;
-            padding: 5px 14px;
-            font-size: 0.8rem;
-            font-weight: 600;
+            border-radius: 4px;
+            padding: 1px 8px;
+            font-size: 0.72rem;
+            font-weight: 500;
             cursor: pointer;
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 4px;
             transition: all 0.15s ease;
             user-select: none;
             flex-shrink: 0;
+            height: 22px;
+            box-sizing: border-box;
         }}
-        .filter-chip:hover {{ background: #333338; color: #ffffff; }}
-        .filter-chip.is-active {{ background: #ffffff; color: #0f0f0f; border-color: #ffffff; }}
+        .filter-chip:hover {{ background: rgba(255, 255, 255, 0.08); color: #ffffff; }}
+        .filter-chip.is-active {{ background: #ffffff; color: #0f0f0f; border-color: #ffffff; font-weight: 600; }}
 
         .active-filter-badge {{
             background: #38bdf8;
             color: #0b1120;
-            font-size: 0.78rem;
+            font-size: 0.70rem;
             font-weight: 700;
-            padding: 4px 10px;
-            border-radius: 9999px;
+            padding: 1px 7px;
+            border-radius: 4px;
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 4px;
             cursor: pointer;
             flex-shrink: 0;
+            height: 22px;
+            box-sizing: border-box;
         }}
         .active-filter-badge:hover {{ background: #7dd3fc; }}
         .active-filter-badge .badge-remove {{ font-weight: 800; margin-left: 2px; }}
@@ -413,15 +425,17 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
             background: transparent;
             color: #ef4444;
             border: 1px dashed rgba(239, 68, 68, 0.4);
-            border-radius: 9999px;
-            padding: 4px 12px;
-            font-size: 0.78rem;
+            border-radius: 4px;
+            padding: 1px 7px;
+            font-size: 0.70rem;
             font-weight: 600;
             cursor: pointer;
             display: none;
             align-items: center;
             gap: 4px;
             flex-shrink: 0;
+            height: 22px;
+            box-sizing: border-box;
         }}
         .btn-clear-filters:hover {{ background: rgba(239, 68, 68, 0.1); }}
 
@@ -1665,13 +1679,16 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
         <div class="header-top-row">
             <div class="brand-cluster">
                 <a href="/discover" class="brand-title">
-                    <span>✨</span> HFSYNC Discover
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="#38bdf8"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                    HFSYNC Discover
                 </a>
                 <span class="brand-count-badge" id="totalCountBadge">{len(manifest_data)} Videos</span>
             </div>
 
             <div class="search-container">
-                <span class="search-icon-left">🔍</span>
+                <span class="search-icon-left">
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                </span>
                 <input type="text" id="discoverSearchInput" class="search-input" placeholder="Search videos, categories, tags, codecs, resolution..." autocomplete="off">
                 <button type="button" id="searchClearBtn" class="search-clear-btn" onclick="clearSearch()">&times;</button>
                 <span class="search-shortcut-hint" id="shortcutHint">/</span>
@@ -1679,23 +1696,23 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
 
             <div class="header-actions-cluster">
                 <select id="sortSelect" class="sort-select" onchange="handleSortChange(this.value)">
-                    <option value="newest">🕒 Newest Added</option>
-                    <option value="oldest">🕒 Oldest Added</option>
-                    <option value="name_asc">🔤 Title (A &rarr; Z)</option>
-                    <option value="name_desc">🔤 Title (Z &rarr; A)</option>
-                    <option value="duration_desc">⏱️ Duration (Longest)</option>
-                    <option value="duration_asc">⏱️ Duration (Shortest)</option>
-                    <option value="size_desc">💾 Size (Largest)</option>
-                    <option value="size_asc">💾 Size (Smallest)</option>
-                    <option value="rating_desc">⭐ Rating (Highest)</option>
-                    <option value="random">🔀 Random Shuffle</option>
+                    <option value="newest">Newest Added</option>
+                    <option value="oldest">Oldest Added</option>
+                    <option value="name_asc">Title (A &rarr; Z)</option>
+                    <option value="name_desc">Title (Z &rarr; A)</option>
+                    <option value="duration_desc">Duration (Longest)</option>
+                    <option value="duration_asc">Duration (Shortest)</option>
+                    <option value="size_desc">Size (Largest)</option>
+                    <option value="size_asc">Size (Smallest)</option>
+                    <option value="rating_desc">Rating (Highest)</option>
+                    <option value="random">Random Shuffle</option>
                 </select>
 
                 <a href="/" class="flat-btn" title="Switch back to Folder Tree Explorer">
-                    <span>📁</span> Vault Explorer
+                    Vault Explorer
                 </a>
                 <a href="/#stagingPushSection" id="stagedQueueBadge" class="flat-btn" style="display: none; background: #065f46; color: #6ee7b7; border-color: #059669; font-weight: 700;" title="Batches staged and ready for 1-commit push">
-                    <span>🚀</span> <span id="stagedQueueCount">0</span> Ready to Push
+                    🚀 <span id="stagedQueueCount">0</span> Ready to Push
                 </a>
             </div>
         </div>
@@ -1703,16 +1720,16 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
         <!-- Scrollable Filter Chips Row -->
         <div class="filter-chips-row" id="filterChipsRow">
             <div class="filter-chip is-active" data-filter="all" onclick="setPresetFilter('all', this)">All</div>
-            <div class="filter-chip" data-filter="4k" onclick="setPresetFilter('4k', this)">✨ 4K UHD</div>
-            <div class="filter-chip" data-filter="1080p" onclick="setPresetFilter('1080p', this)">📺 1080p HD</div>
-            <div class="filter-chip" data-filter="720p" onclick="setPresetFilter('720p', this)">📺 720p</div>
-            <div class="filter-chip" data-filter="short" onclick="setPresetFilter('short', this)">⏱️ Short (&lt;15m)</div>
-            <div class="filter-chip" data-filter="long" onclick="setPresetFilter('long', this)">🎬 Feature (&gt;30m)</div>
-            <div class="filter-chip" data-filter="offline" onclick="setPresetFilter('offline', this)">📌 Offline Ready</div>
-            <div class="filter-chip" data-filter="cached" onclick="setPresetFilter('cached', this)">💾 Cached</div>
+            <div class="filter-chip" data-filter="4k" onclick="setPresetFilter('4k', this)">4K UHD</div>
+            <div class="filter-chip" data-filter="1080p" onclick="setPresetFilter('1080p', this)">1080p HD</div>
+            <div class="filter-chip" data-filter="720p" onclick="setPresetFilter('720p', this)">720p</div>
+            <div class="filter-chip" data-filter="short" onclick="setPresetFilter('short', this)">Short (&lt;15m)</div>
+            <div class="filter-chip" data-filter="long" onclick="setPresetFilter('long', this)">Feature (&gt;30m)</div>
+            <div class="filter-chip" data-filter="offline" onclick="setPresetFilter('offline', this)">Offline Ready</div>
+            <div class="filter-chip" data-filter="cached" onclick="setPresetFilter('cached', this)">Cached</div>
 
             <!-- Active Custom Filter Badges rendered dynamically here -->
-            <div id="activeFiltersContainer" style="display: inline-flex; gap: 6px; align-items: center;"></div>
+            <div id="activeFiltersContainer" style="display: inline-flex; gap: 5px; align-items: center;"></div>
             <button type="button" id="btnClearAllFilters" class="btn-clear-filters" onclick="clearAllFilters()">
                 &times; Clear All
             </button>

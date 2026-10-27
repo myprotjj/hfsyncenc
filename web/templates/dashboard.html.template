@@ -34,66 +34,101 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid var(--panel-border);
-            padding: 4px 0 12px 0;
-            margin-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 4px 0 6px 0;
+            margin-bottom: 6px;
             flex-wrap: wrap;
-            gap: 12px;
+            gap: 8px;
         }}
         .vault-brand-cluster {{
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 8px;
             flex-wrap: wrap;
         }}
         .vault-brand-title {{
             margin: 0;
-            font-size: 1.32rem;
-            color: var(--primary);
+            font-size: 0.96rem;
+            color: #f1f5f9;
             display: inline-flex;
             align-items: center;
-            gap: 8px;
-            font-weight: 800;
-            letter-spacing: -0.3px;
+            gap: 6px;
+            font-weight: 700;
+            letter-spacing: -0.2px;
         }}
         .vault-actions-cluster {{
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 5px;
             flex-wrap: wrap;
+        }}
+        .btn-flat-nav {{
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 2px 8px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            color: #cbd5e1;
+            font-size: 0.73rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-decoration: none;
+            white-space: nowrap;
+            height: 24px;
+            box-sizing: border-box;
+        }}
+        .btn-flat-nav:hover {{
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.16);
+            color: #ffffff;
+        }}
+        .btn-flat-nav.btn-primary-ghost {{
+            background: rgba(56, 189, 248, 0.08);
+            border-color: rgba(56, 189, 248, 0.3);
+            color: #38bdf8;
+            font-weight: 600;
+        }}
+        .btn-flat-nav.btn-primary-ghost:hover {{
+            background: rgba(56, 189, 248, 0.18);
+            border-color: rgba(56, 189, 248, 0.5);
+            color: #e0f2fe;
         }}
         .jellyfin-sync-pill {{
             display: inline-flex;
             align-items: center;
-            gap: 7px;
-            padding: 5px 12px;
-            background: rgba(15, 23, 42, 0.75);
-            border: 1px solid rgba(56, 189, 248, 0.35);
+            gap: 5px;
+            padding: 2px 7px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(56, 189, 248, 0.25);
             border-radius: 9999px;
             cursor: pointer;
-            font-size: 0.82rem;
-            color: #e2e8f0;
-            transition: all 0.2s ease;
+            font-size: 0.72rem;
+            color: #cbd5e1;
+            transition: all 0.15s ease;
             user-select: none;
+            height: 22px;
+            box-sizing: border-box;
         }}
         .jellyfin-sync-pill:hover {{
-            background: rgba(56, 189, 248, 0.15);
-            border-color: rgba(56, 189, 248, 0.6);
-            transform: translateY(-1px);
+            background: rgba(56, 189, 248, 0.12);
+            border-color: rgba(56, 189, 248, 0.45);
         }}
         .jellyfin-sync-badge {{
-            padding: 2px 7px;
+            padding: 1px 5px;
             border-radius: 9999px;
-            font-size: 0.68rem;
+            font-size: 0.62rem;
             font-weight: 700;
-            letter-spacing: 0.5px;
-            transition: all 0.2s ease;
+            letter-spacing: 0.3px;
+            transition: all 0.15s ease;
         }}
         .jellyfin-sync-badge.is-on {{
             background: rgba(16, 185, 129, 0.25);
             color: #34d399;
             border: 1px solid rgba(52, 211, 153, 0.5);
-            box-shadow: 0 0 8px rgba(52, 211, 153, 0.25);
+            box-shadow: 0 0 6px rgba(52, 211, 153, 0.2);
         }}
         .jellyfin-sync-badge.is-off {{
             background: rgba(100, 116, 139, 0.25);
@@ -101,103 +136,96 @@
             border: 1px solid rgba(148, 163, 184, 0.3);
         }}
 
-        /* Status Pills (Always-On-Top Indicators) */
+        /* Status Pills (Always-On-Top Micro Indicators) */
         .status-pill {{
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            padding: 3px 10px;
+            gap: 5px;
+            padding: 2px 7px;
             border-radius: 9999px;
-            font-size: 0.74rem;
+            font-size: 0.69rem;
             font-weight: 600;
-            letter-spacing: 0.2px;
-            transition: all 0.25s ease;
+            letter-spacing: 0.1px;
+            transition: all 0.2s ease;
             white-space: nowrap;
         }}
         .status-pill.status-online {{
-            background: rgba(16, 185, 129, 0.14);
-            border: 1px solid rgba(16, 185, 129, 0.35);
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.3);
             color: #34d399;
         }}
         .status-pill.status-offline {{
-            background: rgba(239, 68, 68, 0.2);
-            border: 1px solid rgba(239, 68, 68, 0.6);
+            background: rgba(239, 68, 68, 0.18);
+            border: 1px solid rgba(239, 68, 68, 0.5);
             color: #fca5a5;
             animation: pulse-alert 1.2s infinite alternate;
         }}
         .status-pill.status-idle {{
-            background: rgba(16, 185, 129, 0.12);
-            border: 1px solid rgba(16, 185, 129, 0.3);
+            background: rgba(16, 185, 129, 0.10);
+            border: 1px solid rgba(16, 185, 129, 0.25);
             color: #6ee7b7;
         }}
         .status-pill.status-active {{
-            background: rgba(56, 189, 248, 0.2);
-            border: 1px solid rgba(56, 189, 248, 0.55);
+            background: rgba(56, 189, 248, 0.15);
+            border: 1px solid rgba(56, 189, 248, 0.45);
             color: #7dd3fc;
             animation: pulse-sync 1.5s infinite alternate;
         }}
         .status-pill.status-attention {{
-            background: rgba(245, 158, 11, 0.2);
-            border: 1px solid rgba(245, 158, 11, 0.6);
+            background: rgba(245, 158, 11, 0.15);
+            border: 1px solid rgba(245, 158, 11, 0.45);
             color: #fcd34d;
             animation: pulse-alert 1.2s infinite alternate;
         }}
         @keyframes pulse-sync {{
-            from {{ box-shadow: 0 0 4px rgba(56, 189, 248, 0.3); }}
-            to {{ box-shadow: 0 0 12px rgba(56, 189, 248, 0.75); }}
+            from {{ box-shadow: 0 0 3px rgba(56, 189, 248, 0.2); }}
+            to {{ box-shadow: 0 0 10px rgba(56, 189, 248, 0.6); }}
         }}
         @keyframes pulse-alert {{
-            from {{ box-shadow: 0 0 4px rgba(239, 68, 68, 0.3); }}
-            to {{ box-shadow: 0 0 14px rgba(239, 68, 68, 0.85); transform: scale(1.02); }}
+            from {{ box-shadow: 0 0 3px rgba(239, 68, 68, 0.2); }}
+            to {{ box-shadow: 0 0 10px rgba(239, 68, 68, 0.7); transform: scale(1.02); }}
         }}
         .pill-dot {{
-            width: 7px;
-            height: 7px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
             display: inline-block;
         }}
-        .status-online .pill-dot, .status-idle .pill-dot {{ background: #10b981; box-shadow: 0 0 6px #10b981; }}
-        .status-offline .pill-dot {{ background: #ef4444; box-shadow: 0 0 6px #ef4444; }}
-        .status-active .pill-dot {{ background: #38bdf8; box-shadow: 0 0 6px #38bdf8; }}
-        .status-attention .pill-dot {{ background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }}
+        .status-online .pill-dot, .status-idle .pill-dot {{ background: #10b981; box-shadow: 0 0 4px #10b981; }}
+        .status-offline .pill-dot {{ background: #ef4444; box-shadow: 0 0 4px #ef4444; }}
+        .status-active .pill-dot {{ background: #38bdf8; box-shadow: 0 0 4px #38bdf8; }}
+        .status-attention .pill-dot {{ background: #f59e0b; box-shadow: 0 0 4px #f59e0b; }}
 
-        /* Unified Metrics & Actions Toolbar (Single cohesive line, zero duplicates) */
+        /* Unified Metrics Bar (Minimal single-strip metrics) */
         .vault-unified-bar {{
             display: flex;
             justify-content: space-between;
             align-items: center;
-            gap: 12px;
+            gap: 8px;
             flex-wrap: wrap;
-            margin-bottom: 12px;
-            padding: 7px 14px;
-            background: rgba(15, 23, 42, 0.55);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 10px;
-            backdrop-filter: blur(10px);
+            margin-bottom: 8px;
+            padding: 3px 10px;
+            background: rgba(15, 23, 42, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 6px;
+            min-height: 28px;
         }}
         .unified-metrics-cluster {{
             display: inline-flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
             flex-wrap: wrap;
-            flex: 1;
-            min-width: 280px;
-        }}
-        .unified-actions-cluster {{
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
+            font-size: 0.74rem;
+            color: #94a3b8;
         }}
         .metric-chip {{
             display: inline-flex;
             align-items: center;
-            gap: 5px;
-            font-size: 0.78rem;
-            color: #9ca3af;
-            padding: 2px 7px;
-            border-radius: 6px;
+            gap: 4px;
+            font-size: 0.74rem;
+            color: #94a3b8;
+            padding: 1px 4px;
+            border-radius: 4px;
             transition: background 0.15s;
         }}
         .metric-chip.clickable {{
@@ -209,12 +237,12 @@
         }}
         .metric-val {{
             font-weight: 700;
-            color: #f3f4f6;
-            font-size: 0.86rem;
+            color: #f1f5f9;
+            font-size: 0.78rem;
         }}
         .metric-divider {{
-            color: rgba(255, 255, 255, 0.15);
-            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 0.7rem;
         }}
 
         /* Modern Flat Minimal Tree Folder Tags Cluster */
@@ -1306,47 +1334,47 @@
             position: sticky;
             top: 0;
             z-index: 100;
-            background: rgba(11, 15, 25, 0.94);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            padding: 12px 0 8px 0;
-            margin-bottom: 14px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
-            transition: all 0.2s ease;
+            background: rgba(11, 15, 25, 0.92);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            padding: 5px 0;
+            margin-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+            transition: all 0.15s ease;
         }}
         .sticky-filter-bar .toolbar {{
             margin-bottom: 0;
         }}
         .sticky-filter-bar .active-chips-bar {{
-            margin-top: 8px;
+            margin-top: 6px;
             margin-bottom: 0;
         }}
         .filter-summary-count {{
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            padding: 6px 14px;
-            background: rgba(99, 102, 241, 0.18);
-            border: 1px solid rgba(99, 102, 241, 0.45);
+            gap: 5px;
+            padding: 2px 8px;
+            background: rgba(99, 102, 241, 0.15);
+            border: 1px solid rgba(99, 102, 241, 0.4);
             border-radius: 9999px;
             color: #a5b4fc;
-            font-size: 0.82rem;
+            font-size: 0.74rem;
             font-weight: 600;
             white-space: nowrap;
         }}
         .filter-count-badge {{
             display: inline-flex;
             align-items: center;
-            gap: 4px;
-            padding: 3px 10px;
-            background: rgba(99, 102, 241, 0.25);
-            border: 1px solid rgba(99, 102, 241, 0.5);
+            gap: 3px;
+            padding: 1px 6px;
+            background: rgba(99, 102, 241, 0.22);
+            border: 1px solid rgba(99, 102, 241, 0.45);
             border-radius: 9999px;
             color: #c7d2fe;
-            font-size: 0.76rem;
+            font-size: 0.70rem;
             font-weight: 700;
-            margin-right: 6px;
+            margin-right: 4px;
         }}
         .folder-count.is-matching-filtered {{
             background: rgba(99, 102, 241, 0.25) !important;
@@ -1357,49 +1385,82 @@
 
         .toolbar {{
             display: flex;
-            gap: 10px;
+            gap: 6px;
             align-items: center;
-            margin-bottom: 16px;
+            margin-bottom: 0;
             flex-wrap: wrap;
         }}
-        .search-input {{
+        .search-wrapper-compact {{
+            position: relative;
             flex: 1;
-            min-width: 240px;
-            padding: 10px 14px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            border-radius: 8px;
-            color: #fff;
-            font-size: 0.92rem;
-            outline: none;
+            min-width: 180px;
+            display: flex;
+            align-items: center;
         }}
-        .search-input:focus {{ border-color: var(--primary); }}
+        .search-icon-inside {{
+            position: absolute;
+            left: 8px;
+            color: #64748b;
+            font-size: 0.75rem;
+            pointer-events: none;
+            display: inline-flex;
+            align-items: center;
+        }}
+        .search-input {{
+            width: 100%;
+            height: 26px;
+            padding: 2px 8px 2px 26px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            color: #f1f5f9;
+            font-size: 0.80rem;
+            outline: none;
+            transition: all 0.15s ease;
+            box-sizing: border-box;
+        }}
+        .search-input:focus {{
+            border-color: rgba(56, 189, 248, 0.5);
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25);
+        }}
+        .search-input::placeholder {{
+            color: #64748b;
+            font-size: 0.78rem;
+        }}
         
         .filter-select {{
-            padding: 10px 14px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            border-radius: 8px;
+            padding: 4px 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
             color: #f3f4f6;
-            font-size: 0.9rem;
+            font-size: 0.80rem;
             outline: none;
             cursor: pointer;
+            height: 26px;
+            box-sizing: border-box;
         }}
         .filter-select:focus {{ border-color: var(--primary); }}
 
         .tool-btn {{
-            padding: 10px 14px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            color: var(--text-muted);
-            border-radius: 8px;
+            padding: 3px 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #cbd5e1;
+            border-radius: 5px;
             cursor: pointer;
-            font-size: 0.88rem;
+            font-size: 0.78rem;
             font-weight: 500;
-            transition: all 0.2s;
+            transition: all 0.15s ease;
             white-space: nowrap;
+            height: 26px;
+            box-sizing: border-box;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
         }}
-        .tool-btn:hover {{ color: #fff; border-color: #4b5563; }}
+        .tool-btn:hover {{ color: #fff; border-color: rgba(255, 255, 255, 0.18); background: rgba(255, 255, 255, 0.06); }}
 
         /* Tree view structure */
         .tree-container {{
@@ -1544,9 +1605,9 @@
 
         /* Advanced Multi-Select Filter Toolbar */
         .multi-filter-group {{
-            display: flex;
+            display: inline-flex;
             align-items: center;
-            gap: 8px;
+            gap: 4px;
             flex-wrap: wrap;
         }}
         .popover-wrapper {{
@@ -1556,37 +1617,38 @@
         .filter-pill-btn {{
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            padding: 8px 12px;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            border-radius: 8px;
-            color: #e5e7eb;
-            font-size: 0.84rem;
+            gap: 4px;
+            height: 26px;
+            padding: 2px 7px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            color: #cbd5e1;
+            font-size: 0.75rem;
             font-weight: 500;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: all 0.15s ease;
             user-select: none;
             white-space: nowrap;
+            box-sizing: border-box;
         }}
         .filter-pill-btn:hover {{
-            border-color: #4b5563;
-            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.06);
             color: #fff;
         }}
         .filter-pill-btn.is-active {{
-            background: rgba(56, 189, 248, 0.15);
-            border-color: #38bdf8;
+            background: rgba(56, 189, 248, 0.12);
+            border-color: rgba(56, 189, 248, 0.4);
             color: #38bdf8;
         }}
         #genrePillBtn {{
-            background: rgba(245, 158, 11, 0.12) !important;
-            border-color: rgba(245, 158, 11, 0.45) !important;
+            background: rgba(245, 158, 11, 0.08) !important;
+            border-color: rgba(245, 158, 11, 0.3) !important;
             color: #fbbf24 !important;
-            font-weight: 600;
         }}
         #genrePillBtn:hover, #genrePillBtn.is-active {{
-            background: rgba(245, 158, 11, 0.25) !important;
+            background: rgba(245, 158, 11, 0.18) !important;
             border-color: #f59e0b !important;
             color: #fde68a !important;
         }}
@@ -1595,13 +1657,12 @@
             color: #1c1917 !important;
         }}
         #tagPillBtn {{
-            background: rgba(56, 189, 248, 0.12) !important;
-            border-color: rgba(56, 189, 248, 0.4) !important;
+            background: rgba(56, 189, 248, 0.08) !important;
+            border-color: rgba(56, 189, 248, 0.3) !important;
             color: #38bdf8 !important;
-            font-weight: 600;
         }}
         #tagPillBtn:hover, #tagPillBtn.is-active {{
-            background: rgba(56, 189, 248, 0.22) !important;
+            background: rgba(56, 189, 248, 0.18) !important;
             border-color: #0284c7 !important;
             color: #7dd3fc !important;
         }}
@@ -1612,11 +1673,16 @@
         .pill-badge {{
             background: #38bdf8;
             color: #0b0f19;
-            font-size: 0.72rem;
+            font-size: 0.65rem;
             font-weight: 700;
-            padding: 1px 6px;
-            border-radius: 10px;
-            margin-left: 2px;
+            padding: 0 5px;
+            border-radius: 8px;
+            line-height: 14px;
+            height: 14px;
+        }}
+        .pill-arrow {{
+            font-size: 0.65rem;
+            color: #94a3b8;
         }}
         .filter-popover {{
             position: absolute;
@@ -4053,27 +4119,72 @@
         .folder-header:hover .folder-action-icon-btn {{
             color: #94a3b8;
         }}
-        .tool-btn-icon {{
-            width: 32px !important;
-            height: 32px !important;
-            min-width: 32px !important;
+        .toolbar-actions-cluster {{
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: auto;
+        }}
+        .toolbar-segmented-group {{
+            display: inline-flex;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            overflow: hidden;
+            height: 26px;
+            box-sizing: border-box;
+        }}
+        .toolbar-segmented-group .tool-btn-icon {{
+            width: 26px !important;
+            height: 24px !important;
+            min-width: 26px !important;
             padding: 0 !important;
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
-            font-size: 0.95rem !important;
-            border-radius: 7px !important;
+            background: transparent !important;
+            border: none !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
+            border-radius: 0 !important;
+            color: #94a3b8 !important;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            position: relative;
+        }}
+        .toolbar-segmented-group .tool-btn-icon:last-child {{
+            border-right: none !important;
+        }}
+        .toolbar-segmented-group .tool-btn-icon:hover {{
+            background: rgba(255, 255, 255, 0.08) !important;
+            color: #ffffff !important;
+            transform: none !important;
+        }}
+        .toolbar-segmented-group .tool-btn-icon.is-active,
+        .toolbar-segmented-group .tool-btn-icon.active {{
+            background: rgba(56, 189, 248, 0.2) !important;
+            color: #38bdf8 !important;
+            box-shadow: none !important;
+        }}
+        .tool-btn-icon {{
+            width: 26px;
+            height: 24px;
+            min-width: 26px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 5px;
             position: relative;
             flex-shrink: 0;
-            transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+            transition: all 0.15s ease;
         }}
         .tool-btn-icon:hover {{
-            transform: scale(1.08);
             border-color: rgba(56, 189, 248, 0.4);
         }}
         .view-toggle-icon {{
-            padding: 5px 8px !important;
-            font-size: 0.92rem !important;
+            padding: 2px 6px !important;
+            font-size: 0.80rem !important;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -4083,10 +4194,10 @@
         .tool-btn.active,
         .tool-btn-icon.is-active,
         .tool-btn-icon.active {{
-            background: rgba(56, 189, 248, 0.22) !important;
+            background: rgba(56, 189, 248, 0.18) !important;
             border-color: #38bdf8 !important;
             color: #38bdf8 !important;
-            box-shadow: 0 0 10px rgba(56, 189, 248, 0.45), inset 0 0 6px rgba(56, 189, 248, 0.2) !important;
+            box-shadow: none !important;
         }}
 
         .folder-action-icon-btn.btn-power-rename-icon:hover {{
@@ -4408,84 +4519,78 @@
     <div class="container">
         <header class="vault-header">
             <div class="vault-brand-cluster">
-                <span class="vault-brand-title">&#128274; HFSYNC Vault</span>
+                <span class="vault-brand-title">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="#38bdf8"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+                    HFSYNC Vault
+                </span>
                 <span id="hdrServerStatus" class="status-pill status-online" title="Streaming Proxy Server Status">
-                    <span class="pill-dot"></span> Port 8080 Active
+                    <span class="pill-dot"></span> 8080 Active
                 </span>
                 <span id="hdrWatcherStatus" class="status-pill status-idle" onclick="openLiveActivityModal()" style="cursor: pointer;" title="Directory Watcher Service Status (Click to view Live Activity)">
                     <span class="pill-dot"></span> Watcher: Idle
                 </span>
             </div>
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <a href="/discover" class="status-pill status-active" style="text-decoration: none; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); padding: 5px 14px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s ease;" title="Switch to Continuous 4-Card Modern Discover Feed">
-                    <span>✨</span> Discover Feed &rarr;
+            <div class="vault-actions-cluster">
+                <button type="button" onclick="openStagingOverlay()" id="btnHeaderStaging" class="btn-flat-nav btn-primary-ghost" title="Open Full-Screen Staging Hub &amp; Push Controls">
+                    <span>⚡ Staging Hub</span>
+                    <span id="headerStagingCountBadge" style="background: #10b981; color: #fff; font-size: 0.65rem; font-weight: 700; padding: 0 5px; border-radius: 9999px; display: none;">0</span>
+                </button>
+                <button type="button" onclick="openAccountsModal()" class="btn-flat-nav" title="Manage connected Hugging Face accounts">
+                    Accounts (<span id="headerAccCount">{total_accounts}</span>)
+                </button>
+                <button type="button" onclick="openLiveActivityModal()" id="btnToggleLog" class="btn-flat-nav" title="View live sync tasks &amp; pipeline activity">
+                    Activity (<span id="eventCountBadge">0</span>)
+                </button>
+                <button type="button" onclick="openResyncModalAndStart()" id="btnRecheckCloud" class="btn-flat-nav" title="Live transparent resync across all repositories and accounts">
+                    Resync
+                </button>
+                <button type="button" onclick="scanAllTechTags()" id="btnScanTech" class="btn-flat-nav" title="Extract resolution, audio, and video codecs">
+                    Specs
+                </button>
+                <div class="jellyfin-sync-pill" onclick="toggleJellyfinSync()" id="btnJellyfinSyncToggle" title="Toggle Jellyfin .strm library sync">
+                    <span>📺</span>
+                    <span>Jellyfin</span>
+                    <span class="jellyfin-sync-badge {jelly_badge_cls}" id="jellyfinSyncBadge">{jelly_badge_text}</span>
+                </div>
+                <a href="/discover" class="btn-flat-nav btn-primary-ghost" style="border-radius: 9999px; padding: 2px 9px;" title="Switch to Continuous Modern Discover Feed">
+                    <span>✨</span> Discover &rarr;
                 </a>
             </div>
         </header>
 
-        <!-- Unified Metrics & Action Toolbar (Merged into one cohesive line, deduplicated & responsive) -->
+        <!-- Unified Metrics Bar (Minimal single-strip metrics) -->
         <div class="vault-unified-bar">
             <div class="unified-metrics-cluster">
                 <div class="metric-chip" title="Playable decrypted videos">
-                    <span>&#127916;</span>
-                    <span class="metric-val" id="statVideos">{total_files}</span>
                     <span>Videos</span>
+                    <span class="metric-val" id="statVideos">{total_files}</span>
                 </div>
                 <span class="metric-divider">&bull;</span>
-                <div class="metric-chip" title="Encrypted stream chunks cached locally on disk (Zero-cloud playback for cached parts)">
-                    <span>&#128190;</span>
-                    <span class="metric-val" id="statCache">{total_cached_mb_str}</span>
+                <div class="metric-chip" title="Encrypted stream chunks cached locally on disk">
                     <span>Cached</span>
+                    <span class="metric-val" id="statCache">{total_cached_mb_str}</span>
                 </div>
                 <span class="metric-divider">&bull;</span>
                 <div class="metric-chip" title="Total cloud storage across datasets">
-                    <span>&#9729;&#65039;</span>
-                    <span class="metric-val" id="statSize">{total_size_str}</span>
                     <span>Storage</span>
+                    <span class="metric-val" id="statSize">{total_size_str}</span>
                 </div>
                 <span class="metric-divider">&bull;</span>
                 <div class="metric-chip" title="Primary account for new uploads">
-                    <span>&#128081;</span>
-                    <span class="metric-val" style="color: var(--primary);">{primary_user}</span>
                     <span>Primary</span>
+                    <span class="metric-val" style="color: var(--primary);">{primary_user}</span>
                 </div>
                 <span class="metric-divider">&bull;</span>
                 <div class="metric-chip" title="Target repositories on Hugging Face">
-                    <span>&#128230;</span>
-                    <span class="metric-val" id="statRepos">{total_repos}</span>
                     <span>Repos</span>
+                    <span class="metric-val" id="statRepos">{total_repos}</span>
                 </div>
                 <span class="metric-divider" id="divUndecryptable" style="display: none;">&bull;</span>
                 <div class="metric-chip clickable" id="chipUndecryptable" onclick="openUndecryptableModal()" style="display: none; border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.08); color: #fbbf24;" title="Cloud files that cannot be decrypted with current keyrings (Click to review/delete)">
-                    <span>&#9888;&#65039;</span>
+                    <span>Undecryptable</span>
                     <span class="metric-val" id="statUndecryptable" style="color: #fbbf24;">0</span>
-                    <span style="color: #fbbf24;">Undecryptable</span>
                 </div>
                 {skipped_stat_html}
-            </div>
-
-            <div class="unified-actions-cluster">
-                <div class="jellyfin-sync-pill" onclick="toggleJellyfinSync()" id="btnJellyfinSyncToggle" title="When enabled, automatically generates and keeps Jellyfin .strm pointers and .nfo metadata synced in jellyfin_library. When disabled, runs 100% web-based without touching disk folders.">
-                    <span>📺</span>
-                    <span style="font-weight: 600;">Jellyfin Sync</span>
-                    <span class="jellyfin-sync-badge {jelly_badge_cls}" id="jellyfinSyncBadge">{jelly_badge_text}</span>
-                </div>
-                <button onclick="openResyncModalAndStart()" id="btnRecheckCloud" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Live transparent resync across all repositories and accounts with strict integrity verification">
-                    &#9889; Resync All
-                </button>
-                <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" title="Extract resolution, audio, and video codecs">
-                    &#127916; Tech Specs
-                </button>
-                <button type="button" onclick="openStagingOverlay()" id="btnHeaderStaging" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); display: inline-flex; align-items: center; gap: 6px;" title="Open Full-Screen Staging Hub & Push Controls">
-                    <span>⚡ Staging Hub</span>
-                    <span id="headerStagingCountBadge" style="background: #10b981; color: #fff; font-size: 0.70rem; font-weight: 700; padding: 1px 7px; border-radius: 9999px; display: none;">0</span>
-                </button>
-                <button onclick="openAccountsModal()" class="tool-btn" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.12);" title="Manage connected Hugging Face accounts">
-                    &#128101; Accounts (<span id="headerAccCount">{total_accounts}</span>)
-                </button>
-                <button onclick="openLiveActivityModal()" id="btnToggleLog" class="tool-btn" title="View live sync tasks & pipeline activity modal">
-                    &#128220; Activity (<span id="eventCountBadge">0</span>)
-                </button>
             </div>
         </div>
 
@@ -4678,13 +4783,17 @@
 
         <div class="sticky-filter-bar" id="stickyFilterBar">
             <div class="toolbar">
-                <input type="text" id="searchInput" class="search-input" placeholder="&#128269; Search by title, tag, genre, account, folder..." oninput="filterTree()">
+                <div class="search-wrapper-compact">
+                    <span class="search-icon-inside">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    </span>
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search title, tag, genre, account, folder..." oninput="filterTree()">
+                </div>
                 
                 <div class="multi-filter-group">
                     <!-- Multi-select Tags Popover -->
                     <div class="popover-wrapper" id="tagPopoverWrapper">
-                        <button type="button" class="filter-pill-btn" id="tagPillBtn" onclick="toggleFilterPopover('tagPopover', event)" title="Filter by tags (resolution, duration, content type)">
-                            <span class="pill-icon">&#127991;</span>
+                        <button type="button" class="filter-pill-btn" id="tagPillBtn" onclick="toggleFilterPopover('tagPopover', event)" title="Filter by tags">
                             <span class="pill-label">Tags</span>
                             <span class="pill-badge" id="tagCountBadge" style="display: none;">0</span>
                             <span class="pill-arrow">&#9662;</span>
@@ -4698,7 +4807,7 @@
                                 <div class="popover-actions">
                                     <button type="button" onclick="selectAllFilter('tag')">Select All</button>
                                     <button type="button" onclick="clearFilter('tag')">Clear</button>
-                                    <button type="button" class="btn-merge-tags-popover" onclick="openMergeTagsModal(event)" title="Merge multiple tags into one unified tag">&#128256; Merge</button>
+                                    <button type="button" class="btn-merge-tags-popover" onclick="openMergeTagsModal(event)" title="Merge multiple tags into one unified tag">Merge</button>
                                     <button type="button" onclick="closeAllPopovers()" style="color:#38bdf8;font-weight:700;">Done</button>
                                 </div>
                             </div>
@@ -4709,7 +4818,6 @@
                     <!-- Multi-select Categories Popover -->
                     <div class="popover-wrapper" id="genrePopoverWrapper">
                         <button type="button" class="filter-pill-btn" id="genrePillBtn" onclick="toggleFilterPopover('genrePopover', event)" title="Filter by category or genre">
-                            <span class="pill-icon">&#128193;</span>
                             <span class="pill-label">Categories</span>
                             <span class="pill-badge" id="genreCountBadge" style="display: none;">0</span>
                             <span class="pill-arrow">&#9662;</span>
@@ -4730,7 +4838,6 @@
                     <!-- Multi-select Accounts Popover -->
                     <div class="popover-wrapper" id="accountPopoverWrapper">
                         <button type="button" class="filter-pill-btn" id="accountPillBtn" onclick="toggleFilterPopover('accountPopover', event)" title="Filter by Hugging Face account">
-                            <span class="pill-icon">&#128100;</span>
                             <span class="pill-label">Accounts</span>
                             <span class="pill-badge" id="accountCountBadge" style="display: none;">0</span>
                             <span class="pill-arrow">&#9662;</span>
@@ -4748,30 +4855,67 @@
                         </div>
                     </div>
 
-                    <button onclick="resetAllFilters()" id="btnResetFilters" class="tool-btn" style="display: none;" title="Reset all active filters and search">&#128260; Reset</button>
+                    <button onclick="resetAllFilters()" id="btnResetFilters" class="btn-flat-nav" style="display: none; height: 26px; padding: 2px 7px;" title="Reset all active filters and search">&#10005; Reset</button>
                     <span id="filterSummaryCount" class="filter-summary-count" style="display: none;"></span>
                 </div>
 
-                <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn tool-btn-icon" title="Toggle Tag Badges (Shown / Hidden)">&#127991;<span id="tagsStateLabel" style="display: none;">Shown</span></button>
-                <button onclick="togglePrivacyBlur()" id="btnToggleBlur" class="tool-btn tool-btn-icon" title="Toggle Privacy Blur: Blur all thumbnails and titles (Persists across reload)">&#128584;</button>
-                <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn tool-btn-icon" title="Merge Marked Duplicate Videos">&#128256;<span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.58rem; padding: 1px 4px; position: absolute; top: -3px; right: -3px;">0</span></button>
-                <button onclick="openSyncFolderInExplorer('', event)" class="tool-btn tool-btn-icon" title="Open root sync folder (videos_to_sync) in Windows Explorer">&#128194;</button>
-                <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn tool-btn-icon" title="Encrypt and sync all metadata to Hugging Face">&#9729;&#65039;</button>
-                <button onclick="expandVisible()" id="btnExpandVisible" class="tool-btn tool-btn-icon" title="Expand what is currently visible on screen (Folders & Cards)">&#128065;</button>
-                <button onclick="expandAll()" id="btnExpandAll" class="tool-btn tool-btn-icon" title="Expand All Folders in Library">&#9660;</button>
-                <button onclick="collapseAll()" id="btnCollapseAll" class="tool-btn tool-btn-icon" title="Collapse All Folders in Library">&#9654;</button>
-                <button onclick="openPowerRenameModal('', 'Entire Vault', event)" id="btnGlobalPowerRename" class="tool-btn tool-btn-icon" title="Power Rename Files across Vault or Folders (Name 1, Name 2, ...)">⚡</button>
-                <button onclick="openPurgeLocalDataModal()" id="btnPurgeLocalData" class="tool-btn tool-btn-icon" title="Purge Local Cache &amp; Rebuild Vault from Cloud (Full Reset)">🧹</button>
-                <div class="view-toggle-group">
-                    <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon active is-active" title="Switch to Cards Grid View">&#127183;</button>
-                    <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">&#9776;</button>
-                </div>
+                <div class="toolbar-actions-cluster">
+                    <!-- Tree Expansion Controls -->
+                    <div class="toolbar-segmented-group" title="Tree View Controls">
+                        <button onclick="expandAll()" id="btnExpandAll" class="tool-btn tool-btn-icon" title="Expand All Folders">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg>
+                        </button>
+                        <button onclick="collapseAll()" id="btnCollapseAll" class="tool-btn tool-btn-icon" title="Collapse All Folders">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+                        </button>
+                        <button onclick="expandVisible()" id="btnExpandVisible" class="tool-btn tool-btn-icon" title="Expand Visible Screen">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                        </button>
+                    </div>
 
-                <!-- Sticky Live Alert Pill: Hidden during normal idle; pops up on top when active/alert/disconnected -->
-                <div id="stickyLiveAlertCluster" class="sticky-live-alert-cluster" style="display: none; margin-left: auto;">
-                    <span id="stickyLiveAlertPill" class="status-pill status-active" style="cursor: pointer;" onclick="openLiveActivityModal()" title="Click to view live activity details">
-                        <span class="pill-dot"></span> <span id="stickyLiveAlertText">⚡ Syncing...</span>
-                    </span>
+                    <!-- Vault Action Tools -->
+                    <div class="toolbar-segmented-group" title="Vault Tools">
+                        <button onclick="openPowerRenameModal('', 'Entire Vault', event)" id="btnGlobalPowerRename" class="tool-btn tool-btn-icon" title="Power Rename Files across Vault">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
+                        </button>
+                        <button onclick="syncMetadataToHf()" id="syncHfBtn" class="tool-btn tool-btn-icon" title="Encrypt &amp; Sync Metadata to Hugging Face">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+                        </button>
+                        <button onclick="openSyncFolderInExplorer('', event)" class="tool-btn tool-btn-icon" title="Open videos_to_sync in Explorer">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+                        </button>
+                        <button onclick="togglePrivacyBlur()" id="btnToggleBlur" class="tool-btn tool-btn-icon" title="Privacy Blur: Blur thumbnails &amp; titles">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.44-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
+                        </button>
+                        <button onclick="toggleHideTags()" id="btnHideTags" class="tool-btn tool-btn-icon" title="Toggle Tag Badges (Shown / Hidden)">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/></svg>
+                            <span id="tagsStateLabel" style="display: none;">Shown</span>
+                        </button>
+                        <button onclick="openMergeMarkedModal()" id="btnToolbarMerge" class="tool-btn tool-btn-icon" title="Merge Marked Duplicate Videos">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M17 20.41L18.41 19 15 15.59 13.59 17 17 20.41zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5 7.5 8z"/></svg>
+                            <span id="toolbarMergeBadge" class="badge badge-purple" style="display: none; font-size: 0.58rem; padding: 1px 4px; position: absolute; top: -3px; right: -3px;">0</span>
+                        </button>
+                        <button onclick="openPurgeLocalDataModal()" id="btnPurgeLocalData" class="tool-btn tool-btn-icon" title="Purge Local Cache &amp; Rebuild Vault from Cloud (Full Reset)">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zm2-8h6v8H5v-8zm5-6H6L5 5H2v2h12V5h-3z"/></svg>
+                        </button>
+                    </div>
+
+                    <!-- View Switcher -->
+                    <div class="view-toggle-group">
+                        <button onclick="setViewMode('card')" id="btnViewCard" class="view-toggle-btn view-toggle-icon active is-active" title="Switch to Cards Grid View">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M4 4h7v7H4V4zm0 9h7v7H4v-7zm9-9h7v7h-7V4zm0 9h7v7h-7v-7z"/></svg>
+                        </button>
+                        <button onclick="setViewMode('list')" id="btnViewList" class="view-toggle-btn view-toggle-icon" title="Switch to List Row View">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                        </button>
+                    </div>
+
+                    <!-- Sticky Live Alert Pill: Hidden during normal idle; pops up on top when active/alert/disconnected -->
+                    <div id="stickyLiveAlertCluster" class="sticky-live-alert-cluster" style="display: none;">
+                        <span id="stickyLiveAlertPill" class="status-pill status-active" style="cursor: pointer;" onclick="openLiveActivityModal()" title="Click to view live activity details">
+                            <span class="pill-dot"></span> <span id="stickyLiveAlertText">⚡ Syncing...</span>
+                        </span>
+                    </div>
                 </div>
             </div>
 
