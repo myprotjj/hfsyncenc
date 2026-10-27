@@ -1,6 +1,6 @@
 /**
- * Staging & 1-Commit / Multi-Part Push Hub - Modular Frontend Script
- * Complete UI and control center matching verified screenshot and multi-part commit engine
+ * Staging & Push Hub - Modern Minimalist Flat Frontend Script
+ * Compact, high-density, flat card rendering with zero redundant info
  */
 
 (function (window) {
@@ -36,28 +36,28 @@
     }
 
     /**
-     * Built-in dark glass confirmation modal
+     * Sleek confirmation modal
      */
     function showCustomModal(opts) {
         let modal = document.getElementById('stagingActionModal');
         if (!modal) {
             modal = document.createElement('div');
             modal.id = 'stagingActionModal';
-            modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(5, 9, 20, 0.88); backdrop-filter: blur(14px); display: none; align-items: center; justify-content: center; z-index: 10005; padding: 20px;';
+            modal.className = 'staging-modal-overlay';
             modal.innerHTML = `
-            <div style="background: #0f172a; border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 16px; max-width: 540px; width: 100%; box-shadow: 0 25px 60px rgba(0,0,0,0.9), 0 0 25px rgba(56, 189, 248, 0.15); overflow: hidden;">
-                <div style="padding: 16px 22px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; background: rgba(30,41,59,0.5);">
-                    <div id="stagingModalTitle" style="font-weight: 800; font-size: 1.1rem; color: #f8fafc; display: flex; align-items: center; gap: 8px;">Action</div>
-                    <button type="button" onclick="document.getElementById('stagingActionModal').style.display='none'" class="tool-btn btn-xs" style="font-size: 1.3rem; padding: 2px 8px; line-height: 1; border: none; background: transparent; color: #94a3b8; cursor: pointer;">&times;</button>
+            <div class="staging-modal-box" style="max-width: 480px; width: 100%;">
+                <div class="staging-modal-header">
+                    <div id="stagingModalTitle" style="font-weight: 700; font-size: 0.95rem; color: #f8fafc;">Confirm</div>
+                    <button type="button" onclick="document.getElementById('stagingActionModal').style.display='none'" class="btn-flat-dismiss" style="font-size: 1.1rem; line-height: 1;">&times;</button>
                 </div>
-                <div id="stagingModalMessage" style="padding: 22px; font-size: 0.92rem; color: #cbd5e1; line-height: 1.55;"></div>
-                <div style="padding: 14px 22px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: flex-end; gap: 12px; background: rgba(30,41,59,0.3);">
-                    <button type="button" id="stagingModalCancelBtn" class="tool-btn" style="padding: 7px 18px; border-radius: 8px; font-weight: 600; cursor: pointer;">Cancel</button>
-                    <button type="button" id="stagingModalConfirmBtn" class="tool-btn" style="padding: 7px 22px; border-radius: 8px; font-weight: 700; cursor: pointer; border: none;">Confirm</button>
+                <div id="stagingModalMessage" style="padding: 16px 18px; font-size: 0.86rem; color: #cbd5e1; line-height: 1.5;"></div>
+                <div class="staging-modal-footer" style="justify-content: flex-end; gap: 8px;">
+                    <button type="button" id="stagingModalCancelBtn" class="btn-flat" style="padding: 5px 14px;">Cancel</button>
+                    <button type="button" id="stagingModalConfirmBtn" class="btn-flat" style="padding: 5px 16px; font-weight: 600;">Confirm</button>
                 </div>
             </div>`;
             document.body.appendChild(modal);
-            modal.addEventListener('click', function(e) {
+            modal.addEventListener('click', function (e) {
                 if (e.target === modal) modal.style.display = 'none';
             });
         }
@@ -71,14 +71,14 @@
         if (msgEl) msgEl.innerHTML = opts.message || '';
         if (confirmBtn) {
             confirmBtn.textContent = opts.confirmText || 'Confirm';
-            confirmBtn.style.cssText = (opts.confirmStyle || 'background: #0284c7; color: white;') + '; padding: 7px 22px; border-radius: 8px; font-weight: 700; cursor: pointer; border: none;';
-            confirmBtn.onclick = function() {
+            confirmBtn.style.cssText = (opts.confirmStyle || 'background: #0284c7; color: white;') + '; padding: 5px 16px; border-radius: 4px; font-weight: 600; cursor: pointer; border: none;';
+            confirmBtn.onclick = function () {
                 modal.style.display = 'none';
                 if (typeof opts.onConfirm === 'function') opts.onConfirm();
             };
         }
         if (cancelBtn) {
-            cancelBtn.onclick = function() {
+            cancelBtn.onclick = function () {
                 modal.style.display = 'none';
             };
         }
@@ -86,38 +86,27 @@
     }
 
     /**
-     * Live Git Console & details box
+     * Compact Live Git Console box
      */
-    function buildGitConsoleHtml(repoFolder, pushProgress, totalSizeFormatted, totalFileCount, isCompleted) {
+    function buildGitConsoleHtml(repoFolder, pushProgress, isCompleted) {
         const prog = pushProgress || {};
         const safeClass = 'push-log-box-' + repoFolder.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const safeArrowClass = 'log-arrow-' + repoFolder.replace(/[^a-zA-Z0-9_-]/g, '_');
         const isExpanded = Boolean(activePushLogExpanded[repoFolder]);
         const logLines = prog.log_lines || [];
         const logCount = logLines.length;
 
+        if (!isExpanded) return `<div id="${safeClass}" style="display: none;"></div>`;
+
         const logsHtml = logCount > 0 ? logLines.map(line => {
-            let color = '#cbd5e1';
+            let color = '#94a3b8';
             if (line.includes('✓') || line.includes('SUCCESS') || line.includes('accepted')) color = '#4ade80';
-            else if (line.includes('Uploading') || line.includes('Pushing') || line.includes('Git Push:')) color = '#38bdf8';
+            else if (line.includes('Uploading') || line.includes('Pushing')) color = '#38bdf8';
             else if (line.includes('Error') || line.includes('Failed')) color = '#f87171';
-            else if (line.includes('Target') || line.includes('Assembled') || line.includes('Transferred')) color = '#c084fc';
-            else if (line.includes('Pre-encrypting') || line.includes('Check')) color = '#facc15';
             return `<div style="color: ${color}; padding: 1px 0;">${escapeHtml(line)}</div>`;
         }).join('') : '<div style="color: #64748b;">Connecting to Git LFS stream...</div>';
 
         return `
-        <div style="margin-top: 10px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-            <button type="button" onclick="window.StagingManager.togglePushLog('${escapeJsString(repoFolder)}')" class="tool-btn" style="background: rgba(0,0,0,0.5); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; font-size: 0.74rem; font-weight: 600; padding: 4px 12px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
-                <span>📋 Live Git Console / Details</span>
-                <span class="${safeArrowClass}">${isExpanded ? '▲' : '▼'}</span>
-                <span style="font-size: 0.68rem; color: #94a3b8; background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px;">${logCount} lines</span>
-            </button>
-            <div style="font-size: 0.75rem; color: #94a3b8;">
-                ${prog.speed_str ? `<span style="color: #4ade80; font-weight: 600;">⚡ Speed: ${escapeHtml(prog.speed_str)}</span>` : ''}
-            </div>
-        </div>
-        <div id="${safeClass}" style="display: ${isExpanded ? 'block' : 'none'}; margin-top: 8px; background: rgba(0,0,0,0.6); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 10px 14px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.74rem; max-height: 180px; overflow-y: auto;">
+        <div id="${safeClass}" class="staging-console-box">
             ${logsHtml}
         </div>
         `;
@@ -125,17 +114,14 @@
 
     function togglePushLog(repoFolder) {
         activePushLogExpanded[repoFolder] = !activePushLogExpanded[repoFolder];
-        const safeClass = 'push-log-box-' + repoFolder.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const safeArrowClass = 'log-arrow-' + repoFolder.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const el = document.getElementById(safeClass);
-        if (el) el.style.display = activePushLogExpanded[repoFolder] ? 'block' : 'none';
-        const arrow = document.querySelector('.' + safeArrowClass);
-        if (arrow) arrow.innerText = activePushLogExpanded[repoFolder] ? '▲' : '▼';
+        if (lastStagingData) {
+            renderStagingSection(lastStagingData);
+            renderStagingOverlay(lastStagingData);
+        }
     }
 
     /**
-     * Card 1: Ready / Active / Pushed / Error Staged Repo Card
-     * Supports both 1-Commit Atomic and Multi-Part (~10GB) batch commits
+     * Compact Flat Card: Ready / Pushing / Pushed / Error Staged Repo
      */
     function renderStagingRepoCard(r, isModal) {
         const rf = r.repo_folder || '';
@@ -149,10 +135,9 @@
         const thumbs = r.preview_thumbs || [];
         const prog = r.push_progress || {};
 
-        // Calculate estimated or actual ~10GB batch count
         const estBatches = r.total_batches || prog.total_batches || Math.max(1, Math.ceil(totalBytes / (10 * 1024 * 1024 * 1024)));
-        const pushBtnLabel = estBatches > 1 ? (`🚀 Push (${estBatches} Commits ~10GB)`) : '🚀 Push to HF (1 Commit)';
-        const gitChipText = estBatches > 1 ? (`⚡ Git: ${estBatches} Batches (~10GB)`) : '⚡ Git: 1-Commit Atomic';
+        const pushBtnLabel = estBatches > 1 ? (`Push (${estBatches} × ~10GB)`) : 'Push to HF';
+        const gitText = estBatches > 1 ? (`${estBatches} Commits (~10GB)`) : '1-Commit Atomic';
 
         const isPaused = r.status === 'paused';
         const isQueued = r.status === 'queued';
@@ -161,245 +146,202 @@
         const isError = r.status === 'error';
         const isFailedAudit = r.status === 'failed_audit' || r.status === 'staging_audit_failed';
 
-        // 1. Ready State
+        const hfDatasetUrl = 'https://huggingface.co/datasets/' + encodeURIComponent(repoId);
+        const commitsUrl = hfDatasetUrl + '/commits/main';
+        const displayTitle = account ? (account + ' / ' + rawRepoName) : repoId;
+        const cardCommits = prog.commits || r.commits || [];
+        const avatarHtml = thumbs.length > 0
+            ? `<img src="${escapeHtml(thumbs[0])}" class="staging-avatar-mini" alt="" onerror="this.style.display='none'">`
+            : '';
+
+        // 1. Ready to Push (Compact 2-Row Design)
         if (!isPushing && !isPaused && !isQueued && !isPushed && !isError && !isFailedAudit) {
-            const hfDatasetUrl = 'https://huggingface.co/datasets/' + encodeURIComponent(repoId);
-            const commitsUrl = hfDatasetUrl + '/commits/main';
-            const displayTitle = account ? (account + ' / ' + rawRepoName) : repoId;
-            const avatarHtml = thumbs.length > 0
-                ? `<img src="${escapeHtml(thumbs[0])}" class="staging-account-avatar" alt="Preview" onerror="this.style.display='none'">`
-                : '';
-
-            const cardCommits = prog.commits || r.commits || [];
-
             return `
-            <div class="staging-card-ready">
-                <!-- Header row: Title, encdir, ready badge, action buttons -->
-                <div class="staging-card-top">
-                    <div class="staging-card-title-group">
+            <div class="staging-card-flat">
+                <div class="staging-row-main">
+                    <div class="staging-title-cluster">
                         <span class="repo-icon">📦</span>
-                        <span class="repo-name">${escapeHtml(displayTitle)}</span>
-                        <span class="repo-encdir">(${escapeHtml(rf)})</span>
-                        <span class="staging-pill-ready">✓ Ready to Push</span>
+                        <a href="${hfDatasetUrl}" target="_blank" rel="noopener noreferrer" class="staging-repo-link" title="Open repository on Hugging Face">${escapeHtml(displayTitle)} ↗</a>
+                        <span class="staging-folder-mono" title="${escapeHtml(rf)}">(${escapeHtml(rf)})</span>
+                        <span class="staging-badge staging-badge-ready">Ready</span>
                     </div>
-                    <div class="staging-actions">
-                        <a href="/discover?staged_repo=${encodeURIComponent(rf)}" class="staging-btn-discover" title="View staged videos in Discover feed">
-                            👁 Discover ↗
-                        </a>
-                        <button type="button" onclick="window.StagingManager.confirmRevertRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="staging-btn-revert" title="Revert staged copies back to source directory and restore ignored status">
-                            ⏪ Unstage & Decrypt
-                        </button>
-                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="staging-btn-discard" title="Permanently discard staged files without restoring">
-                            🗑 Discard
-                        </button>
-                        <button type="button" data-repo="${escapeHtml(rf)}" onclick="window.StagingManager.pushStagedRepo(this.dataset.repo)" class="staging-btn-push" title="Atomic multi-commit upload to Hugging Face">
-                            ${pushBtnLabel}
-                        </button>
+                    <div class="staging-actions-compact">
+                        <a href="/discover?staged_repo=${encodeURIComponent(rf)}" class="btn-flat btn-flat-discover" title="Preview staged videos in Discover feed">👁 Discover ↗</a>
+                        <button type="button" onclick="window.StagingManager.confirmRevertRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="btn-flat btn-flat-revert" title="Unstage and decrypt back to source">⏪ Unstage</button>
+                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="btn-flat btn-flat-discard" title="Permanently delete staged ciphertext">🗑 Discard</button>
+                        <button type="button" data-repo="${escapeHtml(rf)}" onclick="window.StagingManager.pushStagedRepo(this.dataset.repo)" class="btn-flat btn-flat-push" title="Commit and upload to Hugging Face">🚀 ${pushBtnLabel}</button>
                     </div>
                 </div>
 
-                <!-- Full width solid green progress bar -->
-                <div class="staging-bar-ready-track"></div>
-
-                <!-- Target info line -->
-                <div class="staging-target-row">
-                    <div>
-                        Target: <a href="${hfDatasetUrl}" target="_blank" rel="noopener noreferrer" class="staging-target-link">${escapeHtml(repoId)} ↗</a> • Authenticated AES-256-GCM chunks verified on disk
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        ${account ? `<span class="staging-account-pill"><span>👤</span> <b>${escapeHtml(account)}</b></span>` : ''}
-                        ${avatarHtml}
-                    </div>
+                <div class="staging-track-slim">
+                    <div class="staging-fill-slim staging-fill-emerald" style="width: 100%;"></div>
                 </div>
 
-                <!-- Metric chips row -->
-                <div class="staging-chips-strip">
-                    <span class="staging-chip staging-chip-prestaged" title="Total Videos & Cryptographic Assets">
-                        📦 Pre-Staged: ${totalVideos} Videos (${totalAssets} Assets)
-                    </span>
-                    <span class="staging-chip staging-chip-size" title="Total Pre-encrypted Payload Size">
-                        💾 Size: ${escapeHtml(sizeStr)}
-                    </span>
-                    <span class="staging-chip staging-chip-integrity" title="Local Chunk Integrity Check">
-                        🛡 Integrity: 100% Passed ✔
-                    </span>
-                    <a href="${hfDatasetUrl}" target="_blank" rel="noopener noreferrer" class="staging-chip staging-chip-repo" title="Target Repository on Hugging Face">
-                        ☁ Repo: ${escapeHtml(repoId)} ↗
-                    </a>
-                    <span class="staging-chip staging-chip-git" title="Multi-part commit partitioning">
-                        ${gitChipText}
-                    </span>
-                </div>
-
-                <!-- Commits line with batch commit pills -->
-                <div class="staging-commits-row">
-                    <span>Commits:</span>
-                    ${cardCommits.length > 0 ? cardCommits.map(c => `
-                        <a href="${escapeHtml(c.commit_url)}" target="_blank" rel="noopener noreferrer" class="staging-commit-link" title="View Batch ${c.batch} Commit on Hugging Face">
-                            <span>🔗 #${c.batch} (${c.size_formatted || ''})</span> ↗
-                        </a>
-                    `).join('') : ''}
-                    <a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-commit-link" title="View repository commits on Hugging Face">
-                        📜 View All Commits ↗
-                    </a>
+                <div class="staging-row-meta">
+                    <div class="staging-meta-items">
+                        <span><strong>${totalVideos}</strong> videos (${totalAssets} assets)</span>
+                        <span class="meta-sep">•</span>
+                        <span><strong>${escapeHtml(sizeStr)}</strong></span>
+                        <span class="meta-sep">•</span>
+                        <span style="color: #10b981;">AES-256-GCM Verified ✓</span>
+                        <span class="meta-sep">•</span>
+                        <span>⚡ ${gitText}</span>
+                    </div>
+                    <div class="staging-meta-right">
+                        ${account ? `<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; color: #cbd5e1;">${avatarHtml}<span>${escapeHtml(account)}</span></span>` : ''}
+                        ${cardCommits.length > 0 ? cardCommits.map(c => `
+                            <a href="${escapeHtml(c.commit_url)}" target="_blank" rel="noopener noreferrer" class="staging-batch-pill" title="View Batch #${c.batch}">#${c.batch} (${c.size_formatted || ''}) ↗</a>
+                        `).join('') : `<a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-link-muted">Commits ↗</a>`}
+                    </div>
                 </div>
             </div>`;
         }
 
-        // 2. Pushing State (Multi-batch progress tracking)
+        // 2. Pushing in Progress
         if (isPushing) {
             const pct = prog.percent != null ? prog.percent : 25;
-            const msg = prog.message || 'Pushing assets to Hugging Face...';
-            const batchBadge = prog.batch_info || (prog.total_batches > 1 ? ('Batch ' + (prog.current_batch || 1) + '/' + prog.total_batches) : 'Committing');
+            const batchBadge = prog.batch_info || (prog.total_batches > 1 ? (`Batch ${prog.current_batch || 1}/${prog.total_batches}`) : 'Committing');
+            const logCount = (prog.log_lines || []).length;
             return `
-            <div class="staging-card-ready" style="border-color: rgba(56, 189, 248, 0.6); background: rgba(15, 23, 42, 0.95);">
-                <div class="staging-card-top">
-                    <div class="staging-card-title-group">
-                        <span class="status-spinner" style="display:inline-block;width:14px;height:14px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></span>
-                        <span class="repo-name" style="color: #38bdf8;">Pushing: ${escapeHtml(repoId)}</span>
-                        <span class="repo-encdir">(${escapeHtml(rf)})</span>
-                        <span class="staging-pill-ready" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
-                            ⚡ ${escapeHtml(batchBadge)} (${pct}%)
-                        </span>
+            <div class="staging-card-flat state-pushing">
+                <div class="staging-row-main">
+                    <div class="staging-title-cluster">
+                        <span class="status-spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></span>
+                        <a href="${hfDatasetUrl}" target="_blank" rel="noopener noreferrer" class="staging-repo-link">${escapeHtml(displayTitle)} ↗</a>
+                        <span class="staging-folder-mono">(${escapeHtml(rf)})</span>
+                        <span class="staging-badge staging-badge-pushing">${escapeHtml(batchBadge)} • ${pct}%</span>
                     </div>
-                    <div class="staging-actions">
-                        <button type="button" onclick="window.StagingManager.pauseRepoPush('${escapeJsString(rf)}')" class="staging-btn-revert" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border-color: rgba(239, 68, 68, 0.4);">
-                            ⏸ Pause Push
-                        </button>
+                    <div class="staging-actions-compact">
+                        <button type="button" onclick="window.StagingManager.togglePushLog('${escapeJsString(rf)}')" class="btn-flat" title="Toggle upload console logs">📋 Console (${logCount})</button>
+                        <button type="button" onclick="window.StagingManager.pauseRepoPush('${escapeJsString(rf)}')" class="btn-flat btn-flat-revert" title="Pause sequential push">⏸ Pause</button>
                     </div>
                 </div>
-                <div style="width: 100%; height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden; margin: 4px 0;">
-                    <div style="width: ${Math.max(4, pct)}%; height: 100%; background: linear-gradient(90deg, #0ea5e9, #10b981); transition: width 0.3s ease;"></div>
+
+                <div class="staging-track-slim">
+                    <div class="staging-fill-slim staging-fill-cyan" style="width: ${Math.max(4, pct)}%;"></div>
                 </div>
-                <div class="staging-target-row">
-                    <div>${escapeHtml(msg)} ${prog.current_file ? `<code style="color: #38bdf8;">[${escapeHtml(prog.current_file)}]</code>` : ''}</div>
-                    <div style="font-weight: 600; color: #cbd5e1;">${prog.uploaded_bytes_formatted || '0 MB'} / ${prog.total_bytes_formatted || sizeStr}</div>
+
+                <div class="staging-row-meta">
+                    <div class="staging-meta-items">
+                        <span>${escapeHtml(prog.message || 'Pushing to Hugging Face...')}</span>
+                        ${prog.current_file ? `<span class="staging-folder-mono">[${escapeHtml(prog.current_file)}]</span>` : ''}
+                        <span class="meta-sep">•</span>
+                        <span>${prog.uploaded_bytes_formatted || '0 MB'} / ${prog.total_bytes_formatted || sizeStr}</span>
+                        ${prog.speed_str ? `<span class="meta-sep">•</span><span style="color: #4ade80;">⚡ ${escapeHtml(prog.speed_str)}</span>` : ''}
+                    </div>
                 </div>
-                ${buildGitConsoleHtml(rf, prog, sizeStr, totalVideos, false)}
+                ${buildGitConsoleHtml(rf, prog, false)}
             </div>`;
         }
 
         // 3. Paused Push State
         if (isPaused) {
             return `
-            <div class="staging-card-ready" style="border-color: rgba(245, 158, 11, 0.5); background: rgba(30, 41, 59, 0.95);">
-                <div class="staging-card-top">
-                    <div class="staging-card-title-group">
-                        <span style="font-size: 1.15rem;">⏸</span>
-                        <span class="repo-name" style="color: #fbbf24;">Push Paused: ${escapeHtml(repoId)}</span>
-                        <span class="repo-encdir">(${escapeHtml(rf)})</span>
-                        <span class="staging-pill-ready" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border-color: rgba(245, 158, 11, 0.5);">
-                            ⏸ Paused on Batch ${prog.current_batch || 1}/${prog.total_batches || estBatches}
-                        </span>
+            <div class="staging-card-flat state-paused">
+                <div class="staging-row-main">
+                    <div class="staging-title-cluster">
+                        <span class="repo-icon">⏸</span>
+                        <a href="${hfDatasetUrl}" target="_blank" class="staging-repo-link">${escapeHtml(displayTitle)} ↗</a>
+                        <span class="staging-badge staging-badge-pre">Paused at Batch ${prog.current_batch || 1}/${prog.total_batches || estBatches}</span>
                     </div>
-                    <div class="staging-actions">
-                        <button type="button" onclick="window.StagingManager.resumeRepoPush('${escapeJsString(rf)}')" class="staging-btn-push" style="background: #10b981;">
-                            ▶ Resume Push
-                        </button>
-                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="staging-btn-discard">
-                            🗑 Discard
-                        </button>
+                    <div class="staging-actions-compact">
+                        <button type="button" onclick="window.StagingManager.resumeRepoPush('${escapeJsString(rf)}')" class="btn-flat btn-flat-push">▶ Resume</button>
+                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="btn-flat btn-flat-discard">🗑 Discard</button>
                     </div>
                 </div>
-                <div class="staging-target-row" style="margin-top: 6px;">
-                    <div>${escapeHtml(prog.message || 'Push paused by user. Click Resume Push to continue.')}</div>
+                <div class="staging-row-meta">
+                    <div class="staging-meta-items">
+                        <span>${escapeHtml(prog.message || 'Push paused. Click Resume to continue.')}</span>
+                    </div>
                 </div>
-                ${buildGitConsoleHtml(rf, prog, sizeStr, totalVideos, false)}
+                ${buildGitConsoleHtml(rf, prog, false)}
             </div>`;
         }
 
-        // 4. Pushed Completed State
+        // 4. Push Complete
         if (isPushed) {
-            const cardCommits = prog.commits || r.commits || [];
             return `
-            <div class="staging-card-ready" style="border-color: rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.12);">
-                <div class="staging-card-top">
-                    <div class="staging-card-title-group">
-                        <span style="font-size: 1.15rem;">✓</span>
-                        <span class="repo-name" style="color: #4ade80;">Push Complete: ${escapeHtml(repoId)}</span>
-                        <span class="repo-encdir">(${escapeHtml(rf)})</span>
-                        <span class="staging-pill-ready">✓ 100% Pushed</span>
+            <div class="staging-card-flat state-pushed">
+                <div class="staging-row-main">
+                    <div class="staging-title-cluster">
+                        <span style="color: #4ade80; font-weight: 700;">✓</span>
+                        <a href="${hfDatasetUrl}" target="_blank" rel="noopener noreferrer" class="staging-repo-link">${escapeHtml(displayTitle)} ↗</a>
+                        <span class="staging-folder-mono">(${escapeHtml(rf)})</span>
+                        <span class="staging-badge staging-badge-pushed">Pushed</span>
                     </div>
-                    <div class="staging-actions">
-                        <button type="button" onclick="window.StagingManager.dismissPushedRepo('${escapeJsString(rf)}')" class="staging-btn-discard" style="background: transparent; border: none; color: #94a3b8;">
-                            ✕ Dismiss
-                        </button>
+                    <div class="staging-actions-compact">
+                        <button type="button" onclick="window.StagingManager.togglePushLog('${escapeJsString(rf)}')" class="btn-flat" title="View push logs">📋 Logs</button>
+                        <button type="button" onclick="window.StagingManager.dismissPushedRepo('${escapeJsString(rf)}')" class="btn-flat-dismiss" title="Dismiss this notification">✕ Dismiss</button>
                     </div>
                 </div>
-                <div class="staging-target-row" style="margin-top: 6px; color: #cbd5e1;">
-                    <div>Successfully committed <strong>${prog.total_assets || totalAssets}</strong> assets (${sizeStr}) across ${estBatches} Git commit(s) to Hugging Face!</div>
-                    ${prog.speed_str ? `<span style="color: #10b981; font-weight: 600;">⚡ Speed: ${escapeHtml(prog.speed_str)}</span>` : ''}
+                <div class="staging-row-meta">
+                    <div class="staging-meta-items">
+                        <span>${prog.total_assets || totalAssets} assets (${sizeStr}) committed in ${estBatches} commit(s)</span>
+                        ${prog.speed_str ? `<span class="meta-sep">•</span><span style="color: #10b981;">⚡ ${escapeHtml(prog.speed_str)}</span>` : ''}
+                    </div>
+                    <div class="staging-meta-right">
+                        ${cardCommits.length > 0 ? cardCommits.map(c => `
+                            <a href="${escapeHtml(c.commit_url)}" target="_blank" rel="noopener noreferrer" class="staging-batch-pill">#${c.batch} (${c.size_formatted || ''}) ↗</a>
+                        `).join('') : `<a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-link-muted">Commits ↗</a>`}
+                    </div>
                 </div>
-                ${cardCommits.length > 0 ? `
-                <div class="staging-commits-row" style="margin-top: 8px;">
-                    <span>Commits:</span>
-                    ${cardCommits.map(c => `
-                        <a href="${escapeHtml(c.commit_url)}" target="_blank" rel="noopener noreferrer" class="staging-commit-link" title="View Batch ${c.batch} Commit on Hugging Face">
-                            <span>🔗 #${c.batch} (${c.size_formatted || ''})</span> ↗
-                        </a>
-                    `).join('')}
-                </div>` : ''}
-                ${buildGitConsoleHtml(rf, prog, sizeStr, totalVideos, true)}
+                ${buildGitConsoleHtml(rf, prog, true)}
             </div>`;
         }
 
-        // 5. Failed Audit Discrepancy State
+        // 5. Failed Audit Discrepancy
         if (isFailedAudit) {
             return `
-            <div class="staging-card-ready" style="border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.12);">
-                <div class="staging-card-top">
-                    <div class="staging-card-title-group">
-                        <span style="font-size: 1.15rem;">⚠️</span>
-                        <span class="repo-name" style="color: #f87171;">Flaw Detected: Staging Audit Failed (${escapeHtml(rf)})</span>
-                        <span class="staging-pill-ready" style="background: #ef4444; color: #fff; border: none;">
-                            PUSH STRICTLY BLOCKED
-                        </span>
+            <div class="staging-card-flat state-error">
+                <div class="staging-row-main">
+                    <div class="staging-title-cluster">
+                        <span style="color: #ef4444; font-weight: 700;">⚠️</span>
+                        <span class="staging-repo-link" style="color: #f87171;">Audit Discrepancy: ${escapeHtml(rf)}</span>
+                        <span class="staging-badge staging-badge-error">Push Blocked</span>
                     </div>
-                    <div class="staging-actions">
-                        <button type="button" onclick="window.StagingManager.confirmRevertRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="staging-btn-revert">
-                            ⏪ Unstage & Decrypt
-                        </button>
-                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="staging-btn-discard">
-                            🗑 Discard
-                        </button>
+                    <div class="staging-actions-compact">
+                        <button type="button" onclick="window.StagingManager.confirmRevertRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="btn-flat btn-flat-revert">⏪ Unstage</button>
+                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="btn-flat btn-flat-discard">🗑 Discard</button>
                     </div>
                 </div>
-                <div style="font-size: 0.82rem; color: #fca5a5; margin-top: 6px;">
-                    Target: <code>${escapeHtml(repoId)}</code> &bull; Initial Root Scan: <strong>${r.initial_scanned_count || totalVideos}</strong> file(s) (${r.initial_scanned_formatted || sizeStr}) &bull; Staged on disk: <strong>${totalVideos}</strong> file(s) (${sizeStr}). Root scan and staged contents do not match!
+                <div class="staging-row-meta">
+                    <div class="staging-meta-items" style="color: #fca5a5;">
+                        <span>Target: <code>${escapeHtml(repoId)}</code></span>
+                        <span class="meta-sep">•</span>
+                        <span>Scan: ${r.initial_scanned_count || totalVideos} files (${r.initial_scanned_formatted || sizeStr})</span>
+                        <span class="meta-sep">•</span>
+                        <span>Staged: ${totalVideos} files (${sizeStr})</span>
+                    </div>
                 </div>
                 ${(r.discrepancies || []).length > 0 ? `
-                <div style="margin-top: 8px; background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 6px; padding: 8px 12px; font-size: 0.74rem; color: #fca5a5; font-family: ui-monospace, monospace; max-height: 120px; overflow-y: auto;">
-                    ${r.discrepancies.map(d => `<div style="padding: 2px 0;">&bull; ${escapeHtml(d)}</div>`).join('')}
+                <div style="margin-top: 4px; background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 0.68rem; color: #fca5a5;">
+                    ${r.discrepancies.map(d => `<div>&bull; ${escapeHtml(d)}</div>`).join('')}
                 </div>` : ''}
             </div>`;
         }
 
-        // 6. Push Error State
+        // 6. Push Error
         if (isError) {
             const errMsg = prog.message || r.error || 'Push encountered an error';
             return `
-            <div class="staging-card-ready" style="border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.15);">
-                <div class="staging-card-top">
-                    <div class="staging-card-title-group">
-                        <span style="font-size: 1.15rem;">❌</span>
-                        <span class="repo-name" style="color: #f87171;">Push Error: ${escapeHtml(rf)}</span>
-                        <span class="staging-pill-ready" style="background: rgba(239, 68, 68, 0.3); color: #fca5a5; border-color: rgba(239, 68, 68, 0.5);">
-                            Push Interrupted
-                        </span>
+            <div class="staging-card-flat state-error">
+                <div class="staging-row-main">
+                    <div class="staging-title-cluster">
+                        <span style="color: #ef4444;">❌</span>
+                        <span class="staging-repo-link" style="color: #f87171;">Push Error: ${escapeHtml(rf)}</span>
+                        <span class="staging-badge staging-badge-error">Error</span>
                     </div>
-                    <div class="staging-actions">
-                        <button type="button" data-repo="${escapeHtml(rf)}" onclick="window.StagingManager.pushStagedRepo(this.dataset.repo)" class="staging-btn-push" style="background: #ef4444;" title="Retry Push from current batch">
-                            🔄 Retry Push
-                        </button>
-                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="staging-btn-discard">
-                            🗑 Discard
-                        </button>
+                    <div class="staging-actions-compact">
+                        <button type="button" data-repo="${escapeHtml(rf)}" onclick="window.StagingManager.pushStagedRepo(this.dataset.repo)" class="btn-flat" style="background: #ef4444; color: white; border: none;">🔄 Retry Push</button>
+                        <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="btn-flat btn-flat-discard">🗑 Discard</button>
                     </div>
                 </div>
-                <div style="font-size: 0.80rem; color: #fca5a5; margin-top: 6px; font-family: ui-monospace, monospace; word-break: break-all; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 6px;">
-                    ${escapeHtml(errMsg)}
+                <div class="staging-row-meta">
+                    <div class="staging-meta-items" style="color: #fca5a5;">
+                        <span style="font-family: ui-monospace, monospace;">${escapeHtml(errMsg)}</span>
+                    </div>
                 </div>
-                ${buildGitConsoleHtml(rf, prog, sizeStr, totalVideos, false)}
+                ${buildGitConsoleHtml(rf, prog, false)}
             </div>`;
         }
 
@@ -407,7 +349,7 @@
     }
 
     /**
-     * Card 2: Active Pre-encryption / Staging Queue Card
+     * Compact Flat Card: Active Pre-encryption Folder
      */
     function renderStagingPreCard(r) {
         const rf = r.repo_folder || '';
@@ -418,43 +360,40 @@
         const isPaused = r.is_paused || false;
 
         return `
-        <div class="staging-card-pre">
-            <div class="staging-card-pre-top">
-                <div>
-                    <div class="staging-pre-title">
-                        <span>⚙</span>
-                        <span>Pre-encrypting Folder: ${escapeHtml(rf)}</span>
-                    </div>
-                    <div class="staging-pre-subtext">
-                        ${fileCount} file(s) staged (${escapeHtml(sizeFormatted)}) • ${pct}% completed
-                    </div>
+        <div class="staging-card-flat state-pre">
+            <div class="staging-row-main">
+                <div class="staging-title-cluster">
+                    <span class="repo-icon">⚙</span>
+                    <span class="staging-repo-link">Pre-encrypting: ${escapeHtml(rf)}</span>
+                    <span class="staging-badge staging-badge-pre">${isPaused ? 'Paused' : 'Encrypting ' + pct + '%'}</span>
                 </div>
-                <div class="staging-pre-actions">
+                <div class="staging-actions-compact">
                     ${isPaused ? `
-                    <button type="button" onclick="window.StagingManager.resumeStagingRepo('${escapeJsString(rf)}')" class="staging-btn-pause" style="color: #4ade80; border-color: rgba(74, 222, 128, 0.4); background: rgba(74, 222, 128, 0.15);" title="Resume pre-encryption for this folder">
-                        ▶ Resume Staging
-                    </button>
-                    <span class="staging-pill-encrypting" style="color: #94a3b8; border-color: rgba(148, 163, 184, 0.3); background: rgba(148, 163, 184, 0.1);">
-                        ⏸ Paused
-                    </span>
+                    <button type="button" onclick="window.StagingManager.resumeStagingRepo('${escapeJsString(rf)}')" class="btn-flat" style="color: #4ade80;" title="Resume pre-encryption">▶ Resume</button>
                     ` : `
-                    <button type="button" onclick="window.StagingManager.pauseStagingRepo('${escapeJsString(rf)}')" class="staging-btn-pause" title="Pause pre-encryption for this folder">
-                        ⏸ Pause Staging
-                    </button>
-                    <span class="staging-pill-encrypting">
-                        Encrypting ${pct}%
-                    </span>
+                    <button type="button" onclick="window.StagingManager.pauseStagingRepo('${escapeJsString(rf)}')" class="btn-flat" style="color: #fbbf24;" title="Pause pre-encryption">⏸ Pause</button>
                     `}
                 </div>
             </div>
-            <div class="staging-bar-pre-track">
-                <div class="staging-bar-pre-fill" style="width: ${Math.max(2, pct)}%;"></div>
+
+            <div class="staging-track-slim">
+                <div class="staging-fill-slim staging-fill-gradient" style="width: ${Math.max(2, pct)}%;"></div>
+            </div>
+
+            <div class="staging-row-meta">
+                <div class="staging-meta-items">
+                    <span>${fileCount} of ${totalExp} files staged</span>
+                    <span class="meta-sep">•</span>
+                    <span>${escapeHtml(sizeFormatted)}</span>
+                    <span class="meta-sep">•</span>
+                    <span>${pct}% complete</span>
+                </div>
             </div>
         </div>`;
     }
 
     /**
-     * Render the Staging Section on the dashboard page
+     * Dashboard Page Inline Section
      */
     function renderStagingSection(data) {
         lastStagingData = data;
@@ -483,15 +422,8 @@
             <div class="staging-queue-header">
                 <div class="staging-queue-header-left">
                     <span class="queue-icon">⚡</span>
-                    <div>
-                        <div class="queue-title">
-                            Staging & 1-Commit Push Queue
-                            ${readyRepos.length > 0 ? `<span style="background: #0284c7; color: #fff; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 9999px;">${readyRepos.length} Ready</span>` : ''}
-                        </div>
-                        <div class="queue-subtitle">
-                            Videos are pre-encrypted folder-wise with flat disk usage. Approve to commit all assets to Hugging Face in one go.
-                        </div>
-                    </div>
+                    <span class="queue-title">Staging Queue ${readyRepos.length > 0 ? `<span class="staging-badge staging-badge-ready">${readyRepos.length} Ready</span>` : ''}</span>
+                    <span class="queue-subtitle">Pre-encrypted with flat disk usage. Commit to Hugging Face when ready.</span>
                 </div>
                 ${readyRepos.length > 1 ? `
                 <button type="button" onclick="window.StagingManager.pushAllStagedRepos()" class="staging-btn-push-all">
@@ -502,22 +434,11 @@
             <div class="staging-queue-list">
         `;
 
-        // 1. Error Repos
         errorRepos.forEach(r => { html += renderStagingRepoCard(r, false); });
-
-        // 2. Failed Audit Discrepancies
         failedAuditRepos.forEach(r => { html += renderStagingRepoCard(r, false); });
-
-        // 3. Pushing Repos
         pushingRepos.forEach(r => { html += renderStagingRepoCard(r, false); });
-
-        // 4. Ready Repos (Card 1)
         readyRepos.forEach(r => { html += renderStagingRepoCard(r, false); });
-
-        // 5. Active Pre-encryption folders (Card 2)
         stagingRepos.forEach(r => { html += renderStagingPreCard(r); });
-
-        // 6. Pushed Repos
         pushedRepos.forEach(r => { html += renderStagingRepoCard(r, false); });
 
         html += `
@@ -528,7 +449,7 @@
     }
 
     /**
-     * Staging Overlay Modal Renderer (Staging Hub)
+     * Staging Hub Overlay Modal Renderer
      */
     function renderStagingOverlay(data) {
         lastStagingData = data;
@@ -546,21 +467,17 @@
 
         if (countBadge) {
             if (failedAuditRepos.length > 0) {
-                countBadge.innerText = `${failedAuditRepos.length} Flaw Detected`;
-                countBadge.className = 'status-pill status-offline';
-                countBadge.style.background = '#ef4444';
+                countBadge.innerText = `${failedAuditRepos.length} Flaw`;
+                countBadge.className = 'staging-badge staging-badge-error';
             } else if (pushingRepos.length > 0) {
-                countBadge.innerText = 'Committing to HF...';
-                countBadge.className = 'status-pill status-active';
-                countBadge.style.background = '#0284c7';
+                countBadge.innerText = 'Pushing...';
+                countBadge.className = 'staging-badge staging-badge-pushing';
             } else if (readyRepos.length > 0) {
                 countBadge.innerText = `${readyRepos.length} Ready`;
-                countBadge.className = 'status-pill status-active';
-                countBadge.style.background = '#10b981';
+                countBadge.className = 'staging-badge staging-badge-ready';
             } else {
                 countBadge.innerText = `${stagingRepos.length} Staging`;
-                countBadge.className = 'status-pill status-idle';
-                countBadge.style.background = '#f59e0b';
+                countBadge.className = 'staging-badge staging-badge-pre';
             }
         }
 
@@ -574,11 +491,11 @@
 
         if (!html) {
             html = `
-            <div style="text-align: center; padding: 48px 20px; color: #94a3b8;">
-                <div style="font-size: 2.8rem; margin-bottom: 14px;">📁</div>
-                <div style="font-size: 1.15rem; font-weight: 700; color: #e2e8f0;">No Active Staging Batch</div>
-                <div style="font-size: 0.88rem; color: #64748b; margin-top: 6px;">
-                    Drop folders with video files into <code>videos_to_sync/</code> to automatically begin folder-wise pre-encryption.
+            <div style="text-align: center; padding: 36px 18px; color: #64748b;">
+                <div style="font-size: 2.2rem; margin-bottom: 8px;">📁</div>
+                <div style="font-size: 1rem; font-weight: 600; color: #e2e8f0;">No Active Staging Batch</div>
+                <div style="font-size: 0.80rem; color: #64748b; margin-top: 4px;">
+                    Drop folders with video files into <code>videos_to_sync/</code> to begin folder-wise pre-encryption.
                 </div>
             </div>`;
         }
@@ -593,13 +510,13 @@
                     🚀 Push All Ready (${readyRepos.length})
                 </button>`;
             }
-            footerHtml += `<button type="button" onclick="window.StagingManager.closeStagingOverlay()" class="tool-btn" style="padding: 7px 20px; border-radius: 8px;">Close</button>`;
+            footerHtml += `<button type="button" onclick="window.StagingManager.closeStagingOverlay()" class="btn-flat" style="padding: 5px 16px;">Close</button>`;
             footerActions.innerHTML = footerHtml;
         }
     }
 
     /**
-     * Floating Trigger and Header Badge updates
+     * Floating Tab & Header Badge Synchronization
      */
     function updateStagingFloatingTrigger(data) {
         const trigger = document.getElementById('stagingFloatingTrigger');
@@ -627,20 +544,8 @@
             if (total > 0) {
                 trigger.style.display = 'flex';
                 if (badge) {
-                    if (failedCount > 0) {
-                        badge.innerText = failedCount + ' Flaw';
-                        badge.style.background = '#ef4444';
-                    } else if (pushingCount > 0) {
-                        badge.innerText = 'Pushing...';
-                        badge.style.background = '#0284c7';
-                    } else if (readyCount > 0) {
-                        badge.innerText = readyCount + ' Ready';
-                        badge.style.background = '#10b981';
-                    } else {
-                        badge.innerText = stagingCount + ' Staging';
-                        badge.style.background = '#f59e0b';
-                    }
-                    badge.style.display = 'inline-block';
+                    badge.innerText = readyCount > 0 ? readyCount + ' Ready' : total + ' Active';
+                    badge.style.background = readyCount > 0 ? '#10b981' : (failedCount > 0 ? '#ef4444' : '#0284c7');
                 }
             } else {
                 trigger.style.display = 'none';
@@ -649,7 +554,7 @@
     }
 
     /**
-     * Staging API Operations
+     * Staging API Calls
      */
     async function fetchStagingStatus() {
         try {
@@ -666,7 +571,7 @@
 
     async function pushStagedRepo(repoFolder) {
         try {
-            showToast(`Initiating 1-Commit Push for ${repoFolder}...`);
+            showToast(`Initiating Push for ${repoFolder}...`);
             const res = await fetch('/api/staging/push', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -674,7 +579,7 @@
             });
             const d = await res.json();
             if (d && d.success) {
-                showToast(`Push initiated for ${repoFolder}!`);
+                showToast(`Push started: ${repoFolder}`);
             } else {
                 showToast(`Push failed: ${d.error || 'unknown error'}`);
             }
@@ -706,8 +611,8 @@
     function confirmRevertRepo(repoFolder, fileCount, sizeStr) {
         showCustomModal({
             title: '⏪ Unstage & Decrypt',
-            message: `Are you sure you want to <strong>unstage and decrypt</strong> <code style="color: #fbbf24;">${escapeHtml(repoFolder)}</code> (${fileCount} files, ${sizeStr})?<br><br>The pre-encrypted files will be safely decrypted back to the source folder and marked as ignored from auto-staging.`,
-            confirmText: 'Unstage & Decrypt',
+            message: `Unstage and decrypt <strong>${escapeHtml(repoFolder)}</strong> (${fileCount} files, ${sizeStr}) back to source directory?`,
+            confirmText: 'Unstage',
             confirmStyle: 'background: #d97706; color: white;',
             onConfirm: function () {
                 revertStagedRepo(repoFolder);
@@ -717,7 +622,7 @@
 
     async function revertStagedRepo(repoFolder) {
         try {
-            showToast(`⏪ Unstaging & decrypting repo: ${repoFolder}...`);
+            showToast(`⏪ Unstaging: ${repoFolder}...`);
             const res = await fetch('/api/staging/revert', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -738,8 +643,8 @@
     function confirmDiscardRepo(repoFolder, fileCount, sizeStr) {
         showCustomModal({
             title: '🗑️ Discard Staged Files',
-            message: `Are you sure you want to <strong>permanently discard</strong> staged files for <code style="color: #f87171;">${escapeHtml(repoFolder)}</code> (${fileCount} files, ${sizeStr})?<br><br>The staged encrypted copies will be permanently deleted from disk.`,
-            confirmText: 'Discard Staging',
+            message: `Permanently delete staged ciphertext for <strong>${escapeHtml(repoFolder)}</strong> (${fileCount} files, ${sizeStr})?`,
+            confirmText: 'Discard',
             confirmStyle: 'background: #dc2626; color: white;',
             onConfirm: function () {
                 discardStagedRepo(repoFolder);
@@ -749,7 +654,7 @@
 
     async function discardStagedRepo(repoFolder) {
         try {
-            showToast(`🗑️ Discarding staged repo: ${repoFolder}...`);
+            showToast(`🗑️ Discarding: ${repoFolder}...`);
             const res = await fetch('/api/staging/discard', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -769,65 +674,57 @@
 
     async function pauseStagingRepo(repoFolder) {
         try {
-            showToast(`⏸ Pausing staging for ${repoFolder}...`);
-            const res = await fetch('/api/staging/pause-staging', {
+            await fetch('/api/staging/pause-staging', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ repo_folder: repoFolder })
             });
-            await res.json();
             showToast('Staging paused.');
             fetchStagingStatus();
         } catch (err) {
-            showToast(`Error pausing: ${err.message}`);
+            showToast(`Error: ${err.message}`);
         }
     }
 
     async function resumeStagingRepo(repoFolder) {
         try {
-            showToast(`▶ Resuming staging for ${repoFolder}...`);
-            const res = await fetch('/api/staging/resume-staging', {
+            await fetch('/api/staging/resume-staging', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ repo_folder: repoFolder })
             });
-            await res.json();
             showToast('Staging resumed.');
             fetchStagingStatus();
         } catch (err) {
-            showToast(`Error resuming: ${err.message}`);
+            showToast(`Error: ${err.message}`);
         }
     }
 
     async function pauseRepoPush(repoFolder) {
         try {
-            showToast(`⏸ Pausing push for ${repoFolder}...`);
-            const res = await fetch('/api/staging/pause', {
+            await fetch('/api/staging/pause', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ repo_folder: repoFolder })
             });
-            await res.json();
             showToast('Push paused.');
             fetchStagingStatus();
         } catch (err) {
-            showToast(`Error pausing push: ${err.message}`);
+            showToast(`Error: ${err.message}`);
         }
     }
 
     async function resumeRepoPush(repoFolder) {
         try {
-            showToast(`▶ Resuming push for ${repoFolder}...`);
-            const res = await fetch('/api/staging/resume', {
+            await fetch('/api/staging/resume', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ repo_folder: repoFolder })
             });
-            await res.json();
             showToast('Push resumed.');
             fetchStagingStatus();
         } catch (err) {
-            showToast(`Error resuming push: ${err.message}`);
+            showToast(`Error: ${err.message}`);
         }
     }
 
@@ -885,7 +782,7 @@
         closeStagingOverlay: closeStagingOverlay
     };
 
-    // Backward-compatibility global window hooks
+    // Backward-compatibility window hooks
     window.renderStagingSection = renderStagingSection;
     window.renderStagingOverlay = renderStagingOverlay;
     window.renderStagingRepoCard = renderStagingRepoCard;
@@ -906,7 +803,7 @@
     window.updateStagingFloatingTrigger = updateStagingFloatingTrigger;
 
     // Close modals on Escape key
-    document.addEventListener('keydown', function(e) {
+    document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape') {
             closeStagingOverlay();
             const actionModal = document.getElementById('stagingActionModal');
