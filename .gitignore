@@ -15,7 +15,10 @@ env.txt
 # PRIVATE VAULT MANIFEST & RUNTIME STATE
 # ==========================================
 upload_manifest.json
+upload_manifest.json*
 live_activity.json
+live_activity.json*
+*.tmp*
 pc_tracker/
 staging/
 scratch/
