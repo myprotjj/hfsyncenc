@@ -61,6 +61,9 @@
         const rawRepoName = repoId.includes('/') ? repoId.split('/')[1] : repoId;
         const thumbs = r.preview_thumbs || [];
         const prog = r.push_progress || {};
+        const estBatches = r.total_batches || (prog.total_batches) || Math.max(1, Math.ceil(totalBytes / (10 * 1024 * 1024 * 1024)));
+        const pushBtnLabel = estBatches > 1 ? ('🚀 Push (' + estBatches + ' Commits ~10GB)') : '🚀 Push to HF (1 Commit)';
+        const gitChipText = estBatches > 1 ? ('⚡ Git: ' + estBatches + ' Batches (~10GB)') : '⚡ Git: 1-Commit Atomic';
         const isPaused = r.status === 'paused';
         const isQueued = r.status === 'queued';
         const isPushing = r.status === 'pushing' || (prog.percent != null && r.status !== 'ready_to_push' && !isPaused && !isQueued && r.status !== 'error' && r.status !== 'pushed');
@@ -99,8 +102,8 @@
                         <button type="button" onclick="window.StagingManager.confirmDiscardRepo('${escapeJsString(rf)}', ${totalVideos}, '${escapeJsString(sizeStr)}')" class="staging-btn-discard" title="Permanently discard staged files without restoring">
                             🗑 Discard
                         </button>
-                        <button type="button" data-repo="${escapeHtml(rf)}" onclick="window.StagingManager.pushStagedRepo(this.dataset.repo)" class="staging-btn-push" title="Atomic 1-commit upload to Hugging Face">
-                            🚀 Push to HF (1 Commit)
+                        <button type="button" data-repo="${escapeHtml(rf)}" onclick="window.StagingManager.pushStagedRepo(this.dataset.repo)" class="staging-btn-push" title="Atomic multi-commit upload to Hugging Face">
+                            ${pushBtnLabel}
                         </button>
                     </div>
                 </div>
@@ -133,25 +136,40 @@
                     <a href="${hfDatasetUrl}" target="_blank" rel="noopener noreferrer" class="staging-chip staging-chip-repo" title="Target Repository on Hugging Face">
                         ☁ Repo: ${escapeHtml(repoId)} ↗
                     </a>
-                    <span class="staging-chip staging-chip-git" title="Single atomic transaction">
-                        ⚡ Git: 1-Commit Atomic
+                    <span class="staging-chip staging-chip-git" title="Multi-part commit partitioning">
+                        ${gitChipText}
                     </span>
                 </div>
 
                 <!-- Commits line -->
+                ${prog.commits && prog.commits.length > 0 ? `
+                <div class="staging-commits-row">
+                    <span>Commits:</span>
+                    ${prog.commits.map(c => `
+                        <a href="${escapeHtml(c.commit_url)}" target="_blank" rel="noopener noreferrer" class="staging-commit-link" title="View Batch ${c.batch} Commit on Hugging Face">
+                            <span>🔗 #${c.batch} (${c.size_formatted || ''})</span> ↗
+                        </a>
+                    `).join('')}
+                    <a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-commit-link" title="View repository commits on Hugging Face">
+                        📜 View All Commits ↗
+                    </a>
+                </div>
+                ` : `
                 <div class="staging-commits-row">
                     <span>Commits:</span>
                     <a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-commit-link" title="View repository commits on Hugging Face">
                         📜 View All Commits ↗
                     </a>
                 </div>
+                `}
             </div>`;
         }
 
         // 2. Pushing State
         if (isPushing) {
             const pct = prog.percent != null ? prog.percent : 25;
-            const msg = prog.message || 'Pushing assets to Hugging Face in 1 Git Commit...';
+            const msg = prog.message || 'Pushing assets to Hugging Face...';
+            const batchBadge = prog.batch_info || (prog.total_batches > 1 ? ('Batch ' + (prog.current_batch || 1) + '/' + prog.total_batches) : 'Committing');
             return `
             <div class="staging-card-ready" style="border-color: rgba(56, 189, 248, 0.6); background: rgba(15, 23, 42, 0.95);">
                 <div class="staging-card-top">
@@ -160,7 +178,7 @@
                         <span class="repo-name" style="color: #38bdf8;">Pushing: ${escapeHtml(repoId)}</span>
                         <span class="repo-encdir">(${escapeHtml(rf)})</span>
                         <span class="staging-pill-ready" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
-                            ⚡ Committing (${pct}%)
+                            ⚡ ${escapeHtml(batchBadge)} (${pct}%)
                         </span>
                     </div>
                     <div class="staging-actions">
