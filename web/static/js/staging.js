@@ -339,6 +339,8 @@
                         <span class="staging-badge staging-badge-pushed">Pushed</span>
                     </div>
                     <div class="staging-actions-compact">
+                        <a href="/discover?staged_repo=${encodeURIComponent(rf)}" class="btn-flat btn-flat-discover" title="View committed videos in Discover feed">👁 Discover ↗</a>
+                        <a href="/?folder=${encodeURIComponent(rf)}" class="btn-flat" title="Open this folder in Vault Explorer">📁 Explorer ↗</a>
                         <button type="button" onclick="window.StagingManager.togglePushLog('${escapeJsString(rf)}')" class="btn-flat" title="View push logs">📋 Logs</button>
                         <button type="button" onclick="window.StagingManager.dismissPushedRepo('${escapeJsString(rf)}')" class="btn-flat-dismiss" title="Dismiss this notification">✕ Dismiss</button>
                     </div>

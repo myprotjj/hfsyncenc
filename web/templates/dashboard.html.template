@@ -13453,6 +13453,24 @@
         refreshTreeDisplay();
         restoreUserPosition();
         applyHideTagsState();
+        try {{
+            const urlParams = new URLSearchParams(window.location.search);
+            const targetFolder = urlParams.get('folder');
+            if (targetFolder) {{
+                folderStateStore[targetFolder] = true;
+                saveFolderStates();
+                refreshTreeDisplay();
+                setTimeout(() => {{
+                    const el = document.querySelector(`[data-folder="${{CSS.escape(targetFolder)}}"]`);
+                    if (el) {{
+                        el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                        el.style.outline = '2px solid #10b981';
+                        el.style.boxShadow = '0 0 15px rgba(16, 185, 129, 0.3)';
+                        el.style.borderRadius = '8px';
+                    }}
+                }}, 300);
+            }}
+        }} catch (e) {{}}
         updateSystemStatusIndicators(true, 'idle');
         updateQuickResumeUI();
         startCacheStatsPolling();

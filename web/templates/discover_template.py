@@ -89,33 +89,75 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
                     "is_staged": True,
                     "staged_repo": staged_repo
                 })
-            manifest_data = staged_items
-            all_accounts = [rdata.get("account", "")] if rdata.get("account") else []
-            primary_account = rdata.get("account", "")
+            if staged_items:
+                manifest_data = staged_items
+                all_accounts = [rdata.get("account", "")] if rdata.get("account") else []
+                primary_account = rdata.get("account", "")
 
-            staged_banner_html = f'''
-            <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 12px; padding: 14px 20px; margin: 16px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <span style="font-size: 1.8rem;">📦</span>
-                    <div>
-                        <div style="font-size: 1.05rem; font-weight: 700; color: #34d399;">
-                            Staged Vault Content: <span style="font-family: monospace; color: #f1f5f9;">{staged_repo}</span>
-                        </div>
-                        <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 2px;">
-                            Showing {len(manifest_data)} pre-encrypted file(s) &bull; 100% verified on disk &bull; Not yet committed to cloud
+                staged_banner_html = f'''
+                <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 12px; padding: 14px 20px; margin: 16px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span style="font-size: 1.8rem;">📦</span>
+                        <div>
+                            <div style="font-size: 1.05rem; font-weight: 700; color: #34d399;">
+                                Staged Vault Content: <span style="font-family: monospace; color: #f1f5f9;">{staged_repo}</span>
+                            </div>
+                            <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 2px;">
+                                Showing {len(manifest_data)} pre-encrypted file(s) &bull; 100% verified on disk &bull; Not yet committed to cloud
+                            </div>
                         </div>
                     </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <a href="/discover" style="background: rgba(255,255,255,0.08); color: #e2e8f0; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600;">
+                            &larr; View All Uploaded Videos
+                        </a>
+                        <button onclick="pushStagedRepo('{staged_repo}')" style="background: #059669; border: 1px solid #10b981; color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
+                            🚀 Push This Vault (1 Commit)
+                        </button>
+                    </div>
                 </div>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                    <a href="/discover" style="background: rgba(255,255,255,0.08); color: #e2e8f0; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600;">
-                        &larr; View All Uploaded Videos
-                    </a>
-                    <button onclick="pushStagedRepo('{staged_repo}')" style="background: #059669; border: 1px solid #10b981; color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
-                        🚀 Push This Vault (1 Commit)
-                    </button>
-                </div>
-            </div>
-            '''
+                '''
+            else:
+                all_vault_files, _, all_accs, prim_acc = handler.get_files_data()
+                target_repo_id = rdata.get("repo_id", "")
+                pushed_items = [
+                    f for f in all_vault_files
+                    if f.get("repo_folder") == staged_repo
+                    or f.get("key", "").startswith(staged_repo + "/")
+                    or (target_repo_id and f.get("repo") == target_repo_id)
+                ]
+                if pushed_items:
+                    manifest_data = pushed_items
+                    all_accounts = [rdata.get("account", "")] if rdata.get("account") else all_accs
+                    primary_account = rdata.get("account", "") or prim_acc
+                    hf_repo_url = f"https://huggingface.co/datasets/{target_repo_id}" if target_repo_id else ""
+                    hf_btn = f'<a href="{hf_repo_url}" target="_blank" rel="noopener noreferrer" style="background: #059669; border: 1px solid #10b981; color: #fff; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600;">📦 Open HF Repo ↗</a>' if target_repo_id else ""
+                    staged_banner_html = f'''
+                    <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 12px; padding: 14px 20px; margin: 16px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 1.8rem; color: #34d399;">✓</span>
+                            <div>
+                                <div style="font-size: 1.05rem; font-weight: 700; color: #34d399;">
+                                    Committed Vault Content: <span style="font-family: monospace; color: #f1f5f9;">{staged_repo}</span>
+                                </div>
+                                <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 2px;">
+                                    Showing all {len(manifest_data)} video(s) committed to Hugging Face ({target_repo_id or "Cloud"}) &bull; 100% Streamable
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <a href="/discover" style="background: rgba(255,255,255,0.08); color: #e2e8f0; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600;">
+                                &larr; View All Vault Videos
+                            </a>
+                            <a href="/?folder={staged_repo}" style="background: rgba(255,255,255,0.08); color: #e2e8f0; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-size: 0.82rem; font-weight: 600;">
+                                📁 Open in Explorer
+                            </a>
+                            {hf_btn}
+                        </div>
+                    </div>
+                    '''
+                else:
+                    manifest_data, skipped_files, all_accounts, primary_account = handler.get_files_data()
         except Exception as ex_stg:
             print(f"[!] Error loading staged repo for discover: {ex_stg}")
             manifest_data, skipped_files, all_accounts, primary_account = handler.get_files_data()
@@ -3577,7 +3619,44 @@ def render_discover_page(handler, staged_repo: str = None) -> str:
             }}
         }}
 
+        function initAccountFilterChips() {{
+            const row = document.getElementById('filterChipsRow');
+            if (!row || !allAccounts || allAccounts.length <= 1) return;
+            const container = document.createElement('div');
+            container.style.display = 'inline-flex';
+            container.style.gap = '6px';
+            container.style.alignItems = 'center';
+            container.style.borderLeft = '1px solid rgba(255, 255, 255, 0.12)';
+            container.style.paddingLeft = '8px';
+            container.style.marginLeft = '4px';
+
+            allAccounts.forEach(acc => {{
+                if (!acc) return;
+                const count = allFiles.filter(f => (f.account || primaryAccount) === acc).length;
+                if (count === 0) return;
+                const chip = document.createElement('div');
+                chip.className = 'filter-chip';
+                chip.setAttribute('data-account', acc);
+                chip.innerHTML = `&#128100; ${{escapeHtml(acc)}} <span style="font-size:0.75rem;opacity:0.7;">(${{count}})</span>`;
+                chip.onclick = () => {{
+                    if (activeFilterTags.has(`acc:${{acc}}`)) {{
+                        removeActiveFilter(`acc:${{acc}}`);
+                        chip.classList.remove('is-active');
+                    }} else {{
+                        addActiveFilter('acc', acc);
+                        chip.classList.add('is-active');
+                    }}
+                }};
+                container.appendChild(chip);
+            }});
+            const activeCont = document.getElementById('activeFiltersContainer');
+            if (activeCont) {{
+                row.insertBefore(container, activeCont);
+            }}
+        }}
+
         /* Boot up */
+        initAccountFilterChips();
         computeFilteredFiles();
         resetAndRenderGrid();
         updateWatchDrawerBadges();
