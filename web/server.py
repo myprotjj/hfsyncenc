@@ -458,6 +458,16 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
             self.handle_staging_push()
         elif path == "/api/staging/push-all":
             self.handle_staging_push_all()
+        elif path == "/api/staging/pause":
+            self.handle_staging_pause()
+        elif path == "/api/staging/pause-staging":
+            self.handle_staging_pause_staging()
+        elif path == "/api/staging/resume":
+            self.handle_staging_resume()
+        elif path == "/api/staging/resume-staging":
+            self.handle_staging_resume_staging()
+        elif path == "/api/staging/cancel-queued":
+            self.handle_staging_cancel_queued()
         elif path == "/api/staging/dismiss":
             self.handle_staging_dismiss()
         elif path == "/api/staging/discard":
@@ -4400,6 +4410,58 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp)
 
+    def handle_staging_pause(self):
+        length = int(self.headers.get("Content-Length", 0))
+        data = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+        repo_folder = data.get("repo_folder", "")
+        if repo_folder:
+            staging_manager.pause_repo_push(repo_folder)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "paused", "repo_folder": repo_folder}).encode("utf-8"))
+
+    def handle_staging_pause_staging(self):
+        staging_manager.pause_staging()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "staging_paused"}).encode("utf-8"))
+
+    def handle_staging_resume(self):
+        length = int(self.headers.get("Content-Length", 0))
+        data = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+        repo_folder = data.get("repo_folder", "")
+        if repo_folder:
+            staging_manager.resume_repo_push(repo_folder)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "resumed", "repo_folder": repo_folder}).encode("utf-8"))
+
+    def handle_staging_resume_staging(self):
+        staging_manager.resume_staging()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "staging_resumed"}).encode("utf-8"))
+
+    def handle_staging_cancel_queued(self):
+        length = int(self.headers.get("Content-Length", 0))
+        data = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+        repo_folder = data.get("repo_folder", "")
+        if repo_folder:
+            staging_manager.cancel_queued_push(repo_folder)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "canceled", "repo_folder": repo_folder}).encode("utf-8"))
+
     def handle_auto_cleanup_undecryptable_repos(self):
         try:
             acc_mgr = getattr(self, "acc_mgr", None) or account_manager.AccountManager()
@@ -4421,12 +4483,51 @@ class InteractiveJellyfinStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp_body)
 
+    def handle_static_file(self, path):
+        rel = os.path.normpath(path.lstrip("/")).replace("\\", "/")
+        if rel.startswith("..") or "/../" in rel:
+            self.send_error(403, "Access denied")
+            return
+        static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+        sub_path = rel[7:] if rel.startswith("static/") else rel
+        full_path = os.path.join(static_dir, sub_path.replace("/", os.sep))
+        if not os.path.isfile(full_path):
+            self.send_error(404, "File not found")
+            return
+        mime = "text/plain"
+        if full_path.endswith(".css"):
+            mime = "text/css; charset=utf-8"
+        elif full_path.endswith(".js"):
+            mime = "application/javascript; charset=utf-8"
+        elif full_path.endswith(".png"):
+            mime = "image/png"
+        elif full_path.endswith((".jpg", ".jpeg")):
+            mime = "image/jpeg"
+        elif full_path.endswith(".svg"):
+            mime = "image/svg+xml"
+        elif full_path.endswith(".woff2"):
+            mime = "font/woff2"
+        try:
+            with open(full_path, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            self.send_error(500, f"Error reading static file: {e}")
+
     def do_GET(self):
         cloud_watcher.notify_client_active()
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
-        if path in ("/", "/index.html"):
+        if path.startswith("/static/"):
+            self.handle_static_file(path)
+        elif path in ("/", "/index.html"):
             self.handle_dashboard()
         elif path in ("/discover", "/discover.html"):
             self.handle_discover()
