@@ -4476,6 +4476,10 @@
                 <button onclick="scanAllTechTags()" id="btnScanTech" class="tool-btn" title="Extract resolution, audio, and video codecs">
                     &#127916; Tech Specs
                 </button>
+                <button type="button" onclick="openStagingOverlay()" id="btnHeaderStaging" class="tool-btn" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; background: rgba(56, 189, 248, 0.12); display: inline-flex; align-items: center; gap: 6px;" title="Open Full-Screen Staging Hub & Push Controls">
+                    <span>⚡ Staging Hub</span>
+                    <span id="headerStagingCountBadge" style="background: #10b981; color: #fff; font-size: 0.70rem; font-weight: 700; padding: 1px 7px; border-radius: 9999px; display: none;">0</span>
+                </button>
                 <button onclick="openAccountsModal()" class="tool-btn" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.12);" title="Manage connected Hugging Face accounts">
                     &#128101; Accounts (<span id="headerAccCount">{total_accounts}</span>)
                 </button>
