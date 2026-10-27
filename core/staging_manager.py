@@ -536,6 +536,7 @@ def get_staging_status(watch_dir: str = "videos_to_sync") -> dict:
             "total_batches": total_batches,
             "updated_at": data.get("updated_at", 0),
             "push_progress": data.get("push_progress", {}),
+            "commits": data.get("push_progress", {}).get("commits", []) or data.get("commits", []),
             "audit_report": audit_rep,
             "initial_scanned_count": init_count,
             "initial_scanned_formatted": init_formatted,
@@ -1162,6 +1163,9 @@ def _execute_repo_push(repo_folder: str, library_dir: str):
             total_bytes=overall_total_b,
             total_batches=total_batches
         )
+        prev_commits = repo_data.get("push_progress", {}).get("commits", [])
+        if prev_commits:
+            tracker.completed_commits = list(prev_commits)
         tracker.total_videos = total_files
         tracker.overall_total_assets = overall_total_ops
         repo_data["total_assets"] = overall_total_ops

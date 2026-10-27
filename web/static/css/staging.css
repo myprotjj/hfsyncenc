@@ -342,19 +342,101 @@
     text-decoration: underline;
 }
 
+/* Realtime Commit Strip & Batch Pills */
+.staging-commits-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.staging-commits-title {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.staging-commits-pills {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
 .staging-batch-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-size: 0.70rem;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.05);
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    text-decoration: none;
+    transition: all 0.15s ease;
+    line-height: 1.2;
+}
+
+/* 1. Completed Git Commit: Crisp Emerald Clickable Link */
+.staging-batch-pill-done {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #34d399;
+    cursor: pointer;
+}
+.staging-batch-pill-done:hover {
+    background: rgba(16, 185, 129, 0.25);
+    border-color: #10b981;
+    color: #a7f3d0;
+    text-decoration: none;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* 2. Active Uploading Batch: Sky Blue with Pulse */
+.staging-batch-pill-active {
+    background: rgba(56, 189, 248, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    color: #38bdf8;
+    animation: batchPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes batchPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.65; }
+}
+
+/* 3. Paused Batch: Amber */
+.staging-batch-pill-paused {
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: #fbbf24;
+}
+
+/* 4. Failed Batch: Rose */
+.staging-batch-pill-error {
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #f87171;
+}
+
+/* 5. Pending Batches / Default */
+.staging-batch-pill-pending {
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.10);
     color: #94a3b8;
-    text-decoration: none;
 }
-.staging-batch-pill:hover {
-    background: rgba(56, 189, 248, 0.15);
-    color: #38bdf8;
-    border-color: rgba(56, 189, 248, 0.3);
+.staging-batch-pill-pending:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #cbd5e1;
 }
 
 /* Slim 3px Flat Progress Tracks */

@@ -121,6 +121,69 @@
     }
 
     /**
+     * Builds the Realtime Clickable Commit Strip & Batch Pills
+     */
+    function buildCommitsStripHtml(r, prog, state) {
+        const cardCommits = prog.commits || r.commits || [];
+        const hfDatasetUrl = 'https://huggingface.co/datasets/' + encodeURIComponent(r.repo_id || 'Vault');
+        const commitsUrl = hfDatasetUrl + '/commits/main';
+        const totalBatches = prog.total_batches || r.total_batches || 1;
+        const curBatch = prog.current_batch || 1;
+
+        let pillsHtml = '';
+
+        // Render all completed commits as clickable emerald links
+        if (cardCommits.length > 0) {
+            pillsHtml += cardCommits.map(c => {
+                const batchNum = c.batch != null ? c.batch : 1;
+                const sizeStr = c.size_formatted ? ` ${c.size_formatted}` : '';
+                const cUrl = c.commit_url || (commitsUrl);
+                const title = `Git Commit for Batch #${batchNum}${c.size_formatted ? ' (' + c.size_formatted + ')' : ''} - Click to open commit diff on Hugging Face`;
+                return `<a href="${escapeHtml(cUrl)}" target="_blank" rel="noopener noreferrer" class="staging-batch-pill staging-batch-pill-done" title="${escapeHtml(title)}">#${batchNum}${escapeHtml(sizeStr)} ↗</a>`;
+            }).join('');
+        }
+
+        // State-specific in-progress / paused / error pill
+        if (state === 'pushing') {
+            const alreadyDone = cardCommits.some(c => c.batch === curBatch);
+            if (!alreadyDone && curBatch <= totalBatches) {
+                pillsHtml += `<span class="staging-batch-pill staging-batch-pill-active" title="Currently uploading Batch #${curBatch} of ${totalBatches}">#${curBatch} Uploading ⚡</span>`;
+            }
+        } else if (state === 'paused') {
+            const alreadyDone = cardCommits.some(c => c.batch === curBatch);
+            if (!alreadyDone && curBatch <= totalBatches) {
+                pillsHtml += `<span class="staging-batch-pill staging-batch-pill-paused" title="Push paused at Batch #${curBatch} of ${totalBatches}">#${curBatch} Paused ⏸</span>`;
+            }
+        } else if (state === 'error') {
+            const alreadyDone = cardCommits.some(c => c.batch === curBatch);
+            if (!alreadyDone && curBatch <= totalBatches) {
+                pillsHtml += `<span class="staging-batch-pill staging-batch-pill-error" title="Push error at Batch #${curBatch} of ${totalBatches}">#${curBatch} Failed ⚠️</span>`;
+            }
+        } else if (state === 'ready') {
+            if (cardCommits.length === 0 && totalBatches > 1) {
+                pillsHtml += `<span class="staging-batch-pill staging-batch-pill-pending" title="Repository partitioned into ${totalBatches} commits (~10 GB each)">${totalBatches} Batches (~10 GB each)</span>`;
+                pillsHtml += `<a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-batch-pill staging-batch-pill-pending" title="View commit history on Hugging Face">Commits ↗</a>`;
+            } else if (cardCommits.length === 0) {
+                pillsHtml += `<span class="staging-batch-pill staging-batch-pill-pending" title="Single atomic commit (< 10 GB)">1-Commit Atomic</span>`;
+            }
+        }
+
+        if (!pillsHtml) return '';
+
+        const labelText = cardCommits.length > 0
+            ? `Commits (${cardCommits.length}/${totalBatches}):`
+            : `Commits:`;
+
+        return `
+        <div class="staging-commits-strip">
+            <span class="staging-commits-title">${labelText}</span>
+            <div class="staging-commits-pills">
+                ${pillsHtml}
+            </div>
+        </div>`;
+    }
+
+    /**
      * Compact Flat Card: Ready / Pushing / Pushed / Error Staged Repo
      */
     function renderStagingRepoCard(r, isModal) {
@@ -189,11 +252,9 @@
                     </div>
                     <div class="staging-meta-right">
                         ${account ? `<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; color: #cbd5e1;">${avatarHtml}<span>${escapeHtml(account)}</span></span>` : ''}
-                        ${cardCommits.length > 0 ? cardCommits.map(c => `
-                            <a href="${escapeHtml(c.commit_url)}" target="_blank" rel="noopener noreferrer" class="staging-batch-pill" title="View Batch #${c.batch}">#${c.batch} (${c.size_formatted || ''}) ↗</a>
-                        `).join('') : `<a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-link-muted">Commits ↗</a>`}
                     </div>
                 </div>
+                ${buildCommitsStripHtml(r, prog, 'ready')}
             </div>`;
         }
 
@@ -229,7 +290,11 @@
                         <span>${prog.uploaded_bytes_formatted || '0 MB'} / ${prog.total_bytes_formatted || sizeStr}</span>
                         ${prog.speed_str ? `<span class="meta-sep">•</span><span style="color: #4ade80;">⚡ ${escapeHtml(prog.speed_str)}</span>` : ''}
                     </div>
+                    <div class="staging-meta-right">
+                        ${account ? `<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; color: #cbd5e1;">${avatarHtml}<span>${escapeHtml(account)}</span></span>` : ''}
+                    </div>
                 </div>
+                ${buildCommitsStripHtml(r, prog, 'pushing')}
                 ${buildGitConsoleHtml(rf, prog, false)}
             </div>`;
         }
@@ -253,7 +318,11 @@
                     <div class="staging-meta-items">
                         <span>${escapeHtml(prog.message || 'Push paused. Click Resume to continue.')}</span>
                     </div>
+                    <div class="staging-meta-right">
+                        ${account ? `<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; color: #cbd5e1;">${avatarHtml}<span>${escapeHtml(account)}</span></span>` : ''}
+                    </div>
                 </div>
+                ${buildCommitsStripHtml(r, prog, 'paused')}
                 ${buildGitConsoleHtml(rf, prog, false)}
             </div>`;
         }
@@ -280,11 +349,10 @@
                         ${prog.speed_str ? `<span class="meta-sep">•</span><span style="color: #10b981;">⚡ ${escapeHtml(prog.speed_str)}</span>` : ''}
                     </div>
                     <div class="staging-meta-right">
-                        ${cardCommits.length > 0 ? cardCommits.map(c => `
-                            <a href="${escapeHtml(c.commit_url)}" target="_blank" rel="noopener noreferrer" class="staging-batch-pill">#${c.batch} (${c.size_formatted || ''}) ↗</a>
-                        `).join('') : `<a href="${commitsUrl}" target="_blank" rel="noopener noreferrer" class="staging-link-muted">Commits ↗</a>`}
+                        ${account ? `<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; color: #cbd5e1;">${avatarHtml}<span>${escapeHtml(account)}</span></span>` : ''}
                     </div>
                 </div>
+                ${buildCommitsStripHtml(r, prog, 'pushed')}
                 ${buildGitConsoleHtml(rf, prog, true)}
             </div>`;
         }
@@ -341,6 +409,7 @@
                         <span style="font-family: ui-monospace, monospace;">${escapeHtml(errMsg)}</span>
                     </div>
                 </div>
+                ${buildCommitsStripHtml(r, prog, 'error')}
                 ${buildGitConsoleHtml(rf, prog, false)}
             </div>`;
         }
